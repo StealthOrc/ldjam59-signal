@@ -348,7 +348,7 @@ function ui.draw(game)
         drawNextSignalBadge(game)
     end
 
-    drawRun(font, "WASD to drive, Space to handbrake, Left stick + RT/LT + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
+    drawRun(font, "Mouse to steer, Space to handbrake, Left stick + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
 
     if game.state == "title" then
         drawCenterOverlay(

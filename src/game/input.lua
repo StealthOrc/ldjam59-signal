@@ -53,12 +53,6 @@ function input.getDriveIntent()
         usingController = math.abs(stickX) > 0 or throttle > 0 or brake > 0 or handbrake
     end
 
-    if love.keyboard.isDown("a", "left") then
-        steer = -1
-    elseif love.keyboard.isDown("d", "right") then
-        steer = 1
-    end
-
     if love.keyboard.isDown("w", "up") then
         throttle = 1
     end
@@ -79,6 +73,9 @@ function input.getDriveIntent()
         anyInput = math.abs(steer) > 0 or throttle > 0 or brake > 0 or handbrake,
         joystick = joystick,
         usingController = usingController,
+        usingMouse = false,
+        mouseX = love.mouse.getX(),
+        mouseY = love.mouse.getY(),
     }
 end
 

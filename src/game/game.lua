@@ -29,6 +29,15 @@ local function lerp(a, b, t)
     return a + (b - a) * t
 end
 
+local function wrapAngle(angle)
+    if angle > math.pi then
+        angle = angle - math.pi * 2
+    elseif angle < -math.pi then
+        angle = angle + math.pi * 2
+    end
+    return angle
+end
+
 local function shuffleInPlace(list)
     for index = #list, 2, -1 do
         local swapIndex = love.math.random(index)
@@ -43,6 +52,14 @@ local function buildTuning()
         steerSpeed = math.rad(180),
         keyboardSteerSpeed = math.rad(110),
         keyboardSteerLimit = 0.58,
+        mouseSteerSpeed = math.rad(170),
+        mouseSteerDeadzonePixels = 18,
+        mouseSteerLookaheadMeters = 12,
+        mouseSteerStrength = 1.2,
+        highSpeedSteerStartKmh = 45,
+        highSpeedSteerEndKmh = 120,
+        highSpeedSteerAngleFactor = 0.38,
+        highSpeedSteerSpeedFactor = 0.52,
         wheelBase = 52,
         baseEngineForce = 420,
         brakeForce = 520,
@@ -201,6 +218,7 @@ function Game.new()
     self.tuning.signalTowerFirstGap = self:metersToUnits(self.tuning.signalTowerFirstGapMeters)
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
     self.tuning.signalTowerTouchRadius = self:metersToUnits(self.tuning.signalTowerTouchRadiusMeters)
+    self.tuning.mouseSteerLookahead = self:metersToUnits(self.tuning.mouseSteerLookaheadMeters)
     self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
 
     self.world = world.new(self.tuning)
@@ -333,6 +351,53 @@ end
 
 function Game:speedUnitsToKmh(unitsPerSecond)
     return self:unitsToMeters(unitsPerSecond) * 3.6
+end
+
+function Game:screenToWorld(screenX, screenY)
+    local worldX = (screenX - self.viewport.w * 0.5) / self.camera.zoom + self.camera.x
+    local worldY = (screenY - self.viewport.h * 0.5) / self.camera.zoom + self.camera.y
+    return worldX, worldY
+end
+
+function Game:applyMouseSteering(intent)
+    if intent.usingController then
+        return intent
+    end
+
+    local mouseWorldX, mouseWorldY = self:screenToWorld(intent.mouseX or 0, intent.mouseY or 0)
+    local dx = mouseWorldX - self.car.x
+    local dy = mouseWorldY - self.car.y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    if distance <= self:metersToUnits(0.25) then
+        intent.steer = 0
+        return intent
+    end
+
+    local carScreenX = (self.car.x - self.camera.x) * self.camera.zoom + self.viewport.w * 0.5
+    local carScreenY = (self.car.y - self.camera.y) * self.camera.zoom + self.viewport.h * 0.5
+    local mouseScreenDx = (intent.mouseX or 0) - carScreenX
+    local mouseScreenDy = (intent.mouseY or 0) - carScreenY
+    local mouseScreenDistance = math.sqrt(mouseScreenDx * mouseScreenDx + mouseScreenDy * mouseScreenDy)
+    if mouseScreenDistance <= self.tuning.mouseSteerDeadzonePixels then
+        intent.steer = 0
+        intent.usingMouse = true
+        return intent
+    end
+
+    local forwardX, forwardY, rightX, rightY = car.getBasis(self.car.heading)
+    local localForward = dx * forwardX + dy * forwardY
+    local localRight = dx * rightX + dy * rightY
+
+    if localForward <= 0 then
+        intent.steer = localRight >= 0 and 1 or -1
+    else
+        local lookahead = math.max(self.tuning.mouseSteerLookahead, localForward * 0.35)
+        intent.steer = clamp((localRight / lookahead) * self.tuning.mouseSteerStrength, -1, 1)
+    end
+
+    intent.usingMouse = true
+    intent.anyInput = math.abs(intent.steer) > 0 or intent.throttle > 0 or intent.brake > 0 or intent.handbrake
+    return intent
 end
 
 function Game:getFuelRatio()
@@ -866,6 +931,10 @@ function Game:update(dt)
     end
 
     local intent = input.getDriveIntent()
+    intent.throttle = 1
+    intent.brake = 0
+    intent.anyInput = math.abs(intent.steer) > 0 or intent.handbrake
+    intent = self:applyMouseSteering(intent)
     car.update(self.car, intent, dt, self.tuning)
     self.runTimeRemaining = math.max(0, self.runTimeRemaining - dt)
     self.world:resolveBarriers(self.car, self.tuning)
