@@ -33,6 +33,8 @@ function Game.new()
     self.availableMaps = {}
     self.currentMapDescriptor = nil
     self.levelSelectIssue = nil
+    self.levelSelectSelectedId = nil
+    self.levelSelectScroll = 0
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -53,6 +55,74 @@ end
 
 function Game:refreshMaps()
     self.availableMaps = mapStorage.listMaps()
+end
+
+function Game:getLevelSelectMaps()
+    return ui.getLevelSelectMapDescriptors(self)
+end
+
+function Game:getSelectedLevelMap()
+    local maps = self:getLevelSelectMaps()
+    local fallback = nil
+
+    for _, descriptor in ipairs(maps) do
+        fallback = fallback or descriptor
+        if descriptor.id == self.levelSelectSelectedId then
+            return descriptor
+        end
+    end
+
+    if fallback then
+        self.levelSelectSelectedId = fallback.id
+    else
+        self.levelSelectSelectedId = nil
+    end
+
+    return fallback
+end
+
+function Game:setLevelSelectSelection(mapDescriptor)
+    self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
+    self.levelSelectScroll = 0
+end
+
+function Game:moveLevelSelectSelection(direction)
+    local maps = self:getLevelSelectMaps()
+    if #maps == 0 then
+        self.levelSelectSelectedId = nil
+        self.levelSelectScroll = 0
+        return nil
+    end
+
+    local currentIndex = 1
+    for index, descriptor in ipairs(maps) do
+        if descriptor.id == self.levelSelectSelectedId then
+            currentIndex = index
+            break
+        end
+    end
+
+    local nextIndex = currentIndex + direction
+    if nextIndex < 1 then
+        nextIndex = #maps
+    elseif nextIndex > #maps then
+        nextIndex = 1
+    end
+
+    self.levelSelectSelectedId = maps[nextIndex].id
+    return maps[nextIndex]
+end
+
+function Game:scrollLevelSelect(delta)
+    if delta == 0 then
+        return
+    end
+
+    local steps = math.max(1, math.floor(math.abs(delta) + 0.5))
+    local direction = delta > 0 and 1 or -1
+    for _ = 1, steps do
+        self:moveLevelSelectSelection(direction)
+    end
 end
 
 function Game:getBuiltinShortcutMap(index)
@@ -78,6 +148,18 @@ function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
     self:refreshMaps()
+    local preferredMap = self.currentMapDescriptor
+    if preferredMap then
+        local maps = self:getLevelSelectMaps()
+        for _, descriptor in ipairs(maps) do
+            if descriptor.id == preferredMap.id then
+                self.levelSelectSelectedId = descriptor.id
+                break
+            end
+        end
+    end
+    self:getSelectedLevelMap()
+    self.levelSelectScroll = 0
 end
 
 function Game:openEditorBlank()
@@ -217,6 +299,39 @@ function Game:keypressed(key)
             self:openEditorMap(self.levelSelectIssue.map)
             return
         end
+        if key == "left" then
+            self:moveLevelSelectSelection(-1)
+            return
+        end
+        if key == "right" then
+            self:moveLevelSelectSelection(1)
+            return
+        end
+        if key == "pageup" then
+            self:scrollLevelSelect(-3)
+            return
+        end
+        if key == "pagedown" then
+            self:scrollLevelSelect(3)
+            return
+        end
+        if key == "return" or key == "space" then
+            local selectedMap = self:getSelectedLevelMap()
+            if selectedMap then
+                local ok, startError, mapData = self:startMap(selectedMap)
+                if not ok then
+                    self:showMapIssue(selectedMap, mapData, startError)
+                end
+            end
+            return
+        end
+        if key == "e" then
+            local selectedMap = self:getSelectedLevelMap()
+            if selectedMap then
+                self:openEditorMap(selectedMap)
+            end
+            return
+        end
         local requestedLevel = input.getLevelShortcut(key)
         if requestedLevel then
             local descriptor = self:getBuiltinShortcutMap(requestedLevel)
@@ -312,12 +427,16 @@ function Game:mousepressed(x, y, button)
             self.levelSelectIssue = nil
         elseif hit.kind == "issue_blocked" then
             return
+        elseif hit.kind == "select_map" then
+            self:setLevelSelectSelection(hit.map)
         elseif hit.kind == "open_map" then
+            self:setLevelSelectSelection(hit.map)
             local ok, startError, mapData = self:startMap(hit.map)
             if not ok then
                 self:showMapIssue(hit.map, mapData, startError)
             end
         elseif hit.kind == "edit_map" then
+            self:setLevelSelectSelection(hit.map)
             self:openEditorMap(hit.map)
         end
         return
@@ -366,6 +485,12 @@ function Game:mousereleased(x, y, button)
 end
 
 function Game:keyreleased(_)
+end
+
+function Game:wheelmoved(_, y)
+    if self.screen == "level_select" and not self.levelSelectIssue and y ~= 0 then
+        self:scrollLevelSelect(y > 0 and -1 or 1)
+    end
 end
 
 function Game:gamepadpressed(_, button)

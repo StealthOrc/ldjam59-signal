@@ -5,16 +5,25 @@ local mapEditor = {}
 mapEditor.__index = mapEditor
 
 local DEFAULT_CONTROL = "direct"
-local CONTROL_ORDER = { "direct", "delayed", "pump" }
+local MAX_TRIP_PASS_COUNT = 5
+local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
 local CONTROL_LABELS = {
     direct = "D",
     delayed = "T",
     pump = "P",
+    spring = "S",
+    relay = "R",
+    trip = "1X",
+    crossbar = "X",
 }
 local CONTROL_NAMES = {
     direct = "Direct Lever",
     delayed = "Delayed Button",
     pump = "Charge Lever",
+    spring = "Spring Switch",
+    relay = "Relay Dial",
+    trip = "Trip Switch",
+    crossbar = "Crossbar Dial",
 }
 local COLOR_OPTIONS = {
     { id = "blue", label = "Blue", color = { 0.33, 0.8, 0.98 } },
@@ -38,6 +47,20 @@ local DEFAULT_CONTROL_CONFIGS = {
         target = 7,
         decayDelay = 0.55,
         decayInterval = 0.2,
+    },
+    spring = {
+        label = "Spring Switch",
+        holdTime = 1.6,
+    },
+    relay = {
+        label = "Relay Dial",
+    },
+    trip = {
+        label = "Trip Switch",
+        passCount = 1,
+    },
+    crossbar = {
+        label = "Crossbar Dial",
     },
 }
 
@@ -664,6 +687,7 @@ function mapEditor:getExportData()
             x = intersection.x / self.viewport.w,
             y = intersection.y / self.viewport.h,
             control = intersection.controlType,
+            passCount = intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount,
             routes = {},
             inputEndpointIds = {},
             outputEndpointIds = {},
@@ -742,6 +766,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
             x = junctionData.x * self.viewport.w,
             y = junctionData.y * self.viewport.h,
             controlType = junctionData.control or DEFAULT_CONTROL,
+            passCount = junctionData.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount,
             activeInputIndex = junctionData.activeInputIndex or 1,
             activeOutputIndex = junctionData.activeOutputIndex or 1,
             inputEndpointIds = junctionData.inputEndpointIds,
@@ -1315,6 +1340,7 @@ function mapEditor:rebuildIntersections()
         }
         local state = self:getJunctionState(intersection, previousIntersections)
         intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
+        intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
         intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
         intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
         self.intersections[#self.intersections + 1] = intersection
@@ -1422,10 +1448,26 @@ function mapEditor:cycleIntersection(intersection)
     end
 
     intersection.controlType = CONTROL_ORDER[nextIndex]
+    if intersection.controlType == "relay" then
+        local outputCount = #(intersection.outputEndpointIds or {})
+        if outputCount > 0 then
+            intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
+        end
+    elseif intersection.controlType == "crossbar" then
+        local outputCount = #(intersection.outputEndpointIds or {})
+        if outputCount > 0 then
+            intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
+        end
+    end
     self:showStatus("Intersection switched to " .. self:getControlName(intersection.controlType) .. ".")
 end
 
 function mapEditor:cycleIntersectionOutput(intersection, direction)
+    if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
+        self:showStatus("This dial couples input and output together.")
+        return
+    end
+
     if (intersection.outputEndpointIds and #intersection.outputEndpointIds or 0) <= 1 then
         return
     end
@@ -1439,6 +1481,24 @@ function mapEditor:cycleIntersectionOutput(intersection, direction)
     end
 
     self:showStatus("Junction output switched to " .. intersection.activeOutputIndex .. ".")
+end
+
+function mapEditor:cycleIntersectionPassCount(intersection, direction)
+    if intersection.controlType ~= "trip" then
+        return false
+    end
+
+    local nextPassCount = (intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount) + direction
+    if nextPassCount < 1 then
+        nextPassCount = MAX_TRIP_PASS_COUNT
+    elseif nextPassCount > MAX_TRIP_PASS_COUNT then
+        nextPassCount = 1
+    end
+
+    intersection.passCount = nextPassCount
+    self:showStatus("Trip switch now waits for " .. nextPassCount .. " train(s).")
+    self:refreshValidation(self.currentMapName)
+    return true
 end
 
 function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
@@ -1680,6 +1740,9 @@ function mapEditor:mousepressed(x, y, button)
             self:cycleIntersectionOutput(hitIntersection, -1)
             return true
         end
+        if hitIntersection and self:cycleIntersectionPassCount(hitIntersection, 1) then
+            return true
+        end
         return false
     end
 
@@ -1864,6 +1927,7 @@ function mapEditor:serialize()
         lines[#lines + 1] = string.format("            x = %s,", formatNumber(intersection.x / self.viewport.w))
         lines[#lines + 1] = string.format("            y = %s,", formatNumber(intersection.y / self.viewport.h))
         lines[#lines + 1] = string.format("            control = %q,", intersection.controlType)
+        lines[#lines + 1] = string.format("            passCount = %d,", intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount)
         lines[#lines + 1] = string.format("            activeInputIndex = %d,", intersection.activeInputIndex or 1)
         lines[#lines + 1] = string.format("            activeOutputIndex = %d,", intersection.activeOutputIndex or 1)
         lines[#lines + 1] = "            routes = {"
@@ -1988,6 +2052,10 @@ function mapEditor:drawIntersection(intersection)
         direct = { 0.34, 0.84, 0.98 },
         delayed = { 0.99, 0.78, 0.32 },
         pump = { 0.93, 0.22, 0.84 },
+        spring = { 0.4, 0.96, 0.74 },
+        relay = { 0.56, 0.72, 0.98 },
+        trip = { 0.98, 0.6, 0.28 },
+        crossbar = { 0.92, 0.38, 0.68 },
     }
     local color = fillColor[intersection.controlType] or fillColor.direct
 
@@ -1998,14 +2066,16 @@ function mapEditor:drawIntersection(intersection)
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
     graphics.printf(
-        self:getControlLabel(intersection.controlType),
+        intersection.controlType == "trip"
+            and tostring(intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount)
+            or self:getControlLabel(intersection.controlType),
         intersection.x - radius,
         intersection.y - 8,
         radius * 2,
         "center"
     )
 
-    if #intersection.outputEndpointIds > 1 then
+    if #intersection.outputEndpointIds > 1 and intersection.controlType ~= "relay" and intersection.controlType ~= "crossbar" then
         local selectorY = intersection.y + 36
         graphics.setColor(0.08, 0.1, 0.13, 1)
         graphics.circle("fill", intersection.x, selectorY, 15)

@@ -1,6 +1,10 @@
 local world = {}
 world.__index = world
 
+local RELAY_FLASH_DURATION = 0.28
+local TRIP_FLASH_DURATION = 0.28
+local CROSSBAR_FLASH_DURATION = 0.28
+
 local function clamp(value, minValue, maxValue)
     if value < minValue then
         return minValue
@@ -448,17 +452,31 @@ function world:buildJunction(definition, existing)
             type = controlDefinition.type or "direct",
             delay = controlDefinition.delay or 0,
             target = controlDefinition.target or 0,
+            holdTime = controlDefinition.holdTime or 0,
+            passCount = math.max(1, controlDefinition.passCount or 1),
             decayDelay = controlDefinition.decayDelay or 0,
             decayInterval = controlDefinition.decayInterval or 0,
             armed = existing and existing.control.armed or false,
             remainingDelay = existing and existing.control.remainingDelay or 0,
+            remainingHold = existing and existing.control.remainingHold or 0,
+            returnInputIndex = existing and existing.control.returnInputIndex or 1,
+            remainingTrips = existing and existing.control.remainingTrips or 0,
+            pendingResetTrainId = existing and existing.control.pendingResetTrainId or nil,
+            pendingResetEdgeId = existing and existing.control.pendingResetEdgeId or nil,
             pumpCount = existing and existing.control.pumpCount or 0,
             decayHold = existing and existing.control.decayHold or 0,
             decayTimer = existing and existing.control.decayTimer or 0,
+            flashTimer = existing and existing.control.flashTimer or 0,
         },
         inputs = inputs,
         outputs = outputs,
     }
+
+    if junction.control.type == "relay" and #junction.outputs > 0 then
+        junction.activeOutputIndex = clamp(junction.activeInputIndex, 1, #junction.outputs)
+    elseif junction.control.type == "crossbar" and #junction.outputs > 0 then
+        self:syncCrossbarOutput(junction)
+    end
 
     return junction
 end
@@ -560,6 +578,16 @@ function world:getDistanceOnOccupiedEdges(occupiedEdges)
     return total
 end
 
+function world:trainOccupiesEdge(train, edgeId)
+    for _, occupiedEdgeId in ipairs(train.occupiedEdgeIds or {}) do
+        if occupiedEdgeId == edgeId then
+            return true
+        end
+    end
+
+    return false
+end
+
 function world:pointOnOccupiedEdges(occupiedEdges, distance)
     local offset = distance
     local firstEdge = occupiedEdges[1]
@@ -616,6 +644,22 @@ function world:cycleOutput(junction, direction)
     end
 end
 
+function world:syncRelayOutput(junction)
+    if #junction.outputs <= 0 then
+        return
+    end
+
+    junction.activeOutputIndex = clamp(junction.activeInputIndex, 1, #junction.outputs)
+end
+
+function world:syncCrossbarOutput(junction)
+    if #junction.outputs <= 0 then
+        return
+    end
+
+    junction.activeOutputIndex = clamp(#junction.outputs - junction.activeInputIndex + 1, 1, #junction.outputs)
+end
+
 function world:activateControl(junction)
     local control = junction.control
 
@@ -641,6 +685,43 @@ function world:activateControl(junction)
             control.decayHold = 0
             control.decayTimer = 0
         end
+        return
+    end
+
+    if control.type == "spring" then
+        control.returnInputIndex = junction.activeInputIndex
+        self:cycleInput(junction)
+        control.remainingHold = control.holdTime
+        control.armed = true
+        return
+    end
+
+    if control.type == "relay" then
+        self:cycleInput(junction)
+        self:syncRelayOutput(junction)
+        control.flashTimer = RELAY_FLASH_DURATION
+        return
+    end
+
+    if control.type == "trip" then
+        if control.remainingTrips > 0 or control.pendingResetTrainId then
+            return
+        end
+
+        control.returnInputIndex = junction.activeInputIndex
+        self:cycleInput(junction)
+        control.armed = true
+        control.remainingTrips = control.passCount
+        control.pendingResetTrainId = nil
+        control.pendingResetEdgeId = nil
+        control.flashTimer = TRIP_FLASH_DURATION
+        return
+    end
+
+    if control.type == "crossbar" then
+        self:cycleInput(junction)
+        self:syncCrossbarOutput(junction)
+        control.flashTimer = CROSSBAR_FLASH_DURATION
     end
 end
 
@@ -650,7 +731,7 @@ function world:isCrossingHit(junction, x, y)
 end
 
 function world:isOutputSelectorHit(junction, x, y)
-    if #junction.outputs <= 1 then
+    if #junction.outputs <= 1 or junction.control.type == "relay" or junction.control.type == "crossbar" then
         return false
     end
 
@@ -700,6 +781,54 @@ function world:updateControlState(junction, dt)
             control.pumpCount = control.pumpCount - 1
             control.decayTimer = control.decayTimer + control.decayInterval
         end
+        return
+    end
+
+    if control.type == "spring" and control.armed then
+        control.remainingHold = math.max(0, control.remainingHold - dt)
+        if control.remainingHold <= 0 then
+            control.armed = false
+            junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+        end
+        return
+    end
+
+    if control.type == "relay" and control.flashTimer > 0 then
+        control.flashTimer = math.max(0, control.flashTimer - dt)
+        return
+    end
+
+    if control.type == "trip" then
+        if control.flashTimer > 0 then
+            control.flashTimer = math.max(0, control.flashTimer - dt)
+        end
+
+        if control.pendingResetTrainId and control.pendingResetEdgeId then
+            local resetReady = true
+
+            for _, train in ipairs(self.trains or {}) do
+                if train.id == control.pendingResetTrainId then
+                    resetReady = train.completed or not self:trainOccupiesEdge(train, control.pendingResetEdgeId)
+                    break
+                end
+            end
+
+            if resetReady then
+                control.pendingResetTrainId = nil
+                control.pendingResetEdgeId = nil
+                control.remainingTrips = math.max(0, control.remainingTrips - 1)
+                if control.remainingTrips <= 0 then
+                    control.armed = false
+                    junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+                end
+            end
+        end
+
+        return
+    end
+
+    if control.type == "crossbar" and control.flashTimer > 0 then
+        control.flashTimer = math.max(0, control.flashTimer - dt)
     end
 end
 
@@ -734,9 +863,16 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
         return
     end
 
+    local sourceEdgeId = train.edgeId
+
     train.edgeId = outputEdge.id
     train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
     self:trimTrainOccupiedEdges(train)
+
+    if junction.control.type == "trip" and junction.control.remainingTrips > 0 and not junction.control.pendingResetTrainId then
+        junction.control.pendingResetTrainId = train.id
+        junction.control.pendingResetEdgeId = sourceEdgeId
+    end
 end
 
 function world:updateTrain(train, dt)
@@ -1067,6 +1203,94 @@ function world:drawControlOverlay(junction)
             48,
             "center"
         )
+        return
+    end
+
+    if control.type == "spring" then
+        local ratio = control.holdTime > 0 and (control.remainingHold / control.holdTime) or 0
+
+        graphics.setColor(0.4, 0.96, 0.74, 0.2)
+        graphics.circle("fill", centerX, centerY, innerRadius)
+        graphics.setColor(0.4, 0.96, 0.74, 1)
+        graphics.setLineWidth(5)
+        graphics.arc(
+            "line",
+            centerX,
+            centerY,
+            innerRadius + 4,
+            -math.pi * 0.5,
+            -math.pi * 0.5 + math.pi * 2 * ratio
+        )
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            control.armed and string.format("%.1f", control.remainingHold) or "S",
+            centerX - 20,
+            centerY - 9,
+            40,
+            "center"
+        )
+        return
+    end
+
+    if control.type == "relay" then
+        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / RELAY_FLASH_DURATION) or 0
+
+        graphics.setColor(0.56, 0.72, 0.98, 0.16 + flashAlpha * 0.18)
+        graphics.circle("fill", centerX, centerY, innerRadius)
+        graphics.setColor(0.56, 0.72, 0.98, 1)
+        graphics.setLineWidth(4)
+        graphics.circle("line", centerX, centerY, innerRadius + 3)
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
+            centerX - 28,
+            centerY - 9,
+            56,
+            "center"
+        )
+        return
+    end
+
+    if control.type == "trip" then
+        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / TRIP_FLASH_DURATION) or 0
+
+        graphics.setColor(0.98, 0.6, 0.28, 0.16 + flashAlpha * 0.18)
+        graphics.circle("fill", centerX, centerY, innerRadius)
+        graphics.setColor(0.98, 0.6, 0.28, 1)
+        graphics.setLineWidth(4)
+        graphics.circle("line", centerX, centerY, innerRadius + 3)
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
+            centerX - 18,
+            centerY - 9,
+            36,
+            "center"
+        )
+        return
+    end
+
+    if control.type == "crossbar" then
+        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / CROSSBAR_FLASH_DURATION) or 0
+
+        graphics.setColor(0.92, 0.38, 0.68, 0.16 + flashAlpha * 0.18)
+        graphics.circle("fill", centerX, centerY, innerRadius)
+        graphics.setColor(0.92, 0.38, 0.68, 1)
+        graphics.setLineWidth(4)
+        graphics.arc("line", centerX, centerY, innerRadius + 4, math.pi * 0.15, math.pi * 0.85)
+        graphics.arc("line", centerX, centerY, innerRadius + 4, math.pi * 1.15, math.pi * 1.85)
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
+            centerX - 28,
+            centerY - 9,
+            56,
+            "center"
+        )
     end
 end
 
@@ -1103,7 +1327,7 @@ function world:drawCrossing(junction)
         graphics.pop()
     end
 
-    if #junction.outputs > 1 then
+    if #junction.outputs > 1 and junction.control.type ~= "relay" and junction.control.type ~= "crossbar" then
         local selectorY = y + 36
         graphics.setColor(0.08, 0.1, 0.13, 1)
         graphics.circle("fill", x, selectorY, 15)

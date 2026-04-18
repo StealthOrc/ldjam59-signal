@@ -9,6 +9,36 @@ local COLOR_LOOKUP = {
     violet = { 0.82, 0.56, 0.98 },
 }
 
+local DEFAULT_CONTROL_CONFIGS = {
+    direct = {
+        label = "Direct Lever",
+    },
+    delayed = {
+        label = "Delayed Button",
+        delay = 2.25,
+    },
+    pump = {
+        label = "Charge Lever",
+        target = 7,
+        decayDelay = 0.55,
+        decayInterval = 0.2,
+    },
+    spring = {
+        label = "Spring Switch",
+        holdTime = 1.6,
+    },
+    relay = {
+        label = "Relay Dial",
+    },
+    trip = {
+        label = "Trip Switch",
+        passCount = 1,
+    },
+    crossbar = {
+        label = "Crossbar Dial",
+    },
+}
+
 local function distanceSquared(ax, ay, bx, by)
     local dx = ax - bx
     local dy = ay - by
@@ -39,6 +69,18 @@ local function darkerColor(color)
         color[2] * 0.42,
         color[3] * 0.42,
     }
+end
+
+local function copyControlConfig(controlType)
+    local config = DEFAULT_CONTROL_CONFIGS[controlType] or DEFAULT_CONTROL_CONFIGS.direct
+    local copy = {}
+
+    for key, value in pairs(config) do
+        copy[key] = value
+    end
+
+    copy.type = controlType or "direct"
+    return copy
 end
 
 local function closestPointOnSegment(px, py, a, b)
@@ -319,19 +361,14 @@ function authoredMap.validateEditorMap(mapName, editorData)
             y = junctionData.y,
             activeInputIndex = junctionData.activeInputIndex or 1,
             activeOutputIndex = junctionData.activeOutputIndex or 1,
-            control = {
-                type = junctionData.control or "direct",
-                label = junctionData.control == "delayed" and "Delayed Button"
-                    or junctionData.control == "pump" and "Charge Lever"
-                    or "Direct Lever",
-                delay = junctionData.control == "delayed" and 2.25 or nil,
-                target = junctionData.control == "pump" and 7 or nil,
-                decayDelay = junctionData.control == "pump" and 0.55 or nil,
-                decayInterval = junctionData.control == "pump" and 0.2 or nil,
-            },
+            control = copyControlConfig(junctionData.control or "direct"),
             inputEdgeIds = {},
             outputEdgeIds = {},
         }
+
+        if junctionData.passCount then
+            junction.control.passCount = junctionData.passCount
+        end
 
         junctionLookup[junctionId] = junction
         orderedJunctions[#orderedJunctions + 1] = junction

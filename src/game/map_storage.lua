@@ -147,6 +147,8 @@ local function buildDescriptor(source, fileName, data)
         hasLevel = data.level ~= nil,
         hasErrors = #((data.validationErrors) or {}) > 0,
         isTemplate = source == "builtin" and data.template == true,
+        previewLevel = data.level,
+        previewDescription = data.previewDescription or (data.level and (data.level.previewDescription or data.level.description)) or nil,
     }
 end
 
