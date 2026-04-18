@@ -68,6 +68,7 @@ local function buildTuning()
         wallHeadingKick = math.rad(3.5),
         wallSlipKick = 110,
         fuelCapacity = 100,
+        runTimeLimitSeconds = 30,
         lowFuelWarningThreshold = 0.2,
         fuelBurnThrottle = 10.5,
         fuelBurnRolling = 1.15,
@@ -253,6 +254,8 @@ function Game.new()
     self.runDistance = 0
     self.lastRunCoinsEarned = 0
     self.lastRunMetersDriven = 0
+    self.runTimeRemaining = self.tuning.runTimeLimitSeconds
+    self.finishReason = nil
     self.state = "title"
     self.activeSignalTower = nil
     self.signalStrength = 0
@@ -524,9 +527,10 @@ function Game:awardRunCoins()
     self:saveProgression()
 end
 
-function Game:finishRun()
+function Game:finishRun(reason)
     self:stopShopHold()
     self:updateEmptyFuelAlarm(false)
+    self.finishReason = reason or self.finishReason or "fuel"
     self.state = "finished"
     self:awardRunCoins()
     for _, beep in ipairs(self.lowFuelBeeps) do
@@ -750,6 +754,8 @@ function Game:resetRun()
     car.reset(self.car, self.tuning)
     self.runDistance = 0
     self.lastRunMetersDriven = 0
+    self.runTimeRemaining = self.tuning.runTimeLimitSeconds
+    self.finishReason = nil
     self.activeSignalTower = nil
     self.signalStrength = 0
     self.activeBoostSignal = nil
@@ -782,6 +788,7 @@ function Game:update(dt)
 
     local intent = input.getDriveIntent()
     car.update(self.car, intent, dt, self.tuning)
+    self.runTimeRemaining = math.max(0, self.runTimeRemaining - dt)
     self.world:resolveBarriers(self.car, self.tuning)
     self.camera:update(self.car, dt, self.viewport, self.tuning)
     self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
@@ -804,12 +811,14 @@ function Game:update(dt)
     self:updateLowFuelAudio(dt)
     self:updateGearAudio(intent)
 
-    if self.state == "running" and self.car.fuel <= 0 then
-        self.state = "coasting"
+    if self.runTimeRemaining <= 0 then
+        self:finishRun("time")
+        return
     end
 
-    if self.state == "coasting" and self.car.speed <= self.tuning.finishSpeed then
-        self:finishRun()
+    if self.car.fuel <= 0 then
+        self:finishRun("fuel")
+        return
     end
 end
 

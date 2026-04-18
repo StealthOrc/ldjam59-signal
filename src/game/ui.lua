@@ -112,6 +112,14 @@ local function drawStats(game)
     drawRun(font, string.format("Coins     %d", game.progression.coins), width - 246, 116, 1, { 0.98, 0.88, 0.42, 1 })
 end
 
+local function drawRunTimer(game)
+    local font = game.uiFont
+    local width = game.viewport.w
+    local timerText = string.format("%.2f", game.runTimeRemaining or 0)
+
+    drawAligned(font, timerText, width * 0.5 - 180, 20, 360, "center", 4, { 0.97, 0.97, 0.99, 1 })
+end
+
 local function drawCenterOverlay(title, subtitle, footer, viewport)
     local graphics = love.graphics
     local font = viewport.font
@@ -124,29 +132,6 @@ local function drawCenterOverlay(title, subtitle, footer, viewport)
     drawAligned(font, title, centerX - 220, centerY - 58, 440, "center", 2, { 0.95, 0.97, 0.99, 1 })
     drawWrapped(font, subtitle, centerX - 220, centerY - 6, 440, "center", 1, { 0.86, 0.88, 0.92, 1 }, 6)
     drawAligned(font, footer, centerX - 220, centerY + 58, 440, "center", 1, { 0.96, 0.67, 0.22, 1 })
-end
-
-local function drawShiftPulse(game)
-    local graphics = love.graphics
-    local font = game.uiFont
-    local alpha = game.car.shiftFlashTimer / math.max(game.tuning.shiftFlashDuration, 0.01)
-
-    if alpha <= 0 then
-        return
-    end
-
-    graphics.setColor(0, 0, 0, 0.18 + alpha * 0.22)
-    graphics.rectangle("fill", game.viewport.w * 0.5 - 92, 22, 184, 34, 10, 10)
-    drawAligned(
-        font,
-        string.format("SHIFT %d", game.car.currentGear),
-        game.viewport.w * 0.5 - 82,
-        31,
-        164,
-        "center",
-        1,
-        { 0.98, 0.8, 0.3, 0.45 + alpha * 0.55 }
-    )
 end
 
 local function drawShop(game)
@@ -232,7 +217,9 @@ function ui.draw(game)
 
     drawFuelBar(game)
     drawStats(game)
-    drawShiftPulse(game)
+    if game.state == "running" or game.state == "coasting" or game.state == "finished" then
+        drawRunTimer(game)
+    end
 
     drawRun(font, "WASD to drive, Space to handbrake, Left stick + RT/LT + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
 
@@ -248,10 +235,14 @@ function ui.draw(game)
         graphics.rectangle("fill", game.viewport.w * 0.5 - 160, 20, 320, 44, 12, 12)
         drawAligned(font, "Fuel empty - coast it out", game.viewport.w * 0.5 - 150, 33, 300, "center", 1, { 0.95, 0.73, 0.2, 1 })
     elseif game.state == "finished" then
+        local finishText = game.finishReason == "time"
+            and "Time ran out."
+            or "Fuel ran out."
         drawCenterOverlay(
             "Out of motion",
             string.format(
-                "You coasted %.0f meters north and earned %d coins. Best this session: %.0f meters.",
+                "%s You reached %.0f meters north and earned %d coins. Best this session: %.0f meters.",
+                finishText,
                 game:unitsToMeters(game.runDistance),
                 game.lastRunCoinsEarned,
                 game:unitsToMeters(game.bestDistance)
