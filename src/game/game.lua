@@ -262,6 +262,9 @@ function Game.new()
     self.activeSignalTower = nil
     self.signalStrength = 0
     self.activeBoostSignal = nil
+    self.nextSignalTower = nil
+    self.nextSignalDistanceMeters = 0
+    self.nextSignalDirection = "ahead"
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
@@ -830,6 +833,9 @@ function Game:resetRun()
     self.activeSignalTower = nil
     self.signalStrength = 0
     self.activeBoostSignal = nil
+    self.nextSignalTower = nil
+    self.nextSignalDistanceMeters = 0
+    self.nextSignalDirection = "ahead"
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
@@ -868,6 +874,24 @@ function Game:update(dt)
     local signalTower, signalStrength = self.world:getSignalAt(self.car.x, self.car.y)
     self.activeSignalTower = signalTower
     self.signalStrength = signalStrength or 0
+
+    local nextSignalTower = self.world:getNextTowerAhead(self.car.y)
+    self.nextSignalTower = nextSignalTower
+    self.nextSignalDistanceMeters = 0
+    self.nextSignalDirection = "ahead"
+
+    if nextSignalTower then
+        local dx = nextSignalTower.x - self.car.x
+        local dy = nextSignalTower.y - self.car.y
+        self.nextSignalDistanceMeters = self:unitsToMeters(math.sqrt(dx * dx + dy * dy))
+        if math.abs(dx) <= self.car.collisionRadius * 0.5 then
+            self.nextSignalDirection = "ahead"
+        elseif dx < 0 then
+            self.nextSignalDirection = "left"
+        else
+            self.nextSignalDirection = "right"
+        end
+    end
 
     if signalTower then
         local signalFuelPerSecond = signalTower.fuelPerSecond + self:getSignalFuelBonusPerSecond()

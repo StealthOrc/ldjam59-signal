@@ -163,6 +163,10 @@ function world:update(carY, viewport, tuning, progression)
         self:spawnTower(self.nextTowerIndex, tuning)
     end
 
+    while not self:getNextTowerAhead(carY) do
+        self:spawnTower(self.nextTowerIndex, tuning)
+    end
+
     for index = #self.towers, 1, -1 do
         if self.towers[index].y > bottom + viewport.h * 0.7 then
             table.remove(self.towers, index)
@@ -223,6 +227,21 @@ function world:getSignalAt(carX, carY)
     end
 
     return bestTower, bestStrength
+end
+
+function world:getNextTowerAhead(carY)
+    local nextTower
+    local closestNorthDistance
+
+    for _, tower in ipairs(self.towers) do
+        local northDistance = carY - tower.y
+        if northDistance > 0 and (not closestNorthDistance or northDistance < closestNorthDistance) then
+            nextTower = tower
+            closestNorthDistance = northDistance
+        end
+    end
+
+    return nextTower, closestNorthDistance
 end
 
 function world:getBoostSignalAt(carX, carY)

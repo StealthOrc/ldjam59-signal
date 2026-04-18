@@ -127,6 +127,107 @@ local function drawRunTimer(game)
     drawAligned(font, timerText, width * 0.5 - 180, 20, 360, "center", 4, { 0.97, 0.97, 0.99, 1 })
 end
 
+local function worldToScreen(game, worldX, worldY)
+    local zoom = game.camera.zoom
+    local screenX = (worldX - game.camera.x) * zoom + game.viewport.w * 0.5
+    local screenY = (worldY - game.camera.y) * zoom + game.viewport.h * 0.5
+    return screenX, screenY
+end
+
+local function normalize(x, y)
+    local length = math.sqrt(x * x + y * y)
+    if length <= 0.0001 then
+        return 0, -1
+    end
+    return x / length, y / length
+end
+
+local function drawArrowIcon(x, y, angle, color)
+    local graphics = love.graphics
+
+    graphics.push()
+    graphics.translate(x, y)
+    graphics.rotate(angle)
+    graphics.setColor(color)
+    graphics.polygon(
+        "fill",
+        0, -8,
+        -7, 6,
+        -2, 3,
+        -2, 10,
+        2, 10,
+        2, 3,
+        7, 6
+    )
+    graphics.pop()
+end
+
+local function drawNextSignalBadge(game)
+    local tower = game.nextSignalTower
+    if not tower then
+        return
+    end
+
+    local graphics = love.graphics
+    local font = game.uiFont
+    local badgeWidth = 84
+    local badgeHeight = 48
+    local borderInset = 18
+    local anchorOffset = 34
+    local towerScreenX, towerScreenY = worldToScreen(game, tower.x, tower.y)
+    local minX = borderInset
+    local minY = borderInset
+    local maxX = game.viewport.w - borderInset
+    local maxY = game.viewport.h - borderInset
+    local visible = towerScreenX >= minX
+        and towerScreenX <= maxX
+        and towerScreenY >= minY
+        and towerScreenY <= maxY
+
+    local badgeCenterX = towerScreenX
+    local badgeCenterY = towerScreenY + anchorOffset
+
+    if not visible then
+        local dx = towerScreenX - game.viewport.w * 0.5
+        local dy = towerScreenY - game.viewport.h * 0.5
+        local scale = 1
+
+        if math.abs(dx) > 0.0001 then
+            scale = math.min(scale, ((game.viewport.w * 0.5) - borderInset) / math.abs(dx))
+        end
+        if math.abs(dy) > 0.0001 then
+            scale = math.min(scale, ((game.viewport.h * 0.5) - borderInset) / math.abs(dy))
+        end
+
+        badgeCenterX = game.viewport.w * 0.5 + dx * scale
+        badgeCenterY = game.viewport.h * 0.5 + dy * scale
+    end
+
+    local badgeX = math.max(borderInset, math.min(game.viewport.w - borderInset - badgeWidth, badgeCenterX - badgeWidth * 0.5))
+    local badgeY = math.max(borderInset, math.min(game.viewport.h - borderInset - badgeHeight, badgeCenterY - badgeHeight * 0.5))
+    local badgeVisualCenterX = badgeX + badgeWidth * 0.5
+    local badgeVisualCenterY = badgeY + badgeHeight * 0.5
+    local dirX, dirY = normalize(towerScreenX - badgeVisualCenterX, towerScreenY - badgeVisualCenterY)
+    local arrowAngle = math.atan(dirY, dirX) + math.pi * 0.5
+
+    graphics.setColor(0, 0, 0, 0.48)
+    graphics.rectangle("fill", badgeX, badgeY, badgeWidth, badgeHeight, 12, 12)
+    graphics.setColor(0.5, 0.92, 0.98, 0.85)
+    graphics.rectangle("line", badgeX, badgeY, badgeWidth, badgeHeight, 12, 12)
+
+    drawArrowIcon(badgeX + badgeWidth * 0.5, badgeY + 14, arrowAngle, { 0.97, 0.97, 0.99, 1 })
+    drawAligned(
+        font,
+        string.format("%.0f m", game.nextSignalDistanceMeters),
+        badgeX + 8,
+        badgeY + 29,
+        badgeWidth - 16,
+        "center",
+        1,
+        { 0.98, 0.88, 0.42, 1 }
+    )
+end
+
 local function drawCenterOverlay(title, subtitle, footer, viewport)
     local graphics = love.graphics
     local font = viewport.font
@@ -244,6 +345,7 @@ function ui.draw(game)
     drawStats(game)
     if game.state == "running" or game.state == "coasting" or game.state == "finished" then
         drawRunTimer(game)
+        drawNextSignalBadge(game)
     end
 
     drawRun(font, "WASD to drive, Space to handbrake, Left stick + RT/LT + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
