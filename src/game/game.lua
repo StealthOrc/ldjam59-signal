@@ -29,7 +29,7 @@ local function buildTuning()
         gripSpeedWindow = 360,
         handbrakeGripMultiplier = 0.26,
         handbrakeDrag = 22,
-        corridorHalfWidth = 260,
+        corridorHalfWidth = 1040,
         barrierThickness = 56,
         segmentHeight = 160,
         worldDrawPadding = 220,
