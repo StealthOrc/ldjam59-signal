@@ -401,6 +401,35 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
     graphics.printf(footer, 0, game.viewport.h * 0.5 + 72, game.viewport.w, "center")
 end
 
+local function drawPlayOverlayPanel(game, title, lines, accentColor)
+    local graphics = love.graphics
+    local panelX = 24
+    local panelY = 76
+    local panelW = 460
+    local panelH = 212
+    local lineHeight = 24
+    local textX = panelX + 20
+    local textY = panelY + 54
+    local textW = panelW - 40
+    local accent = accentColor or { 0.48, 0.92, 0.62 }
+
+    graphics.setColor(0, 0, 0, 0.58)
+    graphics.rectangle("fill", panelX, panelY, panelW, panelH, 18, 18)
+    graphics.setColor(accent[1], accent[2], accent[3], 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle("line", panelX, panelY, panelW, panelH, 18, 18)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(title, textX, panelY + 18)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    for lineIndex, line in ipairs(lines) do
+        graphics.printf(line, textX, textY + (lineIndex - 1) * lineHeight, textW)
+    end
+end
+
 function ui.getMenuActionAt(game, x, y)
     for _, rect in ipairs(getMenuButtons(game)) do
         if pointInRect(x, y, rect) then
@@ -688,6 +717,8 @@ function ui.drawPlay(game)
         game.fonts.small
     )
 
+    graphics.setColor(0, 0, 0, 0.3)
+    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
     graphics.setColor(0.8, 0.84, 0.9, 0.82)
     graphics.printf("Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart", 0, game.viewport.h - 42, game.viewport.w, "center")
 
