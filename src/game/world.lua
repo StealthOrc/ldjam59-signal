@@ -1,3 +1,5 @@
+local levels = require("src.game.levels")
+
 local world = {}
 world.__index = world
 
@@ -110,14 +112,7 @@ local function pointOnPath(path, distance)
     return last.b.x, last.b.y, angleBetweenPoints(last.a, last.b)
 end
 
-local function trackLabel(trackId)
-    if trackId == 1 then
-        return "Blue"
-    end
-    return "Amber"
-end
-
-function world.new(viewportW, viewportH)
+function world.new(viewportW, viewportH, levelIndex)
     local self = setmetatable({}, world)
 
     self.viewport = { w = viewportW, h = viewportH }
@@ -129,22 +124,33 @@ function world.new(viewportW, viewportH)
     self.carriageGap = 12
     self.carriageCount = 4
     self.exitPadding = 220
-    self.activeTrackId = 1
-    self.switchPulse = 0
-    self.tracks = {}
-    self.trains = {}
     self.crossingRadius = 40
     self.collisionPoint = nil
-    self.failed = false
+    self.failureReason = nil
+    self.timeRemaining = nil
+    self.levelIndex = clamp(levelIndex or 1, 1, #levels)
+    self.level = levels[self.levelIndex]
+    self.junctions = {}
+    self.junctionOrder = {}
+    self.trains = {}
 
-    self:resize(viewportW, viewportH)
+    self:initializeLevel()
 
     return self
 end
 
-function world:buildTrack(trackId, startX, mergeX, mergeY, exitY, color, darkColor)
+function world:getLevelCount()
+    return #levels
+end
+
+function world:getLevel()
+    return self.level
+end
+
+function world:buildTrack(branchDef, mergeX, mergeY, exitY)
     local startY = -120
     local bendY = mergeY - self.viewport.h * 0.22
+    local startX = self.viewport.w * branchDef.startX
     local branchPath = buildPolyline({
         { x = startX, y = startY },
         { x = startX, y = bendY },
@@ -169,81 +175,181 @@ function world:buildTrack(trackId, startX, mergeX, mergeY, exitY, color, darkCol
     local signalX, signalY = pointOnPath(fullPath, signalDistance)
 
     return {
-        id = trackId,
-        label = trackLabel(trackId),
-        color = color,
-        darkColor = darkColor,
+        id = branchDef.id,
+        label = branchDef.label,
+        color = branchDef.color,
+        darkColor = branchDef.darkColor,
         branchPath = branchPath,
         sharedPath = sharedPath,
         fullPath = fullPath,
         branchLength = branchPath.length,
-        signalDistance = signalDistance,
         signalPoint = { x = signalX, y = signalY },
         stopDistance = stopDistance,
         stopPoint = { x = stopX, y = stopY },
     }
 end
 
-function world:createTrain(track, initialProgress, speedScale)
-    return {
-        trackId = track.id,
-        track = track,
-        progress = initialProgress,
-        speed = self.trainSpeed * speedScale,
-        currentSpeed = 0,
-        color = track.color,
-        darkColor = track.darkColor,
-        completed = false,
+function world:buildJunction(definition, existing)
+    local mergeX = self.viewport.w * definition.mergeX
+    local mergeY = self.viewport.h * definition.mergeY
+    local exitY = self.viewport.h * (definition.exitY or 1.25)
+    local controlDefinition = definition.control or { type = "direct" }
+
+    local junction = {
+        id = definition.id,
+        label = controlDefinition.label or "Control",
+        mergePoint = { x = mergeX, y = mergeY },
+        crossingRadius = self.crossingRadius,
+        activeBranch = existing and existing.activeBranch or definition.activeBranch or 1,
+        control = {
+            type = controlDefinition.type or "direct",
+            delay = controlDefinition.delay or 0,
+            target = controlDefinition.target or 0,
+            decayDelay = controlDefinition.decayDelay or 0,
+            decayInterval = controlDefinition.decayInterval or 0,
+            armed = existing and existing.control.armed or false,
+            remainingDelay = existing and existing.control.remainingDelay or 0,
+            pumpCount = existing and existing.control.pumpCount or 0,
+            decayHold = existing and existing.control.decayHold or 0,
+            decayTimer = existing and existing.control.decayTimer or 0,
+        },
+        branches = {},
     }
+
+    for branchIndex, branchDefinition in ipairs(definition.branches) do
+        junction.branches[branchIndex] = self:buildTrack(branchDefinition, mergeX, mergeY, exitY)
+    end
+
+    return junction
+end
+
+function world:initializeLevel()
+    local previousJunctions = self.junctions
+    self.junctions = {}
+    self.junctionOrder = {}
+
+    for _, junctionDefinition in ipairs(self.level.junctions) do
+        local existing = previousJunctions[junctionDefinition.id]
+        local junction = self:buildJunction(junctionDefinition, existing)
+        self.junctions[junction.id] = junction
+        self.junctionOrder[#self.junctionOrder + 1] = junction
+    end
+
+    if #self.trains == 0 then
+        for _, trainDefinition in ipairs(self.level.trains) do
+            local junction = self.junctions[trainDefinition.junctionId]
+            local branch = junction.branches[trainDefinition.branchIndex]
+            self.trains[#self.trains + 1] = {
+                id = trainDefinition.id,
+                junctionId = trainDefinition.junctionId,
+                branchIndex = trainDefinition.branchIndex,
+                track = branch,
+                progress = trainDefinition.progress,
+                speed = self.trainSpeed * (trainDefinition.speedScale or 1),
+                currentSpeed = 0,
+                color = branch.color,
+                darkColor = branch.darkColor,
+                completed = false,
+            }
+        end
+    else
+        for _, train in ipairs(self.trains) do
+            local junction = self.junctions[train.junctionId]
+            local branch = junction.branches[train.branchIndex]
+            train.track = branch
+            train.color = branch.color
+            train.darkColor = branch.darkColor
+        end
+    end
+
+    self.timeRemaining = self.level.timeLimit
+    self.collisionPoint = nil
+    self.failureReason = nil
 end
 
 function world:resize(viewportW, viewportH)
     self.viewport.w = viewportW
     self.viewport.h = viewportH
-
-    local mergeX = viewportW * 0.5
-    local mergeY = viewportH * 0.48
-    local exitY = viewportH + 180
-    self.mergePoint = { x = mergeX, y = mergeY }
     self.crossingRadius = math.max(34, math.min(viewportW, viewportH) * 0.045)
+    self:initializeLevel()
+end
 
-    self.tracks = {
-        self:buildTrack(1, viewportW * 0.33, mergeX, mergeY, exitY, { 0.33, 0.8, 0.98 }, { 0.12, 0.32, 0.44 }),
-        self:buildTrack(2, viewportW * 0.67, mergeX, mergeY, exitY, { 0.96, 0.7, 0.28 }, { 0.42, 0.24, 0.08 }),
-    }
-
-    if #self.trains == 0 then
-        self.trains = {
-            self:createTrain(self.tracks[1], -70, 1),
-            self:createTrain(self.tracks[2], -210, 0.93),
-        }
+function world:toggleJunction(junction)
+    if junction.activeBranch == 1 then
+        junction.activeBranch = 2
     else
-        for _, train in ipairs(self.trains) do
-            train.track = self.tracks[train.trackId]
-            train.color = train.track.color
-            train.darkColor = train.track.darkColor
+        junction.activeBranch = 1
+    end
+end
+
+function world:activateControl(junction)
+    local control = junction.control
+
+    if control.type == "direct" then
+        self:toggleJunction(junction)
+        return
+    end
+
+    if control.type == "delayed" then
+        control.armed = true
+        control.remainingDelay = control.delay
+        return
+    end
+
+    if control.type == "pump" then
+        control.pumpCount = math.min(control.target, control.pumpCount + 1)
+        control.decayHold = control.decayDelay
+        control.decayTimer = control.decayInterval
+
+        if control.pumpCount >= control.target then
+            self:toggleJunction(junction)
+            control.pumpCount = 0
+            control.decayHold = 0
+            control.decayTimer = 0
         end
     end
 end
 
-function world:setActiveTrack(trackId)
-    local nextTrackId = clamp(trackId, 1, #self.tracks)
-    if nextTrackId ~= self.activeTrackId then
-        self.activeTrackId = nextTrackId
-        self.switchPulse = 0.22
-    end
+function world:isCrossingHit(junction, x, y)
+    return distanceSquared(x, y, junction.mergePoint.x, junction.mergePoint.y)
+        <= junction.crossingRadius * junction.crossingRadius
 end
 
-function world:toggleTrack()
-    if self.activeTrackId == 1 then
-        self:setActiveTrack(2)
-    else
-        self:setActiveTrack(1)
+function world:handleClick(x, y)
+    for _, junction in ipairs(self.junctionOrder) do
+        if self:isCrossingHit(junction, x, y) then
+            self:activateControl(junction)
+            return true
+        end
     end
+
+    return false
 end
 
-function world:isCrossingHit(x, y)
-    return distanceSquared(x, y, self.mergePoint.x, self.mergePoint.y) <= self.crossingRadius * self.crossingRadius
+function world:updateControlState(junction, dt)
+    local control = junction.control
+
+    if control.type == "delayed" and control.armed then
+        control.remainingDelay = math.max(0, control.remainingDelay - dt)
+        if control.remainingDelay <= 0 then
+            control.armed = false
+            self:toggleJunction(junction)
+        end
+        return
+    end
+
+    if control.type == "pump" and control.pumpCount > 0 then
+        if control.decayHold > 0 then
+            control.decayHold = math.max(0, control.decayHold - dt)
+            return
+        end
+
+        control.decayTimer = control.decayTimer - dt
+        while control.decayTimer <= 0 and control.pumpCount > 0 do
+            control.pumpCount = control.pumpCount - 1
+            control.decayTimer = control.decayTimer + control.decayInterval
+        end
+    end
 end
 
 function world:getDesiredLeadDistance(train)
@@ -251,7 +357,8 @@ function world:getDesiredLeadDistance(train)
         return nil
     end
 
-    if train.trackId ~= self.activeTrackId then
+    local junction = self.junctions[train.junctionId]
+    if train.branchIndex ~= junction.activeBranch then
         return train.track.stopDistance
     end
 
@@ -285,7 +392,6 @@ function world:updateTrain(train, dt)
     end
 
     local nextProgress = train.progress + train.currentSpeed * dt
-
     if desiredStopDistance and nextProgress > desiredStopDistance then
         nextProgress = desiredStopDistance
         train.currentSpeed = 0
@@ -326,7 +432,6 @@ function world:updateCollisionState()
     local collisionRadiusSquared = collisionRadius * collisionRadius
 
     self.collisionPoint = nil
-    self.failed = false
 
     for firstIndex = 1, #self.trains - 1 do
         local firstTrain = self.trains[firstIndex]
@@ -339,7 +444,7 @@ function world:updateCollisionState()
             for _, firstCar in ipairs(firstCars) do
                 for _, secondCar in ipairs(secondCars) do
                     if distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
-                        self.failed = true
+                        self.failureReason = "collision"
                         self.collisionPoint = {
                             x = (firstCar.x + secondCar.x) * 0.5,
                             y = (firstCar.y + secondCar.y) * 0.5,
@@ -353,22 +458,33 @@ function world:updateCollisionState()
 end
 
 function world:update(dt)
-    if self.failed then
+    if self.failureReason or self:isLevelComplete() then
         return
     end
 
-    self.switchPulse = math.max(0, self.switchPulse - dt)
+    if self.timeRemaining then
+        self.timeRemaining = math.max(0, self.timeRemaining - dt)
+    end
+
+    for _, junction in ipairs(self.junctionOrder) do
+        self:updateControlState(junction, dt)
+    end
 
     for _, train in ipairs(self.trains) do
-        train.track = self.tracks[train.trackId]
+        local junction = self.junctions[train.junctionId]
+        train.track = junction.branches[train.branchIndex]
         self:updateTrain(train, dt)
     end
 
     self:updateCollisionState()
+
+    if not self.failureReason and self.timeRemaining and self.timeRemaining <= 0 and not self:isLevelComplete() then
+        self.failureReason = "timeout"
+    end
 end
 
-function world:hasCollision()
-    return self.failed
+function world:getFailureReason()
+    return self.failureReason
 end
 
 function world:isLevelComplete()
@@ -390,13 +506,19 @@ function world:countCompletedTrains()
     return completedCount
 end
 
-function world:getActiveTrack()
-    return self.tracks[self.activeTrackId]
+function world:getActiveRouteSummary()
+    local segments = {}
+
+    for _, junction in ipairs(self.junctionOrder) do
+        local activeBranch = junction.branches[junction.activeBranch]
+        segments[#segments + 1] = string.format("%s: %s", junction.label, activeBranch.label)
+    end
+
+    return table.concat(segments, "  |  ")
 end
 
-function world:drawBranch(track)
+function world:drawBranch(track, isActive)
     local graphics = love.graphics
-    local isActive = track.id == self.activeTrackId
     local branchColor = isActive and track.color or track.darkColor
     local branchAlpha = isActive and 0.96 or 0.72
     local branchPoints = track.branchPath.points
@@ -419,24 +541,9 @@ function world:drawBranch(track)
     )
 end
 
-function world:drawTrackSignal(track)
+function world:drawSharedTrack(junction)
     local graphics = love.graphics
-    local signalPoint = track.signalPoint
-    local pulse = 0.5 + self.switchPulse * 2.5
-    local signalRadius = 13 + pulse * 6
-
-    graphics.setLineWidth(6)
-    if track.id == self.activeTrackId then
-        graphics.setColor(0.42, 0.92, 0.54, 1)
-    else
-        graphics.setColor(0.92, 0.26, 0.2, 1)
-    end
-    graphics.circle("fill", signalPoint.x, signalPoint.y, signalRadius)
-end
-
-function world:drawSharedTrack()
-    local graphics = love.graphics
-    local activeTrack = self:getActiveTrack()
+    local activeTrack = junction.branches[junction.activeBranch]
     local sharedPoints = activeTrack.sharedPath.points
 
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
@@ -448,32 +555,112 @@ function world:drawSharedTrack()
     graphics.line(sharedPoints[1].x, sharedPoints[1].y, sharedPoints[2].x, sharedPoints[2].y)
 end
 
-function world:drawCrossing()
+function world:drawControlOverlay(junction)
     local graphics = love.graphics
-    local activeTrack = self:getActiveTrack()
-    local pulse = 0.75 + self.switchPulse * 3
-    local outerRadius = self.crossingRadius + pulse * 5
-    local x = self.mergePoint.x
-    local y = self.mergePoint.y
+    local control = junction.control
+    local centerX = junction.mergePoint.x
+    local centerY = junction.mergePoint.y
+    local innerRadius = junction.crossingRadius - 10
+
+    if control.type == "delayed" then
+        local ratio = 0
+        if control.armed and control.delay > 0 then
+            ratio = 1 - (control.remainingDelay / control.delay)
+        end
+
+        graphics.setColor(0.99, 0.77, 0.32, 0.24)
+        graphics.circle("fill", centerX, centerY, innerRadius)
+        graphics.setColor(0.99, 0.77, 0.32, 1)
+        graphics.setLineWidth(5)
+        graphics.arc(
+            "line",
+            centerX,
+            centerY,
+            innerRadius + 4,
+            -math.pi * 0.5,
+            -math.pi * 0.5 + math.pi * 2 * ratio
+        )
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            control.armed and string.format("%.1f", control.remainingDelay) or "D",
+            centerX - 20,
+            centerY - 9,
+            40,
+            "center"
+        )
+        return
+    end
+
+    if control.type == "pump" then
+        local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
+        local startAngle = math.pi * 1.1
+        local endAngle = math.pi * 1.9
+
+        graphics.setColor(0.97, 0.46, 0.28, 0.18)
+        graphics.setLineWidth(7)
+        graphics.arc("line", centerX, centerY, innerRadius + 5, startAngle, endAngle)
+
+        if ratio > 0 then
+            graphics.setColor(0.97, 0.46, 0.28, 1)
+            graphics.arc("line", centerX, centerY, innerRadius + 5, startAngle, startAngle + (endAngle - startAngle) * ratio)
+        end
+
+        love.graphics.setColor(0.05, 0.06, 0.08, 1)
+        love.graphics.printf(
+            string.format("%d", control.pumpCount),
+            centerX - 20,
+            centerY - 9,
+            40,
+            "center"
+        )
+    end
+end
+
+function world:drawCrossing(junction)
+    local graphics = love.graphics
+    local activeTrack = junction.branches[junction.activeBranch]
+    local pulse = 0.75 + 0.22 * math.sin(love.timer.getTime() * 4.2)
+    local outerRadius = junction.crossingRadius + pulse * 4
+    local x = junction.mergePoint.x
+    local y = junction.mergePoint.y
 
     graphics.setColor(0.06, 0.08, 0.1, 1)
-    graphics.circle("fill", x, y, self.crossingRadius + 18)
+    graphics.circle("fill", x, y, junction.crossingRadius + 18)
 
     graphics.setColor(activeTrack.color[1], activeTrack.color[2], activeTrack.color[3], 0.18)
     graphics.circle("fill", x, y, outerRadius)
 
     graphics.setColor(activeTrack.color[1], activeTrack.color[2], activeTrack.color[3], 1)
     graphics.setLineWidth(4)
-    graphics.circle("line", x, y, self.crossingRadius)
+    graphics.circle("line", x, y, junction.crossingRadius)
 
     graphics.push()
     graphics.translate(x, y)
-    graphics.rotate(self.activeTrackId == 1 and -0.78 or 0.78)
+    graphics.rotate(junction.activeBranch == 1 and -0.78 or 0.78)
     graphics.setColor(0.98, 0.99, 1, 1)
     graphics.rectangle("fill", -8, -26, 16, 52, 6, 6)
     graphics.setColor(activeTrack.color[1], activeTrack.color[2], activeTrack.color[3], 1)
     graphics.circle("fill", 0, -28, 11)
     graphics.pop()
+
+    self:drawControlOverlay(junction)
+end
+
+function world:drawTrackSignal(junction, branchIndex)
+    local graphics = love.graphics
+    local track = junction.branches[branchIndex]
+    local signalPoint = track.signalPoint
+    local pulse = 0.5 + 0.5 * math.sin(love.timer.getTime() * 6 + branchIndex)
+    local signalRadius = 12 + pulse * 3
+
+    graphics.setLineWidth(6)
+    if branchIndex == junction.activeBranch then
+        graphics.setColor(0.42, 0.92, 0.54, 1)
+    else
+        graphics.setColor(0.92, 0.26, 0.2, 1)
+    end
+    graphics.circle("fill", signalPoint.x, signalPoint.y, signalRadius)
 end
 
 function world:drawTrain(train)
@@ -524,22 +711,20 @@ function world:draw()
     graphics.setColor(0.08, 0.1, 0.12, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
 
-    self:drawSharedTrack()
-    self:drawBranch(self.tracks[1])
-    self:drawBranch(self.tracks[2])
-    self:drawCrossing()
-    self:drawTrackSignal(self.tracks[1])
-    self:drawTrackSignal(self.tracks[2])
+    for _, junction in ipairs(self.junctionOrder) do
+        self:drawSharedTrack(junction)
+        self:drawBranch(junction.branches[1], junction.activeBranch == 1)
+        self:drawBranch(junction.branches[2], junction.activeBranch == 2)
+        self:drawCrossing(junction)
+        self:drawTrackSignal(junction, 1)
+        self:drawTrackSignal(junction, 2)
+    end
 
     for _, train in ipairs(self.trains) do
         self:drawTrain(train)
     end
 
     self:drawCollisionMarker()
-end
-
-function world:getActiveTrackLabel()
-    return self:getActiveTrack().label
 end
 
 return world

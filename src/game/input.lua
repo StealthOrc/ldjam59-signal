@@ -1,16 +1,16 @@
 local input = {}
 
-function input.getTrackAction(key)
-    if key == "1" or key == "left" or key == "a" then
+function input.getLevelShortcut(key)
+    if key == "f1" then
         return 1
     end
 
-    if key == "2" or key == "right" or key == "d" then
+    if key == "f2" then
         return 2
     end
 
-    if key == "space" or key == "tab" then
-        return "toggle"
+    if key == "f3" then
+        return 3
     end
 
     return nil

@@ -19,35 +19,27 @@ function Game.new()
         small = love.graphics.newFont(14),
     }
 
-    self.world = world.new(self.viewport.w, self.viewport.h)
+    self.levelIndex = 1
     self.levelComplete = false
-    self.levelFailed = false
+    self.failureReason = nil
+    self.world = world.new(self.viewport.w, self.viewport.h, self.levelIndex)
 
     return self
 end
 
-function Game:restart()
-    self.world = world.new(self.viewport.w, self.viewport.h)
+function Game:loadLevel(levelIndex)
+    self.levelIndex = levelIndex
     self.levelComplete = false
-    self.levelFailed = false
+    self.failureReason = nil
+    self.world = world.new(self.viewport.w, self.viewport.h, self.levelIndex)
+end
+
+function Game:restart()
+    self:loadLevel(self.levelIndex)
 end
 
 function Game:isRunLocked()
-    return self.levelComplete or self.levelFailed
-end
-
-function Game:setActiveTrack(trackId)
-    if self:isRunLocked() then
-        return
-    end
-    self.world:setActiveTrack(trackId)
-end
-
-function Game:toggleTrack()
-    if self:isRunLocked() then
-        return
-    end
-    self.world:toggleTrack()
+    return self.levelComplete or self.failureReason ~= nil
 end
 
 function Game:update(dt)
@@ -56,8 +48,8 @@ function Game:update(dt)
     end
 
     self.world:update(dt)
-    self.levelFailed = self.world:hasCollision()
-    if not self.levelFailed then
+    self.failureReason = self.world:getFailureReason()
+    if not self.failureReason then
         self.levelComplete = self.world:isLevelComplete()
     end
 end
@@ -80,16 +72,19 @@ function Game:keypressed(key)
         return
     end
 
-    if self:isRunLocked() and (key == "r" or key == "return" or key == "space") then
+    local requestedLevel = input.getLevelShortcut(key)
+    if requestedLevel then
+        self:loadLevel(requestedLevel)
+        return
+    end
+
+    if key == "r" then
         self:restart()
         return
     end
 
-    local action = input.getTrackAction(key)
-    if action == "toggle" then
-        self:toggleTrack()
-    elseif action then
-        self:setActiveTrack(action)
+    if self:isRunLocked() and (key == "return" or key == "space") then
+        self:restart()
     end
 end
 
@@ -98,31 +93,38 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    local requestedLevel = ui.getLevelTabAt(self, x, y)
+    if requestedLevel then
+        self:loadLevel(requestedLevel)
+        return
+    end
+
     if self:isRunLocked() then
         self:restart()
         return
     end
 
-    if self.world:isCrossingHit(x, y) then
-        self:toggleTrack()
-    end
+    self.world:handleClick(x, y)
 end
 
 function Game:keyreleased(_)
 end
 
 function Game:gamepadpressed(_, button)
-    if self:isRunLocked() and (button == "a" or button == "start") then
-        self:restart()
+    if button == "leftshoulder" then
+        self:loadLevel(math.max(1, self.levelIndex - 1))
         return
     end
 
-    if button == "dpleft" then
-        self:setActiveTrack(1)
-    elseif button == "dpright" then
-        self:setActiveTrack(2)
-    elseif button == "a" or button == "x" then
-        self:toggleTrack()
+    if button == "rightshoulder" then
+        self:loadLevel(math.min(self.world:getLevelCount(), self.levelIndex + 1))
+        return
+    end
+
+    if button == "start" or button == "a" then
+        if self:isRunLocked() then
+            self:restart()
+        end
     end
 end
 
