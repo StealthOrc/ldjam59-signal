@@ -99,6 +99,7 @@ function world:reset(tuning, progression)
     self.towers = {}
     self.nextTowerIndex = 1
     self.nextTowerY = -tuning.signalTowerFirstNorthOffset
+    self.nextTowerGap = tuning.signalTowerFirstGap
     self.boostSignalsEnabled = progression
         and progression.upgrades
         and progression.upgrades.boost_pads == true
@@ -129,12 +130,9 @@ function world:spawnTower(index, tuning)
 
     self.towers[#self.towers + 1] = tower
 
-    local spacing = math.min(
-        tuning.signalTowerLaterSpacing,
-        tuning.signalTowerReachSpacing + math.max(0, index - 1) * tuning.signalTowerSpacingStep
-    )
     self.nextTowerIndex = index + 1
-    self.nextTowerY = self.nextTowerY - spacing
+    self.nextTowerY = self.nextTowerY - self.nextTowerGap
+    self.nextTowerGap = self.nextTowerGap * tuning.signalTowerGapMultiplier
 end
 
 function world:update(carY, viewport, tuning, progression)

@@ -48,8 +48,8 @@ local function buildTuning()
         reverseThreshold = 26,
         baseMaxForwardSpeedKmh = 120,
         maxReverseSpeedKmh = 36,
-        drag = 0.78,
-        rollingResistance = 38,
+        drag = 0.68,
+        rollingResistance = 30,
         yawResponse = 7.5,
         angularDamping = 5.2,
         turnSpeedFloor = 8,
@@ -83,10 +83,9 @@ local function buildTuning()
         gearAccelLoopGuard = 0.015,
         signalTowerRadiusMeters = 24,
         signalTowerFuelPerSecond = 18,
-        signalTowerFirstNorthOffsetMeters = 68,
-        signalTowerReachSpeedKmh = 100,
-        signalTowerReachCadenceSeconds = 3.2,
-        signalTowerLaterCadenceSeconds = 4.4,
+        signalTowerFirstNorthOffsetMeters = 60,
+        signalTowerFirstGapMeters = 90,
+        signalTowerGapMultiplier = 1.5,
         signalTowerScriptedCount = 5,
         signalTowerScriptedLaneRatios = { 0.38, 0.58, 0.42, 0.62, 0.46 },
         signalTowerLaneRatioMin = 0.34,
@@ -119,10 +118,10 @@ local function buildTuning()
         upshiftBufferKmh = 0,
         sportUpshiftBufferKmh = 5,
         neutralReturnKmh = 2.5,
-        stockTopWeight = 1.85,
+        stockTopWeight = 1.6,
         closeRatioTopWeight = 1.35,
         baseLowGearDriveMultiplier = 1.44,
-        baseHighGearDriveMultiplier = 0.78,
+        baseHighGearDriveMultiplier = 1.04,
         closeRatioHighGearDriveMultiplier = 0.92,
         sportDriveBonus = 0.06,
         finishSpeed = 16,
@@ -194,14 +193,7 @@ function Game.new()
     self.tuning.speedUnitsToKmhFactor = self.metersPerUnit * 3.6
     self.tuning.signalTowerRadius = self:metersToUnits(self.tuning.signalTowerRadiusMeters)
     self.tuning.signalTowerFirstNorthOffset = self:metersToUnits(self.tuning.signalTowerFirstNorthOffsetMeters)
-    self.tuning.signalTowerReachSpacing = self:metersToUnits(
-        (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerReachCadenceSeconds
-    )
-    self.tuning.signalTowerLaterSpacing = self:metersToUnits(
-        (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerLaterCadenceSeconds
-    )
-    self.tuning.signalTowerSpacingStep = (self.tuning.signalTowerLaterSpacing - self.tuning.signalTowerReachSpacing)
-        / math.max(1, self.tuning.signalTowerScriptedCount - 1)
+    self.tuning.signalTowerFirstGap = self:metersToUnits(self.tuning.signalTowerFirstGapMeters)
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
     self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
 
