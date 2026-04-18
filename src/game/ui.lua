@@ -208,7 +208,7 @@ local function drawNextSignalBadge(game)
     local badgeVisualCenterX = badgeX + badgeWidth * 0.5
     local badgeVisualCenterY = badgeY + badgeHeight * 0.5
     local dirX, dirY = normalize(towerScreenX - badgeVisualCenterX, towerScreenY - badgeVisualCenterY)
-    local arrowAngle = math.atan(dirY, dirX) + math.pi * 0.5
+    local arrowAngle = math.atan(dirX, -dirY)
 
     graphics.setColor(0, 0, 0, 0.48)
     graphics.rectangle("fill", badgeX, badgeY, badgeWidth, badgeHeight, 12, 12)
