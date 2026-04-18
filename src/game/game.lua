@@ -79,6 +79,8 @@ local function buildTuning()
         gearShiftVolume = 0.5,
         gearAudioThrottleFloor = 0.16,
         gearAudioMinSpeedKmh = 1,
+        gearAccelLoopDuration = 0.2,
+        gearAccelLoopGuard = 0.015,
         signalTowerRadiusMeters = 24,
         signalTowerFuelPerSecond = 18,
         signalTowerFirstNorthOffsetMeters = 68,
@@ -384,10 +386,15 @@ function Game:playGearAccel(pairIndex)
 
     pair.accel:stop()
     pair.accel:play()
+    local duration = pair.accel:getDuration("seconds")
+    local loopDuration = math.min(self.tuning.gearAccelLoopDuration, math.max(duration * 0.5, 0))
+    local loopStart = math.max(0, duration - loopDuration)
     self.activeGearAudio = {
         phase = "accel",
         pairIndex = pairIndex,
         source = pair.accel,
+        loopStart = loopStart,
+        loopEnd = duration,
     }
 end
 
@@ -409,6 +416,25 @@ function Game:playGearShift(pairIndex, queueNextAccel)
         source = pair.shift,
     }
     self.queueNextGearAccel = queueNextAccel == true
+end
+
+function Game:keepGearAccelLoopAlive()
+    if not self.activeGearAudio or self.activeGearAudio.phase ~= "accel" then
+        return
+    end
+
+    local source = self.activeGearAudio.source
+    local loopEnd = self.activeGearAudio.loopEnd or 0
+    local loopStart = self.activeGearAudio.loopStart or 0
+
+    if loopEnd <= 0 or loopStart >= loopEnd then
+        return
+    end
+
+    local playbackPosition = source:tell("seconds")
+    if playbackPosition >= loopEnd - self.tuning.gearAccelLoopGuard then
+        source:seek(loopStart, "seconds")
+    end
 end
 
 function Game:resolveCurrentGearAudioToShift(queueNextAccel)
@@ -440,13 +466,9 @@ function Game:updateGearAudio(intent)
         return
     end
 
-    if self.activeGearAudio and not self.activeGearAudio.source:isPlaying() then
-        if self.activeGearAudio.phase == "accel" then
-            self:playGearShift(self.activeGearAudio.pairIndex, true)
-            self.lastThrottleAudioActive = throttleAudioActive
-            return
-        end
+    self:keepGearAccelLoopAlive()
 
+    if self.activeGearAudio and not self.activeGearAudio.source:isPlaying() then
         self.activeGearAudio = nil
     end
 
