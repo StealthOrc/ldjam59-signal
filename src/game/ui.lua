@@ -485,11 +485,11 @@ local function getCarouselOffset(distance)
     local magnitude
 
     if absDistance <= 1 then
-        magnitude = lerp(0, 275, absDistance)
+        magnitude = lerp(0, 304, absDistance)
     elseif absDistance <= 2 then
-        magnitude = lerp(275, 550, absDistance - 1)
+        magnitude = lerp(304, 560, absDistance - 1)
     else
-        magnitude = lerp(550, 720, math.min(1, absDistance - 2))
+        magnitude = lerp(560, 720, math.min(1, absDistance - 2))
     end
 
     return magnitude * direction
