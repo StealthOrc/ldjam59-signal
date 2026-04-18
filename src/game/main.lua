@@ -24,6 +24,14 @@ function love.keypressed(key)
     game:keypressed(key)
 end
 
+function love.keyreleased(key)
+    game:keyreleased(key)
+end
+
 function love.gamepadpressed(joystick, button)
     game:gamepadpressed(joystick, button)
+end
+
+function love.gamepadreleased(joystick, button)
+    game:gamepadreleased(joystick, button)
 end

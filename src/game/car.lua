@@ -54,6 +54,8 @@ function car.new(tuning)
         collisionRadius = 18,
         length = 58,
         width = 34,
+        boostPadCooldown = 0,
+        boostPadTimer = 0,
         skidMarks = {},
         skidTimer = 0,
     }
@@ -71,6 +73,8 @@ function car.reset(self, tuning)
     self.speed = 0
     self.slip = 0
     self.maxNorthDistance = 0
+    self.boostPadCooldown = 0
+    self.boostPadTimer = 0
     self.skidMarks = {}
     self.skidTimer = 0
 end
@@ -110,6 +114,8 @@ end
 
 function car.update(self, intent, dt, tuning)
     updateSkidMarks(self, dt)
+    self.boostPadCooldown = math.max(0, (self.boostPadCooldown or 0) - dt)
+    self.boostPadTimer = math.max(0, (self.boostPadTimer or 0) - dt)
 
     local throttle = self.fuel > 0 and intent.throttle or 0
     local brake = intent.brake
@@ -174,6 +180,13 @@ function car.update(self, intent, dt, tuning)
     forwardSpeed = self.vx * newForwardX + self.vy * newForwardY
     local lateralSpeed = self.vx * rightX + self.vy * rightY
 
+    if self.boostPadTimer > 0 then
+        forwardSpeed = math.min(
+            forwardSpeed + tuning.boostPadAcceleration * dt,
+            tuning.boostPadTargetSpeed
+        )
+    end
+
     local speedFactor = clamp(math.abs(forwardSpeed) / tuning.gripSpeedWindow, 0, 1)
     local rearGrip = tuning.rearGripLowSpeed
         + (tuning.rearGripHighSpeed - tuning.rearGripLowSpeed) * speedFactor
@@ -189,7 +202,12 @@ function car.update(self, intent, dt, tuning)
         self.angularVelocity = self.angularVelocity * math.max(0, 1 - tuning.angularDamping * dt)
     end
 
-    forwardSpeed = clamp(forwardSpeed, -tuning.maxReverseSpeed, tuning.maxForwardSpeed)
+    local forwardSpeedCap = tuning.maxForwardSpeed
+    if self.boostPadTimer > 0 then
+        forwardSpeedCap = tuning.boostPadTargetSpeed
+    end
+
+    forwardSpeed = clamp(forwardSpeed, -tuning.maxReverseSpeed, forwardSpeedCap)
     self.vx = newForwardX * forwardSpeed + rightX * lateralSpeed
     self.vy = newForwardY * forwardSpeed + rightY * lateralSpeed
 

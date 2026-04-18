@@ -25,16 +25,23 @@ function world.new(tuning)
     self.drawPadding = tuning.worldDrawPadding
     self.segments = {}
     self.towers = {}
+    self.boostPads = {}
     self.visibleTop = -720
     self.visibleBottom = 720
-    self:reset(tuning)
+    self:reset(tuning, nil)
     return self
 end
 
-function world:reset(tuning)
+function world:reset(tuning, progression)
     self.towers = {}
+    self.boostPads = {}
     self.nextTowerIndex = 1
     self.nextTowerY = -tuning.signalTowerFirstNorthOffset
+    self.nextBoostPadIndex = 1
+    self.nextBoostPadY = -tuning.boostPadFirstNorthOffset
+    self.boostPadsEnabled = progression
+        and progression.upgrades
+        and progression.upgrades.boost_pads == true
 end
 
 local function laneRatioForTower(index, tuning)
@@ -68,7 +75,25 @@ function world:spawnTower(index, tuning)
     self.nextTowerY = self.nextTowerY - spacing
 end
 
-function world:update(carY, viewport, tuning)
+function world:spawnBoostPad(index, tuning)
+    local laneRatio = tuning.boostPadLaneRatioMin
+        + (tuning.boostPadLaneRatioMax - tuning.boostPadLaneRatioMin) * pseudoRandom(index + 300)
+    local side = (index % 2 == 1) and -1 or 1
+    local pad = {
+        index = index,
+        x = side * tuning.corridorHalfWidth * laneRatio,
+        y = self.nextBoostPadY,
+        width = tuning.boostPadWidth,
+        height = tuning.boostPadHeight,
+        phase = pseudoRandom(index + 420),
+    }
+
+    self.boostPads[#self.boostPads + 1] = pad
+    self.nextBoostPadIndex = index + 1
+    self.nextBoostPadY = self.nextBoostPadY - tuning.boostPadSpacing
+end
+
+function world:update(carY, viewport, tuning, progression)
     local top = carY - viewport.h * 1.65
     local bottom = carY + viewport.h * 1.3
     local firstIndex = math.floor(top / self.segmentHeight) - 1
@@ -90,9 +115,26 @@ function world:update(carY, viewport, tuning)
         self:spawnTower(self.nextTowerIndex, tuning)
     end
 
+    self.boostPadsEnabled = progression
+        and progression.upgrades
+        and progression.upgrades.boost_pads == true
+
+    if self.boostPadsEnabled then
+        local boostPadGenerationLimit = top - viewport.h * 0.7
+        while self.nextBoostPadY > boostPadGenerationLimit do
+            self:spawnBoostPad(self.nextBoostPadIndex, tuning)
+        end
+    end
+
     for index = #self.towers, 1, -1 do
         if self.towers[index].y > bottom + viewport.h * 0.7 then
             table.remove(self.towers, index)
+        end
+    end
+
+    for index = #self.boostPads, 1, -1 do
+        if self.boostPads[index].y > bottom + viewport.h * 0.6 then
+            table.remove(self.boostPads, index)
         end
     end
 end
@@ -152,6 +194,35 @@ function world:getSignalAt(carX, carY)
     return bestTower, bestStrength
 end
 
+function world:resolveBoostPads(carBody, tuning)
+    if not self.boostPadsEnabled or (carBody.boostPadCooldown or 0) > 0 then
+        return nil
+    end
+
+    local carLeft = carBody.x - carBody.collisionRadius
+    local carRight = carBody.x + carBody.collisionRadius
+    local carTop = carBody.y - carBody.collisionRadius
+    local carBottom = carBody.y + carBody.collisionRadius
+
+    for _, pad in ipairs(self.boostPads) do
+        local padLeft = pad.x - pad.width * 0.5
+        local padRight = pad.x + pad.width * 0.5
+        local padTop = pad.y - pad.height * 0.5
+        local padBottom = pad.y + pad.height * 0.5
+
+        if carRight >= padLeft and carLeft <= padRight and carBottom >= padTop and carTop <= padBottom then
+            carBody.boostPadCooldown = tuning.boostPadCooldown
+            carBody.boostPadTimer = tuning.boostPadDuration
+            carBody.heading = 0
+            carBody.steerAngle = 0
+            carBody.angularVelocity = 0
+            return pad
+        end
+    end
+
+    return nil
+end
+
 function world:draw()
     local graphics = love.graphics
     local spanTop = self.visibleTop - self.drawPadding
@@ -180,6 +251,21 @@ function world:draw()
     graphics.setColor(0.42, 0.09, 0.08)
     graphics.rectangle("fill", self.left - self.barrierThickness, spanTop, self.barrierThickness, spanHeight)
     graphics.rectangle("fill", self.right, spanTop, self.barrierThickness, spanHeight)
+
+    for _, pad in ipairs(self.boostPads) do
+        local pulse = 0.58 + 0.42 * math.sin(time * 4 + pad.phase * math.pi * 2)
+        graphics.setColor(0.18, 0.84, 0.36, 0.88)
+        graphics.rectangle("fill", pad.x - pad.width * 0.5, pad.y - pad.height * 0.5, pad.width, pad.height, 5, 5)
+        graphics.setColor(0.78, 0.97, 0.46, 0.65 + 0.2 * pulse)
+        graphics.rectangle("line", pad.x - pad.width * 0.5, pad.y - pad.height * 0.5, pad.width, pad.height, 5, 5)
+        graphics.setColor(0.92, 0.98, 0.9, 0.8)
+        graphics.polygon(
+            "fill",
+            pad.x, pad.y - pad.height * 0.3,
+            pad.x - pad.width * 0.18, pad.y + pad.height * 0.16,
+            pad.x + pad.width * 0.18, pad.y + pad.height * 0.16
+        )
+    end
 
     graphics.setColor(0.86, 0.74, 0.52, 0.85)
     graphics.rectangle("fill", self.left - 5, spanTop, 10, spanHeight)

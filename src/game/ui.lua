@@ -101,11 +101,12 @@ local function drawStats(game)
     local speedKmh = game:speedUnitsToKmh(game.car.speed)
 
     graphics.setColor(0, 0, 0, 0.35)
-    graphics.rectangle("fill", width - 250, 16, 226, 102, 12, 12)
+    graphics.rectangle("fill", width - 250, 16, 226, 114, 12, 12)
 
     drawRun(font, string.format("Distance  %.0f m", distanceMeters), width - 236, 30, 1, { 0.92, 0.93, 0.95, 1 })
     drawRun(font, string.format("Best      %.0f m", bestMeters), width - 236, 54, 1, { 0.92, 0.93, 0.95, 1 })
     drawRun(font, string.format("Speed     %.0f km/h", speedKmh), width - 236, 78, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Coins     %d", game.progression.coins), width - 236, 102, 1, { 0.98, 0.88, 0.42, 1 })
 end
 
 local function drawCenterOverlay(title, subtitle, footer, viewport)
@@ -122,6 +123,84 @@ local function drawCenterOverlay(title, subtitle, footer, viewport)
     drawAligned(font, footer, centerX - 220, centerY + 58, 440, "center", 1, { 0.96, 0.67, 0.22, 1 })
 end
 
+local function drawShop(game)
+    local graphics = love.graphics
+    local font = game.uiFont
+    local centerX = game.viewport.w * 0.5
+    local centerY = game.viewport.h * 0.5
+
+    graphics.setColor(0, 0, 0, 0.5)
+    graphics.rectangle("fill", centerX - 340, centerY - 212, 680, 424, 18, 18)
+
+    drawAligned(font, "Workshop", centerX - 290, centerY - 174, 580, "center", 2, { 0.95, 0.97, 0.99, 1 })
+    drawRun(font, string.format("Coins on hand  %d", game.progression.coins), centerX - 288, centerY - 128, 1, { 0.98, 0.88, 0.42, 1 })
+    drawRun(font, string.format("Last run reward  +%d", game.lastRunCoinsEarned), centerX - 288, centerY - 104, 1, { 0.72, 0.95, 0.76, 1 })
+
+    local cardTop = centerY - 54
+    for index, item in ipairs(game.shopItems) do
+        local y = cardTop + (index - 1) * 88
+        local selected = index == game.selectedShopIndex
+        local unlocked = item.kind == "unlock" and game:hasUpgrade(item.id)
+        local affordable = game.progression.coins >= item.cost
+        local cardColor = selected and { 0.14, 0.18, 0.24, 0.96 } or { 0.09, 0.11, 0.14, 0.9 }
+        local statusText
+        local statusColor
+
+        graphics.setColor(cardColor)
+        graphics.rectangle("fill", centerX - 288, y, 576, 72, 14, 14)
+
+        if selected then
+            graphics.setColor(0.87, 0.69, 0.24, 0.95)
+            graphics.rectangle("line", centerX - 288, y, 576, 72, 14, 14)
+        end
+
+        drawRun(font, item.title, centerX - 264, y + 12, 1, { 0.95, 0.97, 0.99, 1 })
+        if item.kind == "dump" then
+            drawRun(
+                font,
+                string.format(
+                    "%s Current max %d km/h, bonus +%d km/h.",
+                    item.description,
+                    game.tuning.maxForwardSpeedKmh,
+                    game:getMaxSpeedBonusKmh()
+                ),
+                centerX - 264,
+                y + 36,
+                1,
+                { 0.82, 0.86, 0.9, 1 }
+            )
+        else
+            drawRun(font, item.description, centerX - 264, y + 36, 1, { 0.82, 0.86, 0.9, 1 })
+        end
+
+        if unlocked then
+            statusText = "Purchased"
+            statusColor = { 0.6, 0.95, 0.68, 1 }
+        elseif item.kind == "dump" then
+            if affordable then
+                local holdText = game.shopHoldActive and " Holding..." or ""
+                statusText = string.format("Spend  1 coin = +1 km/h%s", holdText)
+                statusColor = { 0.98, 0.88, 0.42, 1 }
+            else
+                statusText = "Need  1 coin"
+                statusColor = { 0.9, 0.44, 0.38, 1 }
+            end
+        elseif affordable then
+            statusText = string.format("Buy  %d coins", item.cost)
+            statusColor = { 0.98, 0.88, 0.42, 1 }
+        else
+            statusText = string.format("Need  %d coins", item.cost)
+            statusColor = { 0.9, 0.44, 0.38, 1 }
+        end
+
+        drawRun(font, statusText, centerX + 66, y + 12, 1, statusColor)
+    end
+
+    drawRun(font, "Up / Down or D-pad selects", centerX - 288, centerY + 128, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Space / A buys, hold on Long Gears to dump faster", centerX - 20, centerY + 128, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Enter / Start begins next run", centerX - 288, centerY + 152, 1, { 0.85, 0.87, 0.91, 0.95 })
+end
+
 function ui.draw(game)
     local graphics = love.graphics
     local font = game.uiFont
@@ -129,7 +208,7 @@ function ui.draw(game)
     drawFuelBar(game)
     drawStats(game)
 
-    drawRun(font, "WASD to drive, Space to handbrake, Left stick + A on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
+    drawRun(font, "WASD to drive, Space to handbrake, Left stick + RT/LT + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
 
     if game.state == "title" then
         drawCenterOverlay(
@@ -146,13 +225,16 @@ function ui.draw(game)
         drawCenterOverlay(
             "Out of motion",
             string.format(
-                "You coasted %.0f meters north. Best this session: %.0f meters.",
+                "You coasted %.0f meters north and earned %d coins. Best this session: %.0f meters.",
                 game:unitsToMeters(game.runDistance),
+                game.lastRunCoinsEarned,
                 game:unitsToMeters(game.bestDistance)
             ),
-            "Press any key or controller button to run again",
+            "Press any key or controller button to open the workshop",
             { w = game.viewport.w, h = game.viewport.h, font = font }
         )
+    elseif game.state == "shop" then
+        drawShop(game)
     end
 end
 

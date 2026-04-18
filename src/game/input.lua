@@ -42,17 +42,15 @@ function input.getDriveIntent()
 
     if joystick and joystick:isGamepad() then
         local stickX = applyDeadzone(joystick:getGamepadAxis("leftx"), input.deadzone)
-        local stickY = applyDeadzone(-joystick:getGamepadAxis("lefty"), input.deadzone)
+        local rightTrigger = applyDeadzone(joystick:getGamepadAxis("triggerright"), input.deadzone)
+        local leftTrigger = applyDeadzone(joystick:getGamepadAxis("triggerleft"), input.deadzone)
 
         steer = stickX
-        if stickY > 0 then
-            throttle = stickY
-        elseif stickY < 0 then
-            brake = -stickY
-        end
+        throttle = math.max(0, rightTrigger)
+        brake = math.max(0, leftTrigger)
 
-        handbrake = joystick:isGamepadDown("a")
-        usingController = math.abs(stickX) > 0 or math.abs(stickY) > 0 or handbrake
+        handbrake = joystick:isGamepadDown("x")
+        usingController = math.abs(stickX) > 0 or throttle > 0 or brake > 0 or handbrake
     end
 
     if love.keyboard.isDown("a", "left") then

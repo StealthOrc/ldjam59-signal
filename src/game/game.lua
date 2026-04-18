@@ -4,6 +4,7 @@ local world = require("src.game.world")
 local camera = require("src.game.camera")
 local ui = require("src.game.ui")
 local SpriteFont = require("src.game.sprite_font")
+local Progression = require("src.game.progression")
 
 local Game = {}
 Game.__index = Game
@@ -20,12 +21,12 @@ local function buildTuning()
         carLengthMeters = 4,
         steerSpeed = math.rad(180),
         wheelBase = 52,
-        engineForce = 420,
+        baseEngineForce = 420,
         brakeForce = 520,
-        reverseForce = 220,
+        baseReverseForce = 220,
         reverseThreshold = 26,
-        maxForwardSpeed = 620,
-        maxReverseSpeed = 150,
+        baseMaxForwardSpeedKmh = 120,
+        maxReverseSpeedKmh = 36,
         drag = 0.78,
         rollingResistance = 38,
         yawResponse = 7.5,
@@ -64,6 +65,21 @@ local function buildTuning()
         signalTowerLaneRatioMin = 0.34,
         signalTowerLaneRatioMax = 0.64,
         signalTowerPoleHeightMeters = 8,
+        coinDistanceMeters = 100,
+        boostPadCost = 2,
+        accelerationUpgradeCost = 3,
+        boostPadSpacingMeters = 145,
+        boostPadFirstNorthOffsetMeters = 110,
+        boostPadWidthMeters = 10,
+        boostPadHeightMeters = 3.6,
+        boostPadSpeedMultiplier = 1.2,
+        boostPadDuration = 3,
+        boostPadCooldown = 0.55,
+        boostPadAccelerationSeconds = 0.3,
+        boostPadLaneRatioMin = 0.18,
+        boostPadLaneRatioMax = 0.72,
+        shopHoldBaseInterval = 0.28,
+        shopHoldMinInterval = 0.035,
         finishSpeed = 16,
         stopSpeed = 5,
         skidThreshold = 44,
@@ -104,13 +120,50 @@ function Game.new()
         (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerLaterCadenceSeconds
     )
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
+    self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
+    self.tuning.boostPadSpacing = self:metersToUnits(self.tuning.boostPadSpacingMeters)
+    self.tuning.boostPadFirstNorthOffset = self:metersToUnits(self.tuning.boostPadFirstNorthOffsetMeters)
+    self.tuning.boostPadWidth = self:metersToUnits(self.tuning.boostPadWidthMeters)
+    self.tuning.boostPadHeight = self:metersToUnits(self.tuning.boostPadHeightMeters)
     self.world = world.new(self.tuning)
     self.camera = camera.new()
+    self.progression = Progression.load()
+    self.shopItems = {
+        {
+            id = "boost_pads",
+            kind = "unlock",
+            title = "Boost Pads",
+            description = "Pads spawn on the road and snap the car upright before boosting it.",
+            cost = self.tuning.boostPadCost,
+        },
+        {
+            id = "double_acceleration",
+            kind = "unlock",
+            title = "Twin Turbo",
+            description = "Doubles your acceleration so the car pulls much harder out of turns.",
+            cost = self.tuning.accelerationUpgradeCost,
+        },
+        {
+            id = "top_speed_dump",
+            kind = "dump",
+            title = "Long Gears",
+            description = "Spend coins for permanent top speed. One coin buys one extra km/h.",
+            cost = 1,
+        },
+    }
+    self.selectedShopIndex = 1
+    self.shopHoldActive = false
+    self.shopHoldItemId = nil
+    self.shopHoldElapsed = 0
+    self.shopHoldTimer = 0
     self.bestDistance = 0
     self.runDistance = 0
+    self.lastRunCoinsEarned = 0
+    self.lastRunMetersDriven = 0
     self.state = "title"
     self.activeSignalTower = nil
     self.signalStrength = 0
+    self.activeBoostPad = nil
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
@@ -134,6 +187,7 @@ function Game.new()
     self.emptyFuelAlarm:setVolume(self.tuning.emptyFuelAlarmVolume)
     self.emptyFuelAlarmEnd:setVolume(self.tuning.emptyFuelAlarmVolume)
 
+    self:refreshTuningFromProgression()
     self:resetRun()
     self.state = "title"
 
@@ -154,6 +208,180 @@ end
 
 function Game:getFuelRatio()
     return self.car.fuel / self.tuning.fuelCapacity
+end
+
+function Game:getMaxSpeedBonusKmh()
+    return self.progression.max_speed_bonus_kmh or 0
+end
+
+function Game:refreshTuningFromProgression()
+    local accelerationMultiplier = self:hasUpgrade("double_acceleration") and 2 or 1
+    local topSpeedBonus = self:getMaxSpeedBonusKmh()
+
+    self.tuning.engineForce = self.tuning.baseEngineForce * accelerationMultiplier
+    self.tuning.reverseForce = self.tuning.baseReverseForce * accelerationMultiplier
+    self.tuning.maxForwardSpeedKmh = self.tuning.baseMaxForwardSpeedKmh + topSpeedBonus
+    self.tuning.maxForwardSpeed = self:metersToUnits(self.tuning.maxForwardSpeedKmh / 3.6)
+    self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
+    self.tuning.boostPadTargetSpeed = self:metersToUnits(
+        (self.tuning.maxForwardSpeedKmh * self.tuning.boostPadSpeedMultiplier) / 3.6
+    )
+    self.tuning.boostPadAcceleration = self.tuning.boostPadTargetSpeed / self.tuning.boostPadAccelerationSeconds
+end
+
+function Game:getCoinRewardForDistance(distanceUnits)
+    return math.floor(self:unitsToMeters(distanceUnits) / self.tuning.coinDistanceMeters)
+end
+
+function Game:hasUpgrade(upgradeId)
+    return self.progression.upgrades[upgradeId] == true
+end
+
+function Game:saveProgression()
+    Progression.save(self.progression)
+end
+
+function Game:awardRunCoins()
+    self.lastRunMetersDriven = self:unitsToMeters(self.runDistance)
+    self.lastRunCoinsEarned = self:getCoinRewardForDistance(self.runDistance)
+    self.progression.coins = self.progression.coins + self.lastRunCoinsEarned
+    self:saveProgression()
+end
+
+function Game:finishRun()
+    self:stopShopHold()
+    self:updateEmptyFuelAlarm(false)
+    self.state = "finished"
+    self:awardRunCoins()
+    for _, beep in ipairs(self.lowFuelBeeps) do
+        stopSource(beep)
+    end
+end
+
+function Game:openShop()
+    self:stopShopHold()
+    self.selectedShopIndex = 1
+    self.state = "shop"
+end
+
+function Game:isDumpShopItem(itemOrId)
+    local item = itemOrId
+    if type(itemOrId) == "string" then
+        item = self:getShopItemById(itemOrId)
+    end
+
+    return item and item.kind == "dump" or false
+end
+
+function Game:getShopItemById(itemId)
+    for _, item in ipairs(self.shopItems) do
+        if item.id == itemId then
+            return item
+        end
+    end
+    return nil
+end
+
+function Game:getSelectedShopItem()
+    return self.shopItems[self.selectedShopIndex]
+end
+
+function Game:moveShopSelection(direction)
+    self:stopShopHold()
+    local itemCount = #self.shopItems
+    self.selectedShopIndex = ((self.selectedShopIndex - 1 + direction) % itemCount) + 1
+end
+
+function Game:getShopHoldInterval()
+    local intervalScale = 2 ^ math.floor(self.shopHoldElapsed)
+    local interval = self.tuning.shopHoldBaseInterval / intervalScale
+    return math.max(self.tuning.shopHoldMinInterval, interval)
+end
+
+function Game:startShopHold(itemId)
+    if not self:isDumpShopItem(itemId) then
+        return
+    end
+
+    self.shopHoldActive = true
+    self.shopHoldItemId = itemId
+    self.shopHoldElapsed = 0
+    self.shopHoldTimer = self:getShopHoldInterval()
+end
+
+function Game:stopShopHold()
+    self.shopHoldActive = false
+    self.shopHoldItemId = nil
+    self.shopHoldElapsed = 0
+    self.shopHoldTimer = 0
+end
+
+function Game:updateShopHold(dt)
+    if not self.shopHoldActive then
+        return
+    end
+
+    local selectedItem = self:getSelectedShopItem()
+    if not selectedItem or selectedItem.id ~= self.shopHoldItemId or not self:isDumpShopItem(selectedItem) then
+        self:stopShopHold()
+        return
+    end
+
+    if self.progression.coins <= 0 then
+        self:stopShopHold()
+        return
+    end
+
+    self.shopHoldElapsed = self.shopHoldElapsed + dt
+    self.shopHoldTimer = self.shopHoldTimer - dt
+
+    while self.shopHoldTimer <= 0 do
+        if not self:buyUpgrade(self.shopHoldItemId) then
+            self:stopShopHold()
+            return
+        end
+
+        self.shopHoldTimer = self.shopHoldTimer + self:getShopHoldInterval()
+    end
+end
+
+function Game:buyUpgrade(upgradeId)
+    local item = self:getShopItemById(upgradeId)
+    if not item then
+        return false
+    end
+
+    local cost = item.cost or 0
+    if item.kind == "unlock" and self:hasUpgrade(upgradeId) then
+        return false
+    end
+
+    if self.progression.coins < cost then
+        return false
+    end
+
+    self.progression.coins = self.progression.coins - cost
+
+    if item.kind == "unlock" then
+        self.progression.upgrades[upgradeId] = true
+    elseif item.kind == "dump" then
+        self.progression.max_speed_bonus_kmh = self:getMaxSpeedBonusKmh() + cost
+    else
+        return false
+    end
+
+    self:refreshTuningFromProgression()
+    self:saveProgression()
+    return true
+end
+
+function Game:buySelectedShopUpgrade()
+    local selectedItem = self:getSelectedShopItem()
+    if not selectedItem then
+        return false
+    end
+
+    return self:buyUpgrade(selectedItem.id)
 end
 
 function Game:isLowFuel()
@@ -239,26 +467,36 @@ function Game:stopWarningAudio()
 end
 
 function Game:resetRun()
+    self:stopShopHold()
+    self:refreshTuningFromProgression()
     car.reset(self.car, self.tuning)
     self.runDistance = 0
+    self.lastRunMetersDriven = 0
     self.activeSignalTower = nil
     self.signalStrength = 0
+    self.activeBoostPad = nil
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
     self.emptyFuelAlarmActive = false
     self:stopWarningAudio()
-    self.world:reset(self.tuning)
+    self.world:reset(self.tuning, self.progression)
     self.camera:snap(self.car, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
 end
 
 function Game:beginRun()
+    self:stopShopHold()
     self:resetRun()
     self.state = "running"
 end
 
 function Game:update(dt)
+    if self.state == "shop" then
+        self:updateShopHold(dt)
+        return
+    end
+
     if self.state ~= "running" and self.state ~= "coasting" then
         return
     end
@@ -267,7 +505,8 @@ function Game:update(dt)
     car.update(self.car, intent, dt, self.tuning)
     self.world:resolveBarriers(self.car, self.tuning)
     self.camera:update(self.car, dt, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
+    self.activeBoostPad = self.world:resolveBoostPads(self.car, self.tuning)
 
     local signalTower, signalStrength = self.world:getSignalAt(self.car.x, self.car.y)
     self.activeSignalTower = signalTower
@@ -290,11 +529,7 @@ function Game:update(dt)
     end
 
     if self.state == "coasting" and self.car.speed <= self.tuning.finishSpeed then
-        self:updateEmptyFuelAlarm(false)
-        self.state = "finished"
-        for _, beep in ipairs(self.lowFuelBeeps) do
-            stopSource(beep)
-        end
+        self:finishRun()
     end
 end
 
@@ -319,7 +554,7 @@ function Game:resize(w, h)
     self.viewport.w = w
     self.viewport.h = h
     self.camera:snap(self.car, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
 end
 
 function Game:keypressed(key)
@@ -328,24 +563,104 @@ function Game:keypressed(key)
         return
     end
 
-    if key == "r" and self.state ~= "title" then
+    if key == "r" and self.state == "shop" then
+        self:stopShopHold()
         self:beginRun()
         return
     end
 
-    if self.state == "title" or self.state == "finished" then
+    if self.state == "title" then
         self:beginRun()
+        return
+    end
+
+    if self.state == "finished" then
+        self:openShop()
+        return
+    end
+
+    if self.state == "shop" then
+        if key == "up" or key == "w" then
+            self:moveShopSelection(-1)
+            return
+        end
+
+        if key == "down" or key == "s" then
+            self:moveShopSelection(1)
+            return
+        end
+
+        if key == "space" or key == "b" then
+            local selectedItem = self:getSelectedShopItem()
+            local purchased = self:buySelectedShopUpgrade()
+            if purchased and self:isDumpShopItem(selectedItem) then
+                self:startShopHold(selectedItem.id)
+            end
+            return
+        end
+
+        if key == "return" or key == "kpenter" or key == "r" then
+            self:stopShopHold()
+            self:beginRun()
+            return
+        end
     end
 end
 
 function Game:gamepadpressed(_, button)
-    if button == "start" and self.state ~= "title" then
+    if button == "start" and self.state == "shop" then
+        self:stopShopHold()
         self:beginRun()
         return
     end
 
-    if self.state == "title" or self.state == "finished" then
+    if self.state == "title" then
         self:beginRun()
+        return
+    end
+
+    if self.state == "finished" then
+        self:openShop()
+        return
+    end
+
+    if self.state == "shop" then
+        if button == "dpup" then
+            self:moveShopSelection(-1)
+            return
+        end
+
+        if button == "dpdown" then
+            self:moveShopSelection(1)
+            return
+        end
+
+        if button == "a" then
+            local selectedItem = self:getSelectedShopItem()
+            local purchased = self:buySelectedShopUpgrade()
+            if purchased and self:isDumpShopItem(selectedItem) then
+                self:startShopHold(selectedItem.id)
+            end
+            return
+        end
+
+        if button == "start" or button == "b" then
+            self:stopShopHold()
+            self:beginRun()
+            return
+        end
+    end
+end
+
+function Game:keyreleased(key)
+    if self.state == "shop" and (key == "space" or key == "b") then
+        self:stopShopHold()
+    end
+end
+
+function Game:gamepadreleased(_, button)
+    if self.state == "shop" and button == "a" then
+        self:stopShopHold()
     end
 end
 
