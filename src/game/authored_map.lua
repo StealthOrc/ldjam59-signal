@@ -1,4 +1,8 @@
 local authoredMap = {}
+local DEFAULT_WAGON_COUNT = 4
+local LEGACY_TRAIN_SPACING = 110
+local LEGACY_TRAIN_OFFSET = 70
+local LEGACY_TRAIN_SPEED = 168
 
 local COLOR_LOOKUP = {
     blue = { 0.33, 0.80, 0.98 },
@@ -341,6 +345,97 @@ local function sortEdgesByEnd(edges)
     end)
 end
 
+local function containsValue(list, expected)
+    for _, value in ipairs(list or {}) do
+        if value == expected then
+            return true
+        end
+    end
+    return false
+end
+
+local function getSortedLookupKeys(lookup)
+    local keys = {}
+    for key, enabled in pairs(lookup or {}) do
+        if enabled then
+            keys[#keys + 1] = key
+        end
+    end
+    table.sort(keys)
+    return keys
+end
+
+local function buildLegacyAuthoredTrains(startEdgeRecords)
+    local trains = {}
+
+    for _, startEdge in pairs(startEdgeRecords) do
+        local colorIds = getSortedLookupKeys(startEdge.colors)
+        for colorIndex, colorId in ipairs(colorIds) do
+            trains[#trains + 1] = {
+                id = string.format("%s_train_%s_%d", startEdge.edgeId, colorId, colorIndex),
+                lineColor = colorId,
+                trainColor = colorId,
+                spawnTime = (LEGACY_TRAIN_OFFSET + (colorIndex - 1) * LEGACY_TRAIN_SPACING) / LEGACY_TRAIN_SPEED,
+                wagonCount = DEFAULT_WAGON_COUNT,
+                deadline = nil,
+            }
+        end
+    end
+
+    table.sort(trains, function(a, b)
+        if math.abs((a.spawnTime or 0) - (b.spawnTime or 0)) > 0.0001 then
+            return (a.spawnTime or 0) < (b.spawnTime or 0)
+        end
+        if a.trainColor ~= b.trainColor then
+            return tostring(a.trainColor) < tostring(b.trainColor)
+        end
+        return tostring(a.id) < tostring(b.id)
+    end)
+
+    return trains
+end
+
+local function edgeSupportsGoalColor(edge, goalColor)
+    return containsValue(edge and edge.colors or {}, goalColor)
+end
+
+local function canReachGoalColor(startEdgeId, goalColor, edgeById, junctionLookup)
+    if not startEdgeId or not goalColor then
+        return false
+    end
+
+    local queue = { startEdgeId }
+    local visited = {}
+    local index = 1
+
+    while index <= #queue do
+        local edgeId = queue[index]
+        index = index + 1
+
+        if not visited[edgeId] then
+            visited[edgeId] = true
+            local edge = edgeById[edgeId]
+
+            if edge then
+                if edge.targetType == "exit" and edgeSupportsGoalColor(edge, goalColor) then
+                    return true
+                end
+
+                if edge.targetType == "junction" then
+                    local junction = junctionLookup[edge.targetId]
+                    for _, nextEdgeId in ipairs(junction and junction.outputEdgeIds or {}) do
+                        if not visited[nextEdgeId] then
+                            queue[#queue + 1] = nextEdgeId
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return false
+end
+
 function authoredMap.validateEditorMap(mapName, editorData)
     local errors = {}
 
@@ -384,6 +479,9 @@ function authoredMap.validateEditorMap(mapName, editorData)
 
     local edgeLookup = {}
     local startEdgeRecords = {}
+    local lineColorToEdgeId = {}
+    local outputColorLookup = {}
+    local duplicateInputColorErrors = {}
 
     for _, route in ipairs(editorData.routes or {}) do
         local routeHits = routeJunctions[route.id] or {}
@@ -490,6 +588,18 @@ function authoredMap.validateEditorMap(mapName, editorData)
                 }
                 for _, colorId in ipairs(sourceEndpoint and (sourceEndpoint.colors or {}) or {}) do
                     startEdgeRecords[edge.id].colors[colorId] = true
+                    if lineColorToEdgeId[colorId] and lineColorToEdgeId[colorId] ~= edge.id then
+                        if not duplicateInputColorErrors[colorId] then
+                            duplicateInputColorErrors[colorId] = true
+                            errors[#errors + 1] = string.format("Input color '%s' is used on more than one source line.", colorId)
+                        end
+                    else
+                        lineColorToEdgeId[colorId] = edge.id
+                    end
+                end
+            elseif targetNode.kind == "exit" then
+                for _, colorId in ipairs(targetEndpoint and (targetEndpoint.colors or {}) or {}) do
+                    outputColorLookup[colorId] = true
                 end
             end
         end
@@ -505,7 +615,6 @@ function authoredMap.validateEditorMap(mapName, editorData)
         return a.id < b.id
     end)
 
-    local trains = {}
     local edgeById = {}
     for _, edge in ipairs(edges) do
         edgeById[edge.id] = edge
@@ -553,26 +662,60 @@ function authoredMap.validateEditorMap(mapName, editorData)
         junction.activeOutputIndex = math.min(junction.activeOutputIndex, math.max(1, #junction.outputEdgeIds))
     end
 
-    local trainOffsetByEdge = {}
-    for _, startEdge in pairs(startEdgeRecords) do
-        local colorIds = {}
-        for colorId, enabled in pairs(startEdge.colors or {}) do
-            if enabled then
-                colorIds[#colorIds + 1] = colorId
-            end
+    local authoredTrains = editorData.trains
+    if not authoredTrains or #authoredTrains == 0 then
+        authoredTrains = buildLegacyAuthoredTrains(startEdgeRecords)
+    end
+
+    local trains = {}
+    local timeLimit = editorData.timeLimit
+    for trainIndex, trainData in ipairs(authoredTrains or {}) do
+        local lineColor = trainData.lineColor
+        local trainColor = trainData.trainColor
+        local spawnTime = tonumber(trainData.spawnTime or 0) or 0
+        local wagonCount = math.floor(tonumber(trainData.wagonCount or DEFAULT_WAGON_COUNT) or DEFAULT_WAGON_COUNT)
+        local deadline = trainData.deadline ~= nil and (tonumber(trainData.deadline) or 0) or nil
+
+        if spawnTime < 0 then
+            errors[#errors + 1] = string.format("Train %d has a negative spawn time.", trainIndex)
         end
-        table.sort(colorIds)
-        for colorIndex, colorId in ipairs(colorIds) do
-            local trainOffset = trainOffsetByEdge[startEdge.edgeId] or 0
-            trains[#trains + 1] = {
-                id = string.format("%s_train_%s_%d", startEdge.edgeId, colorId, colorIndex),
-                edgeId = startEdge.edgeId,
-                progress = -70 - trainOffset,
-                speedScale = 1.0 - math.min(0.18, (colorIndex - 1) * 0.05),
-                color = getColor(colorId),
-            }
-            trainOffsetByEdge[startEdge.edgeId] = trainOffset + 110
+        if wagonCount < 1 then
+            errors[#errors + 1] = string.format("Train %d needs at least one wagon.", trainIndex)
         end
+        if deadline ~= nil and deadline < spawnTime then
+            errors[#errors + 1] = string.format("Train %d has a deadline earlier than its spawn time.", trainIndex)
+        end
+        if timeLimit ~= nil and deadline ~= nil and deadline > timeLimit then
+            errors[#errors + 1] = string.format("Train %d has a deadline after the map deadline.", trainIndex)
+        end
+        if not lineColorToEdgeId[lineColor] then
+            errors[#errors + 1] = string.format("Train %d uses source color '%s', but no matching input line exists.", trainIndex, tostring(lineColor))
+        end
+        if not outputColorLookup[trainColor] then
+            errors[#errors + 1] = string.format("Train %d targets color '%s', but no matching output exists.", trainIndex, tostring(trainColor))
+        end
+        if lineColorToEdgeId[lineColor]
+            and outputColorLookup[trainColor]
+            and not canReachGoalColor(lineColorToEdgeId[lineColor], trainColor, edgeById, junctionLookup) then
+            errors[#errors + 1] = string.format(
+                "Train %d cannot reach goal color '%s' from source line '%s'.",
+                trainIndex,
+                tostring(trainColor),
+                tostring(lineColor)
+            )
+        end
+
+        trains[#trains + 1] = {
+            id = trainData.id or string.format("train_%d", trainIndex),
+            edgeId = lineColorToEdgeId[lineColor],
+            lineColor = lineColor,
+            trainColor = trainColor,
+            goalColor = trainColor,
+            spawnTime = spawnTime,
+            wagonCount = wagonCount,
+            deadline = deadline,
+            color = getColor(trainColor),
+        }
     end
 
     if #errors > 0 then
@@ -583,8 +726,8 @@ function authoredMap.validateEditorMap(mapName, editorData)
         title = mapName,
         description = "Custom map loaded from the editor.",
         hint = "Click the junction center to switch inputs. Use the bottom selector to switch outputs.",
-        footer = "Saved maps support up to five input tracks and five output tracks per junction.",
-        timeLimit = nil,
+        footer = "Sequence trains from the editor pane and clear every goal on time.",
+        timeLimit = timeLimit,
         junctions = orderedJunctions,
         edges = edges,
         trains = trains,

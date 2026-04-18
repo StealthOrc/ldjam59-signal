@@ -7,6 +7,8 @@ mapEditor.__index = mapEditor
 local DEFAULT_CONTROL = "direct"
 local MAX_TRIP_PASS_COUNT = 5
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
+local DEFAULT_TRAIN_WAGONS = 4
+local LEGACY_TRAIN_SPEED = 168
 local CONTROL_LABELS = {
     direct = "D",
     delayed = "T",
@@ -32,6 +34,34 @@ local COLOR_OPTIONS = {
     { id = "rose", label = "Rose", color = { 0.98, 0.48, 0.62 } },
     { id = "orange", label = "Orange", color = { 0.98, 0.7, 0.28 } },
     { id = "violet", label = "Violet", color = { 0.82, 0.56, 0.98 } },
+}
+local SAO_CAST = {
+    "Kirito",
+    "Asuna",
+    "Klein",
+    "Agil",
+    "Silica",
+    "Lisbeth",
+    "Sinon",
+    "Leafa",
+    "Yuuki",
+    "Alice",
+    "Eugeo",
+    "Yui",
+    "Sachi",
+    "Argo",
+    "Heathcliff",
+    "Bercouli",
+    "Fanatio",
+    "Tiese",
+    "Ronie",
+    "Liena",
+    "Selka",
+    "Suguha",
+    "Keiko",
+    "Shino",
+    "Andrew",
+    "Rinko",
 }
 
 local DEFAULT_CONTROL_CONFIGS = {
@@ -185,6 +215,28 @@ local function getColorById(colorId)
     return COLOR_OPTIONS[1].color
 end
 
+local function getColorOrderIndex(colorId)
+    for index, option in ipairs(COLOR_OPTIONS) do
+        if option.id == colorId then
+            return index
+        end
+    end
+    return #COLOR_OPTIONS + 1
+end
+
+local function roundStep(value, step)
+    local divisor = step or 1
+    return math.floor((value / divisor) + 0.5) * divisor
+end
+
+local function copyArray(source)
+    local copy = {}
+    for _, value in ipairs(source or {}) do
+        copy[#copy + 1] = value
+    end
+    return copy
+end
+
 local function nearestColorId(color)
     if not color then
         return COLOR_OPTIONS[1].id
@@ -315,6 +367,13 @@ function mapEditor.new(viewportW, viewportH, level)
     self.statusTimer = 0
     self.intersections = {}
     self.importedJunctionState = {}
+    self.trains = {}
+    self.nextTrainId = 1
+    self.timeLimit = nil
+    self.sidePanelMode = "default"
+    self.sequencerScroll = 0
+    self.activeTextField = nil
+    self.sequencerScrollDrag = nil
 
     self:updateLayout()
     self:resetFromMap(level and { level = level, name = level.title } or nil, nil)
@@ -344,6 +403,170 @@ end
 function mapEditor:clearSelection()
     self.selectedRouteId = nil
     self.selectedPointIndex = nil
+end
+
+function mapEditor:generateTrainId()
+    local trainId = "train_" .. self.nextTrainId
+    self.nextTrainId = self.nextTrainId + 1
+    return trainId
+end
+
+function mapEditor:createTrainDefinition(definition)
+    local trainId = definition and definition.id or self:generateTrainId()
+    local train = {
+        id = trainId,
+        lineColor = (definition and definition.lineColor) or COLOR_OPTIONS[1].id,
+        trainColor = (definition and definition.trainColor) or ((definition and definition.lineColor) or COLOR_OPTIONS[1].id),
+        spawnTime = math.max(0, roundStep((definition and definition.spawnTime) or 0, 0.5)),
+        wagonCount = math.max(1, math.floor((definition and definition.wagonCount) or DEFAULT_TRAIN_WAGONS)),
+        deadline = definition and definition.deadline or nil,
+        collapsed = definition and definition.collapsed == true or false,
+    }
+
+    if definition and definition.deadline ~= nil then
+        train.deadline = math.max(0, roundStep(definition.deadline, 0.5))
+    end
+
+    return train
+end
+
+function mapEditor:getSortedTrainEntries()
+    local entries = {}
+
+    for trainIndex, train in ipairs(self.trains) do
+        entries[#entries + 1] = {
+            train = train,
+            trainIndex = trainIndex,
+        }
+    end
+
+    table.sort(entries, function(a, b)
+        if math.abs((a.train.spawnTime or 0) - (b.train.spawnTime or 0)) > 0.0001 then
+            return (a.train.spawnTime or 0) < (b.train.spawnTime or 0)
+        end
+        local firstColorIndex = getColorOrderIndex(a.train.trainColor)
+        local secondColorIndex = getColorOrderIndex(b.train.trainColor)
+        if firstColorIndex ~= secondColorIndex then
+            return firstColorIndex < secondColorIndex
+        end
+        return tostring(a.train.id) < tostring(b.train.id)
+    end)
+
+    for entryIndex, entry in ipairs(entries) do
+        entry.castName = SAO_CAST[((entryIndex - 1) % #SAO_CAST) + 1]
+    end
+
+    return entries
+end
+
+function mapEditor:getAvailableLineColorIds()
+    local lookup = {}
+    local colors = {}
+
+    for _, endpoint in ipairs(self.endpoints) do
+        if endpoint.kind == "input" then
+            for _, colorId in ipairs(lookupToSortedIds(endpoint.colors)) do
+                if not lookup[colorId] then
+                    lookup[colorId] = true
+                    colors[#colors + 1] = colorId
+                end
+            end
+        end
+    end
+
+    for _, train in ipairs(self.trains) do
+        if train.lineColor and not lookup[train.lineColor] then
+            lookup[train.lineColor] = true
+            colors[#colors + 1] = train.lineColor
+        end
+    end
+
+    table.sort(colors, function(a, b)
+        return getColorOrderIndex(a) < getColorOrderIndex(b)
+    end)
+
+    if #colors == 0 then
+        colors[1] = COLOR_OPTIONS[1].id
+    end
+
+    return colors
+end
+
+function mapEditor:cycleColorValue(currentColor, availableColors, direction)
+    local options = availableColors or {}
+    if #options == 0 then
+        return currentColor
+    end
+
+    local currentIndex = 1
+    for colorIndex, colorId in ipairs(options) do
+        if colorId == currentColor then
+            currentIndex = colorIndex
+            break
+        end
+    end
+
+    local nextIndex = currentIndex + direction
+    if nextIndex < 1 then
+        nextIndex = #options
+    elseif nextIndex > #options then
+        nextIndex = 1
+    end
+    return options[nextIndex]
+end
+
+function mapEditor:clampSequencerScroll()
+    local entries = self:getSortedTrainEntries()
+    local backRect = self:getSequencerBackButtonRect()
+    local listHeight = backRect.y - (self.sidePanel.y + 192) - 12
+    local totalHeight = 0
+    for _, entry in ipairs(entries) do
+        totalHeight = totalHeight + self:getTrainRowHeight(entry.train) + 8
+    end
+    if totalHeight > 0 then
+        totalHeight = totalHeight - 8
+    end
+    self.sequencerScroll = clamp(self.sequencerScroll or 0, 0, math.max(0, totalHeight - listHeight))
+end
+
+function mapEditor:addTrain()
+    local lineColors = self:getAvailableLineColorIds()
+    local spawnTime = 0
+    for _, train in ipairs(self.trains) do
+        spawnTime = math.max(spawnTime, (train.spawnTime or 0) + 0.5)
+    end
+    self.trains[#self.trains + 1] = self:createTrainDefinition({
+        lineColor = lineColors[1],
+        trainColor = lineColors[1],
+        spawnTime = spawnTime,
+        wagonCount = DEFAULT_TRAIN_WAGONS,
+    })
+    self:clampSequencerScroll()
+    self:refreshValidation()
+    self:showStatus("Train added to the sequencer.")
+end
+
+function mapEditor:getTrainRowHeight(_)
+    return 38
+end
+
+function mapEditor:removeTrainByIndex(trainIndex)
+    if not self.trains[trainIndex] then
+        return
+    end
+    table.remove(self.trains, trainIndex)
+    self:clampSequencerScroll()
+    self:refreshValidation()
+    self:showStatus("Train removed from the sequencer.")
+end
+
+function mapEditor:getTrainById(trainId)
+    for _, train in ipairs(self.trains) do
+        if train.id == trainId then
+            return train
+        end
+    end
+    return nil
 end
 
 function mapEditor:getSelectedRoute()
@@ -514,7 +737,7 @@ function mapEditor:getOpenButtonRect()
     }
 end
 
-function mapEditor:getCopyButtonRect()
+function mapEditor:getSequencerButtonRect()
     return {
         x = self.sidePanel.x + 18,
         y = self.sidePanel.y + self.sidePanel.h - 110,
@@ -529,6 +752,112 @@ function mapEditor:getResetButtonRect()
         y = self.sidePanel.y + self.sidePanel.h - 60,
         w = self.sidePanel.w - 36,
         h = 38,
+    }
+end
+
+function mapEditor:getSequencerBackButtonRect()
+    return self:getResetButtonRect()
+end
+
+function mapEditor:getSequencerAddButtonRect()
+    return {
+        x = self.sidePanel.x + 18,
+        y = self.sidePanel.y + 126,
+        w = self.sidePanel.w - 36,
+        h = 34,
+    }
+end
+
+function mapEditor:getSequencerLayout()
+    local panelX = self.sidePanel.x + 18
+    local panelWidth = self.sidePanel.w - 36
+    local backRect = self:getSequencerBackButtonRect()
+    local sortedEntries = self:getSortedTrainEntries()
+    local listHeaderRect = {
+        x = panelX,
+        y = self.sidePanel.y + 170,
+        w = panelWidth,
+        h = 18,
+    }
+    local listRect = {
+        x = panelX,
+        y = self.sidePanel.y + 192,
+        w = panelWidth,
+        h = backRect.y - (self.sidePanel.y + 192) - 12,
+    }
+    local totalContentHeight = 0
+    for _, entry in ipairs(sortedEntries) do
+        totalContentHeight = totalContentHeight + self:getTrainRowHeight(entry.train) + 8
+    end
+    if totalContentHeight > 0 then
+        totalContentHeight = totalContentHeight - 8
+    end
+    local maxScroll = math.max(0, totalContentHeight - listRect.h)
+    self.sequencerScroll = clamp(self.sequencerScroll or 0, 0, maxScroll)
+
+    local scrollbar = nil
+    local contentWidth = panelWidth
+    if maxScroll > 0 then
+        local track = {
+            x = panelX + panelWidth - 8,
+            y = listRect.y,
+            w = 8,
+            h = listRect.h,
+        }
+        local thumbHeight = math.max(28, track.h * (listRect.h / math.max(totalContentHeight, listRect.h)))
+        local thumbY = track.y + (track.h - thumbHeight) * ((self.sequencerScroll or 0) / maxScroll)
+        scrollbar = {
+            track = track,
+            thumb = {
+                x = track.x,
+                y = thumbY,
+                w = track.w,
+                h = thumbHeight,
+            },
+            maxScroll = maxScroll,
+        }
+        contentWidth = panelWidth - 16
+    end
+
+    self:clampSequencerScroll()
+
+    local rows = {}
+    local currentY = listRect.y - (self.sequencerScroll or 0)
+    for _, entry in ipairs(sortedEntries) do
+        local rowHeight = self:getTrainRowHeight(entry.train)
+        local rowRect = {
+            x = panelX,
+            y = currentY,
+            w = contentWidth,
+            h = rowHeight,
+        }
+        if rowRect.y + rowRect.h >= listRect.y and rowRect.y <= listRect.y + listRect.h then
+            rows[#rows + 1] = {
+                entry = entry,
+                rect = rowRect,
+            }
+        end
+        currentY = currentY + rowHeight + 8
+    end
+
+    return {
+        panelX = panelX,
+        panelWidth = panelWidth,
+        sortedEntries = sortedEntries,
+        mapDeadlineRect = {
+            x = panelX,
+            y = self.sidePanel.y + 74,
+            w = panelWidth,
+            h = 32,
+        },
+        addRect = self:getSequencerAddButtonRect(),
+        listHeaderRect = listHeaderRect,
+        listRect = listRect,
+        totalContentHeight = totalContentHeight,
+        maxScroll = maxScroll,
+        scrollbar = scrollbar,
+        rows = rows,
+        backRect = backRect,
     }
 end
 
@@ -559,10 +888,21 @@ end
 function mapEditor:openColorPicker(route, magnetKind)
     local point = magnetKind == "start" and route.points[1] or route.points[#route.points]
     self.colorPicker = {
+        mode = "route",
         routeId = route.id,
         magnetKind = magnetKind,
         anchorX = point.x,
         anchorY = point.y,
+    }
+end
+
+function mapEditor:openSequencerColorPicker(trainId, fieldName, anchorX, anchorY)
+    self.colorPicker = {
+        mode = "sequencer",
+        trainId = trainId,
+        fieldName = fieldName,
+        anchorX = anchorX,
+        anchorY = anchorY,
     }
 end
 
@@ -572,8 +912,8 @@ function mapEditor:getColorPickerLayout()
     end
 
     local rect = {
-        w = 196,
-        h = 146,
+        w = 154,
+        h = 110,
     }
     rect.x = clamp(
         self.colorPicker.anchorX + 18,
@@ -589,9 +929,9 @@ function mapEditor:getColorPickerLayout()
     local swatches = {}
     local columns = 3
     local swatchSize = 34
-    local gap = 12
+    local gap = 10
     local startX = rect.x + 16
-    local startY = rect.y + 52
+    local startY = rect.y + 16
 
     for index, option in ipairs(COLOR_OPTIONS) do
         local column = (index - 1) % columns
@@ -600,7 +940,7 @@ function mapEditor:getColorPickerLayout()
             option = option,
             rect = {
                 x = startX + column * (swatchSize + gap),
-                y = startY + row * (swatchSize + 28),
+                y = startY + row * (swatchSize + gap),
                 w = swatchSize,
                 h = swatchSize,
             },
@@ -644,11 +984,68 @@ function mapEditor:getDialogRect()
     }
 end
 
+function mapEditor:synthesizeTrainsFromLevel(levelData)
+    local trains = {}
+    local sourceTrains = levelData and levelData.trains or {}
+
+    for _, trainDefinition in ipairs(sourceTrains) do
+        local lineColor = trainDefinition.lineColor
+        if not lineColor and trainDefinition.edgeId and levelData and levelData.edges then
+            for _, edgeDefinition in ipairs(levelData.edges or {}) do
+                if edgeDefinition.id == trainDefinition.edgeId then
+                    lineColor = (edgeDefinition.colors or {})[1] or nearestColorId(edgeDefinition.color)
+                    break
+                end
+            end
+        end
+
+        if not lineColor and trainDefinition.junctionId and levelData then
+            for _, junctionDefinition in ipairs(levelData.junctions or {}) do
+                if junctionDefinition.id == trainDefinition.junctionId then
+                    local inputDefinition = (junctionDefinition.inputs or {})[trainDefinition.inputIndex or trainDefinition.branchIndex or 1]
+                    if inputDefinition then
+                        lineColor = (inputDefinition.colors or {})[1] or nearestColorId(inputDefinition.color)
+                    end
+                    break
+                end
+            end
+        end
+
+        local trainColor = trainDefinition.goalColor
+            or trainDefinition.trainColor
+            or nearestColorId(trainDefinition.color)
+            or lineColor
+            or COLOR_OPTIONS[1].id
+
+        local spawnTime = trainDefinition.spawnTime
+        if spawnTime == nil then
+            local speedScale = trainDefinition.speedScale or 1
+            local speed = LEGACY_TRAIN_SPEED * speedScale
+            spawnTime = trainDefinition.progress and trainDefinition.progress < 0
+                and math.abs(trainDefinition.progress) / math.max(1, speed)
+                or 0
+        end
+
+        trains[#trains + 1] = self:createTrainDefinition({
+            id = trainDefinition.id,
+            lineColor = lineColor or trainColor,
+            trainColor = trainColor,
+            spawnTime = spawnTime,
+            wagonCount = trainDefinition.wagonCount or DEFAULT_TRAIN_WAGONS,
+            deadline = trainDefinition.deadline,
+        })
+    end
+
+    return trains
+end
+
 function mapEditor:getExportData()
     local export = {
+        timeLimit = self.timeLimit,
         endpoints = {},
         routes = {},
         junctions = {},
+        trains = {},
     }
 
     for _, endpoint in ipairs(self.endpoints) do
@@ -706,6 +1103,17 @@ function mapEditor:getExportData()
         export.junctions[#export.junctions + 1] = exportJunction
     end
 
+    for _, train in ipairs(self.trains) do
+        export.trains[#export.trains + 1] = {
+            id = train.id,
+            lineColor = train.lineColor,
+            trainColor = train.trainColor,
+            spawnTime = train.spawnTime,
+            wagonCount = train.wagonCount,
+            deadline = train.deadline,
+        }
+    end
+
     return export
 end
 
@@ -715,10 +1123,16 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.routes = {}
     self.nextEndpointId = 1
     self.nextRouteId = 1
+    self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil
     self.currentMapName = mapName
     self.sourceInfo = sourceInfo
+    self.timeLimit = (editorData and editorData.timeLimit) or (levelData and levelData.timeLimit) or nil
+    self.sidePanelMode = "default"
+    self.sequencerScroll = 0
+    self.activeTextField = nil
+    self.sequencerScrollDrag = nil
     self:closeDialog()
     self:closeColorPicker()
     self:clearSelection()
@@ -772,6 +1186,23 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
             inputEndpointIds = junctionData.inputEndpointIds,
             outputEndpointIds = junctionData.outputEndpointIds,
         }
+    end
+
+    self.trains = {}
+    local trainSource = (editorData or {}).trains
+    if trainSource and #trainSource > 0 then
+        for _, trainDefinition in ipairs(trainSource) do
+            self.trains[#self.trains + 1] = self:createTrainDefinition(trainDefinition)
+        end
+    else
+        self.trains = self:synthesizeTrainsFromLevel(levelData)
+    end
+
+    for _, train in ipairs(self.trains) do
+        local numericId = tonumber((train.id or ""):match("train_(%d+)$"))
+        if numericId and numericId >= self.nextTrainId then
+            self.nextTrainId = numericId + 1
+        end
     end
 
     self:rebuildIntersections()
@@ -934,10 +1365,17 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self.currentMapName = nil
         self.endpoints = {}
         self.routes = {}
+        self.trains = {}
+        self.timeLimit = nil
         self.nextEndpointId = 1
         self.nextRouteId = 1
+        self.nextTrainId = 1
         self.importedJunctionState = {}
         self.drag = nil
+        self.sidePanelMode = "default"
+        self.sequencerScroll = 0
+        self.activeTextField = nil
+        self.sequencerScrollDrag = nil
         self:closeColorPicker()
         self:clearSelection()
         self:rebuildIntersections()
@@ -959,12 +1397,26 @@ function mapEditor:resetFromLevel(level)
     self.currentMapName = level and level.title or nil
     self.endpoints = {}
     self.routes = {}
+    self.trains = self:synthesizeTrainsFromLevel(level)
+    self.timeLimit = level and level.timeLimit or nil
     self.nextEndpointId = 1
     self.nextRouteId = 1
+    self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil
+    self.sidePanelMode = "default"
+    self.sequencerScroll = 0
+    self.activeTextField = nil
+    self.sequencerScrollDrag = nil
     self:closeColorPicker()
     self:clearSelection()
+
+    for _, train in ipairs(self.trains) do
+        local numericId = tonumber((train.id or ""):match("train_(%d+)$"))
+        if numericId and numericId >= self.nextTrainId then
+            self.nextTrainId = numericId + 1
+        end
+    end
 
     if not level then
         self:rebuildIntersections()
@@ -1582,6 +2034,106 @@ function mapEditor:mergeEndpointInto(route, magnetKind, targetEndpoint)
     return true
 end
 
+function mapEditor:getActiveTextFieldValue(kind, targetId, fieldName, fallback)
+    local field = self.activeTextField
+    if field
+        and field.kind == kind
+        and field.targetId == targetId
+        and field.fieldName == fieldName then
+        return field.buffer
+    end
+    return fallback
+end
+
+function mapEditor:openTextField(kind, targetId, fieldName, buffer, valueType)
+    self.activeTextField = {
+        kind = kind,
+        targetId = targetId,
+        fieldName = fieldName,
+        buffer = buffer or "",
+        valueType = valueType,
+    }
+end
+
+function mapEditor:cancelTextField()
+    self.activeTextField = nil
+end
+
+function mapEditor:commitTextField()
+    local field = self.activeTextField
+    if not field then
+        return false
+    end
+
+    local target = nil
+    if field.kind == "map" then
+        target = self
+    elseif field.kind == "train" then
+        target = self:getTrainById(field.targetId)
+    end
+
+    if not target then
+        self.activeTextField = nil
+        return false
+    end
+
+    local rawValue = field.buffer or ""
+    local trimmedValue = rawValue:gsub("^%s+", ""):gsub("%s+$", "")
+    local changed = false
+
+    if trimmedValue == "" then
+        if field.valueType == "optional_float" then
+            target[field.fieldName] = nil
+            changed = true
+        end
+    else
+        local numericValue = tonumber(trimmedValue)
+        if numericValue then
+            if field.valueType == "int" then
+                numericValue = math.max(1, math.floor(numericValue))
+            else
+                numericValue = math.max(0, numericValue)
+            end
+            target[field.fieldName] = numericValue
+            changed = true
+        end
+    end
+
+    if field.kind == "train" and target.deadline ~= nil and target.deadline < target.spawnTime then
+        target.deadline = target.spawnTime
+    end
+
+    self.activeTextField = nil
+
+    if changed then
+        self:refreshValidation()
+        self:showStatus("Sequencer updated.")
+    end
+
+    return changed
+end
+
+function mapEditor:appendTextFieldInput(text)
+    local field = self.activeTextField
+    if not field then
+        return
+    end
+
+    local filtered = {}
+    for index = 1, #text do
+        local character = text:sub(index, index)
+        if character:match("%d") then
+            filtered[#filtered + 1] = character
+        elseif character == "." and field.valueType ~= "int" and not field.buffer:find("%.", 1, true) then
+            filtered[#filtered + 1] = character
+        end
+    end
+
+    if #filtered > 0 then
+        field.buffer = field.buffer .. table.concat(filtered)
+    end
+end
+
 function mapEditor:handleColorPickerClick(x, y, button)
     local layout = self:getColorPickerLayout()
     if not layout then
@@ -1593,14 +2145,25 @@ function mapEditor:handleColorPickerClick(x, y, button)
         return false
     end
 
-    local route = self:getSelectedRoute()
-    if not route or route.id ~= self.colorPicker.routeId then
-        self:closeColorPicker()
-        return true
-    end
-
     for _, swatch in ipairs(layout.swatches) do
         if pointInRect(x, y, swatch.rect) then
+            if self.colorPicker.mode == "sequencer" then
+                local train = self:getTrainById(self.colorPicker.trainId)
+                if train then
+                    train[self.colorPicker.fieldName] = swatch.option.id
+                    self:refreshValidation()
+                    self:showStatus("Sequencer updated.")
+                end
+                self:closeColorPicker()
+                return true
+            end
+
+            local route = self:getSelectedRoute()
+            if not route or route.id ~= self.colorPicker.routeId then
+                self:closeColorPicker()
+                return true
+            end
+
             if button == 2 then
                 self:splitEndpointColor(route, self.colorPicker.magnetKind, swatch.option.id)
             else
@@ -1611,6 +2174,140 @@ function mapEditor:handleColorPickerClick(x, y, button)
     end
 
     return true
+end
+
+function mapEditor:getTextFieldRect(x, y, width)
+    return {
+        x = x,
+        y = y,
+        w = width,
+        h = 26,
+    }
+end
+
+function mapEditor:getSequencerSummaryRects(rowRect)
+    local x = rowRect.x + 8
+    local y = rowRect.y + 8
+    local gap = 4
+
+    local startRect = { x = x, y = y, w = 34, h = 18 }
+    local nameRect = { x = startRect.x + startRect.w + gap, y = y, w = 60, h = 18 }
+    local lineRect = { x = nameRect.x + nameRect.w + gap, y = y, w = 16, h = 16 }
+    local goalRect = { x = lineRect.x + lineRect.w + gap, y = y, w = 16, h = 16 }
+    local wagonsRect = { x = goalRect.x + goalRect.w + gap, y = y, w = 30, h = 18 }
+    local removeRect = { x = rowRect.x + rowRect.w - 20, y = rowRect.y + 8, w = 16, h = 16 }
+    local deadlineRect = {
+        x = wagonsRect.x + wagonsRect.w + gap,
+        y = y,
+        w = math.max(42, removeRect.x - gap - (wagonsRect.x + wagonsRect.w + gap)),
+        h = 18,
+    }
+
+    return {
+        start = startRect,
+        name = nameRect,
+        lineChip = lineRect,
+        goalChip = goalRect,
+        wagons = wagonsRect,
+        deadline = deadlineRect,
+        remove = removeRect,
+    }
+end
+
+function mapEditor:getSequencerRowControlRects(rowRect)
+    return {
+        summary = self:getSequencerSummaryRects(rowRect),
+    }
+end
+
+function mapEditor:handleSequencerClick(x, y, button)
+    local layout = self:getSequencerLayout()
+    local deadlineRect = layout.mapDeadlineRect
+
+    if self.colorPicker then
+        self:closeColorPicker()
+    end
+
+    if pointInRect(x, y, layout.backRect) then
+        self:commitTextField()
+        self.sidePanelMode = "default"
+        self:showStatus("Returned to the map editor pane.")
+        return true
+    end
+
+    if pointInRect(x, y, layout.addRect) then
+        self:commitTextField()
+        self:addTrain()
+        return true
+    end
+
+    if pointInRect(x, y, deadlineRect) then
+        self:commitTextField()
+        self:openTextField("map", "map", "timeLimit", self.timeLimit and tostring(self.timeLimit) or "", "optional_float")
+        return true
+    end
+
+    if layout.scrollbar and pointInRect(x, y, layout.scrollbar.thumb) then
+        self:commitTextField()
+        self.sequencerScrollDrag = {
+            offsetY = y - layout.scrollbar.thumb.y,
+            track = layout.scrollbar.track,
+            thumbHeight = layout.scrollbar.thumb.h,
+            maxScroll = layout.scrollbar.maxScroll,
+        }
+        return true
+    end
+
+    if layout.scrollbar and pointInRect(x, y, layout.scrollbar.track) then
+        self:commitTextField()
+        local thumbTravel = math.max(1, layout.scrollbar.track.h - layout.scrollbar.thumb.h)
+        local targetY = clamp(y - layout.scrollbar.thumb.h * 0.5, layout.scrollbar.track.y, layout.scrollbar.track.y + thumbTravel)
+        self.sequencerScroll = ((targetY - layout.scrollbar.track.y) / thumbTravel) * layout.scrollbar.maxScroll
+        return true
+    end
+
+    for _, row in ipairs(layout.rows) do
+        local train = row.entry.train
+        local controls = self:getSequencerRowControlRects(row.rect)
+        if pointInRect(x, y, controls.summary.remove) then
+            self:commitTextField()
+            self:removeTrainByIndex(row.entry.trainIndex)
+            return true
+        end
+
+        if pointInRect(x, y, controls.summary.lineChip) then
+            self:commitTextField()
+            self:openSequencerColorPicker(train.id, "lineColor", controls.summary.lineChip.x, controls.summary.lineChip.y)
+            return true
+        end
+
+        if pointInRect(x, y, controls.summary.goalChip) then
+            self:commitTextField()
+            self:openSequencerColorPicker(train.id, "trainColor", controls.summary.goalChip.x, controls.summary.goalChip.y)
+            return true
+        end
+
+        if pointInRect(x, y, controls.summary.start) then
+            self:commitTextField()
+            self:openTextField("train", train.id, "spawnTime", tostring(train.spawnTime or 0), "float")
+            return true
+        end
+
+        if pointInRect(x, y, controls.summary.wagons) then
+            self:commitTextField()
+            self:openTextField("train", train.id, "wagonCount", tostring(train.wagonCount or DEFAULT_TRAIN_WAGONS), "int")
+            return true
+        end
+
+        if pointInRect(x, y, controls.summary.deadline) then
+            self:commitTextField()
+            self:openTextField("train", train.id, "deadline", train.deadline and tostring(train.deadline) or "", "optional_float")
+            return true
+        end
+    end
+
+    self:commitTextField()
+    return pointInRect(x, y, self.sidePanel)
 end
 
 function mapEditor:handleDialogClick(x, y)
@@ -1648,16 +2345,25 @@ function mapEditor:handleDialogClick(x, y)
     return true
 end
 
-function mapEditor:copyToClipboard()
-    love.system.setClipboardText(self:serialize())
-    self:showStatus("Editor data copied to the clipboard.")
-end
-
 function mapEditor:keypressed(key)
     if key == "escape" then
         if self.dialog then
             self:closeDialog()
             self:showStatus("Dialog closed.")
+            return true
+        end
+        if self.activeTextField then
+            self:cancelTextField()
+            self:showStatus("Text edit cancelled.")
+            return true
+        end
+        if self.colorPicker then
+            self:closeColorPicker()
+            return true
+        end
+        if self.sidePanelMode == "sequencer" then
+            self.sidePanelMode = "default"
+            self:showStatus("Returned to the map editor pane.")
             return true
         end
         return false
@@ -1684,27 +2390,46 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if self.activeTextField then
+        if key == "backspace" then
+            if #self.activeTextField.buffer > 0 then
+                self.activeTextField.buffer = string.sub(self.activeTextField.buffer, 1, #self.activeTextField.buffer - 1)
+            end
+            return true
+        end
+
+        if key == "return" or key == "kpenter" then
+            self:commitTextField()
+            return true
+        end
+    end
+
     if key == "delete" or key == "backspace" then
         self:deleteSelection()
         return true
     end
 
     if key == "s" then
+        self:commitTextField()
         self:openSaveDialog()
         return true
     end
 
     if key == "o" then
+        self:commitTextField()
         self:openOpenDialog()
         return true
     end
 
     if key == "c" then
-        self:copyToClipboard()
+        self:commitTextField()
+        self.sidePanelMode = self.sidePanelMode == "sequencer" and "default" or "sequencer"
+        self:showStatus(self.sidePanelMode == "sequencer" and "Sequencer opened." or "Returned to the map editor pane.")
         return true
     end
 
     if key == "r" then
+        self:commitTextField()
         self:resetFromMap(self.loadedMapPayload, self.sourceInfo)
         self:showStatus("Editor reset to the current map.")
         return true
@@ -1716,6 +2441,8 @@ end
 function mapEditor:textinput(text)
     if self.dialog and self.dialog.type == "save" then
         self.dialog.input = self.dialog.input .. text
+    elseif self.activeTextField then
+        self:appendTextFieldInput(text)
     end
 end
 
@@ -1726,6 +2453,10 @@ function mapEditor:mousepressed(x, y, button)
 
     if self.dialog and self:handleDialogClick(x, y) then
         return true
+    end
+
+    if self.activeTextField and not pointInRect(x, y, self.sidePanel) then
+        self:commitTextField()
     end
 
     if self.colorPicker and self:handleColorPickerClick(x, y, button) then
@@ -1746,6 +2477,10 @@ function mapEditor:mousepressed(x, y, button)
         return false
     end
 
+    if self.sidePanelMode == "sequencer" and self:handleSequencerClick(x, y, button) then
+        return true
+    end
+
     if pointInRect(x, y, self:getSaveButtonRect()) then
         self:openSaveDialog()
         return true
@@ -1756,8 +2491,9 @@ function mapEditor:mousepressed(x, y, button)
         return true
     end
 
-    if pointInRect(x, y, self:getCopyButtonRect()) then
-        self:copyToClipboard()
+    if pointInRect(x, y, self:getSequencerButtonRect()) then
+        self.sidePanelMode = "sequencer"
+        self:showStatus("Sequencer opened.")
         return true
     end
 
@@ -1830,7 +2566,34 @@ function mapEditor:mousepressed(x, y, button)
     return false
 end
 
+function mapEditor:wheelmoved(_, y)
+    if self.sidePanelMode ~= "sequencer" then
+        return false
+    end
+
+    local layout = self:getSequencerLayout()
+    if layout.maxScroll <= 0 then
+        return false
+    end
+
+    if y > 0 then
+        self.sequencerScroll = math.max(0, (self.sequencerScroll or 0) - 40)
+    elseif y < 0 then
+        self.sequencerScroll = math.min(layout.maxScroll, (self.sequencerScroll or 0) + 40)
+    end
+
+    return true
+end
+
 function mapEditor:mousemoved(x, y)
+    if self.sequencerScrollDrag then
+        local drag = self.sequencerScrollDrag
+        local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
+        local thumbY = clamp(y - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
+        self.sequencerScroll = ((thumbY - drag.track.y) / thumbTravel) * drag.maxScroll
+        return true
+    end
+
     if not self.drag then
         return false
     end
@@ -1840,7 +2603,16 @@ function mapEditor:mousemoved(x, y)
 end
 
 function mapEditor:mousereleased(x, y, button)
-    if button ~= 1 or not self.drag then
+    if button ~= 1 then
+        return false
+    end
+
+    if self.sequencerScrollDrag then
+        self.sequencerScrollDrag = nil
+        return true
+    end
+
+    if not self.drag then
         return false
     end
 
@@ -1879,6 +2651,7 @@ end
 function mapEditor:serialize()
     local lines = {
         "return {",
+        string.format("    timeLimit = %s,", self.timeLimit and formatNumber(self.timeLimit) or "nil"),
         "    endpoints = {",
     }
 
@@ -1915,6 +2688,20 @@ function mapEditor:serialize()
             )
         end
         lines[#lines + 1] = "            },"
+        lines[#lines + 1] = "        },"
+    end
+
+    lines[#lines + 1] = "    },"
+    lines[#lines + 1] = "    trains = {"
+
+    for _, train in ipairs(self.trains) do
+        lines[#lines + 1] = "        {"
+        lines[#lines + 1] = string.format("            id = %q,", train.id)
+        lines[#lines + 1] = string.format("            lineColor = %q,", train.lineColor)
+        lines[#lines + 1] = string.format("            trainColor = %q,", train.trainColor)
+        lines[#lines + 1] = string.format("            spawnTime = %s,", formatNumber(train.spawnTime))
+        lines[#lines + 1] = string.format("            wagonCount = %d,", train.wagonCount)
+        lines[#lines + 1] = string.format("            deadline = %s,", train.deadline and formatNumber(train.deadline) or "nil")
         lines[#lines + 1] = "        },"
     end
 
@@ -2094,12 +2881,14 @@ end
 
 function mapEditor:drawPanelButton(rect, label, accentColor)
     local graphics = love.graphics
+    local font = graphics.getFont()
     graphics.setColor(0.1, 0.12, 0.16, 0.96)
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
+    graphics.setLineWidth(1.5)
     graphics.setColor(accentColor[1], accentColor[2], accentColor[3], 1)
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(label, rect.x, rect.y + 11, rect.w, "center")
+    graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
 end
 
 function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numberColor)
@@ -2135,29 +2924,29 @@ function mapEditor:drawColorPicker(game)
         return
     end
 
-    local route = self:getSelectedRoute()
-    if not route or route.id ~= self.colorPicker.routeId then
-        return
-    end
-
     local graphics = love.graphics
-    local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
-    local lookup = endpoint and endpoint.colors or {}
+    local lookup = {}
+
+    if self.colorPicker.mode == "route" then
+        local route = self:getSelectedRoute()
+        if not route or route.id ~= self.colorPicker.routeId then
+            return
+        end
+        local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
+        lookup = endpoint and endpoint.colors or {}
+    elseif self.colorPicker.mode == "sequencer" then
+        local train = self:getTrainById(self.colorPicker.trainId)
+        if not train then
+            return
+        end
+        lookup[train[self.colorPicker.fieldName]] = true
+    end
 
     graphics.setColor(0.08, 0.1, 0.14, 0.98)
     graphics.rectangle("fill", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
     graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.setLineWidth(1.2)
     graphics.rectangle("line", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(
-        self.colorPicker.magnetKind == "start" and "Allowed Start Colors" or "Allowed Exit Colors",
-        layout.rect.x + 14,
-        layout.rect.y + 14,
-        layout.rect.w - 28,
-        "center"
-    )
 
     for _, swatch in ipairs(layout.swatches) do
         local rect = swatch.rect
@@ -2171,12 +2960,9 @@ function mapEditor:drawColorPicker(game)
 
         if selected then
             graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.setLineWidth(3)
+            graphics.setLineWidth(2)
             graphics.rectangle("line", rect.x - 3, rect.y - 3, rect.w + 6, rect.h + 6, 10, 10)
         end
-
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf(option.label, rect.x - 14, rect.y + rect.h + 6, rect.w + 28, "center")
     end
 end
 
@@ -2242,53 +3028,171 @@ function mapEditor:drawDialog(game)
     end
 end
 
-function mapEditor:draw(game)
+function mapEditor:drawTextField(label, rect, valueText, accentColor, active)
     local graphics = love.graphics
+    local color = accentColor or { 0.48, 0.92, 0.62 }
 
-    graphics.setColor(0.05, 0.07, 0.09, 1)
-    graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.printf(label, rect.x - 4, rect.y - 17, rect.w + 8, "center")
 
-    graphics.setColor(0.07, 0.09, 0.12, 1)
-    graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
+    graphics.setColor(0.06, 0.08, 0.1, 1)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 8, 8)
+    graphics.setLineWidth(active and 2 or 1.2)
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 8, 8)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(valueText, rect.x + 6, rect.y + 5, rect.w - 12, "left")
+end
 
-    graphics.setColor(0.1, 0.14, 0.18, 0.96)
-    graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.spawnBandHeight, 18, 18)
+function mapEditor:drawColorChip(label, rect, colorId, accentColor)
+    local graphics = love.graphics
+    local color = accentColor or getColorById(colorId)
+    local labelWidth = love.graphics.getFont():getWidth(label)
 
-    graphics.setColor(0.25, 0.34, 0.42, 1)
-    graphics.setLineWidth(2)
-    graphics.rectangle("line", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.print(label, rect.x - labelWidth - 6, rect.y - 1)
 
-    graphics.setColor(0.16, 0.2, 0.24, 1)
-    graphics.line(
-        self.canvas.x + 16,
-        self.canvas.y + self.spawnBandHeight,
-        self.canvas.x + self.canvas.w - 16,
-        self.canvas.y + self.spawnBandHeight
-    )
+    graphics.setColor(0.06, 0.08, 0.1, 1)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 5, 5)
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.rectangle("fill", rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, 4, 4)
+    graphics.setLineWidth(1.1)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 5, 5)
+end
 
-    for _, route in ipairs(self.routes) do
-        self:drawRoute(route, self.selectedRouteId)
-    end
+function mapEditor:drawSequencerSummaryChip(rect, colorId)
+    local graphics = love.graphics
+    local color = getColorById(colorId)
 
-    for _, intersection in ipairs(self.intersections) do
-        self:drawIntersection(intersection)
-    end
+    graphics.setColor(0.06, 0.08, 0.1, 1)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 4, 4)
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.rectangle("fill", rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, 3, 3)
+    graphics.setLineWidth(1)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 4, 4)
+end
 
-    self:drawColorPicker(game)
+function mapEditor:drawSequencerSummaryValue(rect, valueText, align)
+    local graphics = love.graphics
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    graphics.printf(valueText or "", rect.x, rect.y + 1, rect.w, align or "center")
+end
 
-    graphics.setColor(0.09, 0.11, 0.15, 0.98)
-    graphics.rectangle("fill", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
-    graphics.setColor(0.22, 0.28, 0.34, 1)
-    graphics.rectangle("line", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
+function mapEditor:drawSequencerInlineField(rect, valueText, accentColor, active)
+    local graphics = love.graphics
+    local color = accentColor or { 0.48, 0.92, 0.62 }
+
+    graphics.setColor(0.06, 0.08, 0.1, 1)
+    graphics.rectangle("fill", rect.x, rect.y - 1, rect.w, rect.h + 2, 6, 6)
+    graphics.setLineWidth(active and 1.8 or 1)
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.rectangle("line", rect.x, rect.y - 1, rect.w, rect.h + 2, 6, 6)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(valueText or "", rect.x + 4, rect.y + 1, rect.w - 8, "center")
+end
+
+function mapEditor:drawSequencer(game)
+    local graphics = love.graphics
+    local layout = self:getSequencerLayout()
+    local mapDeadlineText = self:getActiveTextFieldValue("map", "map", "timeLimit", self.timeLimit and tostring(self.timeLimit) or "")
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Map Editor", self.sidePanel.x + 18, self.sidePanel.y + 20)
+    graphics.print("Train Sequencer", layout.panelX, self.sidePanel.y + 20)
 
     love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.printf("Esc returns to the main menu", self.sidePanel.x + 18, self.sidePanel.y + 64, self.sidePanel.w - 36)
+    self:drawTextField(
+        "Map Deadline",
+        layout.mapDeadlineRect,
+        mapDeadlineText ~= "" and mapDeadlineText or "",
+        { 0.99, 0.78, 0.32 },
+        self.activeTextField and self.activeTextField.kind == "map"
+    )
+    self:drawPanelButton(layout.addRect, "Add Train", { 0.48, 0.92, 0.62 })
 
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.68, 0.74, 0.8, 1)
+    local header = self:getSequencerSummaryRects(layout.listHeaderRect)
+    graphics.printf("Start", header.start.x - 2, layout.listHeaderRect.y, header.start.w + 4, "center")
+    graphics.printf("Name", header.name.x - 2, layout.listHeaderRect.y, header.name.w + 4, "center")
+    graphics.printf("Line", header.lineChip.x - 6, layout.listHeaderRect.y, header.lineChip.w + 12, "center")
+    graphics.printf("Goal", header.goalChip.x - 6, layout.listHeaderRect.y, header.goalChip.w + 12, "center")
+    graphics.printf("Wagons", header.wagons.x - 4, layout.listHeaderRect.y, header.wagons.w + 8, "center")
+    graphics.printf("Deadline", header.deadline.x - 4, layout.listHeaderRect.y, header.deadline.w + 8, "center")
+
+    love.graphics.setScissor(layout.listRect.x, layout.listRect.y, layout.listRect.w, layout.listRect.h)
+    for _, row in ipairs(layout.rows) do
+        local entry = row.entry
+        local train = entry.train
+        local controls = self:getSequencerRowControlRects(row.rect)
+        local startText = self:getActiveTextFieldValue("train", train.id, "spawnTime", tostring(train.spawnTime or 0))
+        local wagonsText = self:getActiveTextFieldValue("train", train.id, "wagonCount", tostring(train.wagonCount or DEFAULT_TRAIN_WAGONS))
+        local deadlineText = self:getActiveTextFieldValue("train", train.id, "deadline", train.deadline and tostring(train.deadline) or "--")
+
+        graphics.setColor(0.06, 0.08, 0.1, 1)
+        graphics.rectangle("fill", row.rect.x, row.rect.y, row.rect.w, row.rect.h, 12, 12)
+        graphics.setLineWidth(1.1)
+        graphics.setColor(0.24, 0.32, 0.4, 1)
+        graphics.rectangle("line", row.rect.x, row.rect.y, row.rect.w, row.rect.h, 12, 12)
+
+        love.graphics.setFont(game.fonts.small)
+        self:drawSequencerInlineField(
+            controls.summary.start,
+            startText,
+            { 0.33, 0.8, 0.98 },
+            self.activeTextField and self.activeTextField.kind == "train" and self.activeTextField.targetId == train.id and self.activeTextField.fieldName == "spawnTime"
+        )
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.printf(entry.castName, controls.summary.name.x, controls.summary.name.y + 1, controls.summary.name.w, "left")
+        self:drawSequencerSummaryChip(controls.summary.lineChip, train.lineColor)
+        self:drawSequencerSummaryChip(controls.summary.goalChip, train.trainColor)
+        self:drawSequencerInlineField(
+            controls.summary.wagons,
+            wagonsText,
+            { 0.48, 0.92, 0.62 },
+            self.activeTextField and self.activeTextField.kind == "train" and self.activeTextField.targetId == train.id and self.activeTextField.fieldName == "wagonCount"
+        )
+        self:drawSequencerInlineField(
+            controls.summary.deadline,
+            deadlineText,
+            { 0.99, 0.78, 0.32 },
+            self.activeTextField and self.activeTextField.kind == "train" and self.activeTextField.targetId == train.id and self.activeTextField.fieldName == "deadline"
+        )
+
+        graphics.setLineWidth(1.1)
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.rectangle("line", controls.summary.remove.x, controls.summary.remove.y, controls.summary.remove.w, controls.summary.remove.h, 5, 5)
+        graphics.printf("X", controls.summary.remove.x, controls.summary.remove.y + 1, controls.summary.remove.w, "center")
+    end
+    love.graphics.setScissor()
+
+    if #layout.rows == 0 then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("No trains are authored yet. Add one to start sequencing this map.", layout.panelX, layout.listRect.y + 24, layout.panelWidth, "center")
+    end
+
+    if layout.scrollbar then
+        graphics.setColor(0.1, 0.12, 0.16, 1)
+        graphics.rectangle("fill", layout.scrollbar.track.x, layout.scrollbar.track.y, layout.scrollbar.track.w, layout.scrollbar.track.h, 4, 4)
+        graphics.setColor(0.24, 0.32, 0.4, 1)
+        graphics.rectangle("line", layout.scrollbar.track.x, layout.scrollbar.track.y, layout.scrollbar.track.w, layout.scrollbar.track.h, 4, 4)
+        graphics.setColor(0.33, 0.8, 0.98, 1)
+        graphics.rectangle("fill", layout.scrollbar.thumb.x, layout.scrollbar.thumb.y, layout.scrollbar.thumb.w, layout.scrollbar.thumb.h, 4, 4)
+    end
+
+    if self.statusText then
+        graphics.setColor(0.48, 0.92, 0.62, 1)
+        graphics.printf(self.statusText, layout.panelX, layout.backRect.y - 52, layout.panelWidth)
+    end
+
+    self:drawPanelButton(layout.backRect, "Back", { 0.99, 0.78, 0.32 })
+end
+
+function mapEditor:drawDefaultSidePanel(game)
+    local graphics = love.graphics
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
     local panelBottom = self:getSaveButtonRect().y - 16
@@ -2302,7 +3206,7 @@ function mapEditor:draw(game)
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.68, 0.74, 0.8, 1)
     graphics.printf(
-        string.format("Routes: %d  |  Intersections: %d", #self.routes, #self.intersections),
+        string.format("Routes: %d  |  Intersections: %d  |  Trains: %d", #self.routes, #self.intersections, #self.trains),
         panelX,
         currentY,
         panelWidth
@@ -2347,20 +3251,10 @@ function mapEditor:draw(game)
         local startColors = table.concat(lookupToSortedIds(startEndpoint and startEndpoint.colors or {}), ", ")
         local endColors = table.concat(lookupToSortedIds(endEndpoint and endEndpoint.colors or {}), ", ")
         graphics.setColor(selectedRoute.color[1], selectedRoute.color[2], selectedRoute.color[3], 1)
-        graphics.printf(
-            "Selected route: " .. (selectedRoute.label or selectedRoute.id),
-            panelX,
-            currentY,
-            panelWidth
-        )
+        graphics.printf("Selected route: " .. (selectedRoute.label or selectedRoute.id), panelX, currentY, panelWidth)
         currentY = currentY + 24
         graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf(
-            "Start magnet: " .. startColors .. "\nExit magnet: " .. endColors,
-            panelX,
-            currentY,
-            panelWidth
-        )
+        graphics.printf("Start magnet: " .. startColors .. "\nExit magnet: " .. endColors, panelX, currentY, panelWidth)
     end
 
     if self.statusText then
@@ -2368,10 +3262,64 @@ function mapEditor:draw(game)
         graphics.printf(self.statusText, panelX, panelBottom - 42, panelWidth)
     end
 
+    love.graphics.setFont(game.fonts.small)
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
-    self:drawPanelButton(self:getCopyButtonRect(), "Copy Export (C)", { 0.48, 0.92, 0.62 })
+    self:drawPanelButton(self:getSequencerButtonRect(), "Sequencer (C)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getResetButtonRect(), "Reset To Map (R)", { 0.99, 0.78, 0.32 })
+end
+
+function mapEditor:draw(game)
+    local graphics = love.graphics
+
+    graphics.setColor(0.05, 0.07, 0.09, 1)
+    graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
+
+    graphics.setColor(0.07, 0.09, 0.12, 1)
+    graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
+
+    graphics.setColor(0.1, 0.14, 0.18, 0.96)
+    graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.spawnBandHeight, 18, 18)
+
+    graphics.setColor(0.25, 0.34, 0.42, 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle("line", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
+
+    graphics.setColor(0.16, 0.2, 0.24, 1)
+    graphics.line(
+        self.canvas.x + 16,
+        self.canvas.y + self.spawnBandHeight,
+        self.canvas.x + self.canvas.w - 16,
+        self.canvas.y + self.spawnBandHeight
+    )
+
+    for _, route in ipairs(self.routes) do
+        self:drawRoute(route, self.selectedRouteId)
+    end
+
+    for _, intersection in ipairs(self.intersections) do
+        self:drawIntersection(intersection)
+    end
+
+    graphics.setColor(0.09, 0.11, 0.15, 0.98)
+    graphics.rectangle("fill", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
+    graphics.setColor(0.22, 0.28, 0.34, 1)
+    graphics.rectangle("line", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
+
+    if self.sidePanelMode == "sequencer" then
+        self:drawSequencer(game)
+    else
+        love.graphics.setFont(game.fonts.title)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print("Map Editor", self.sidePanel.x + 18, self.sidePanel.y + 20)
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.48, 0.92, 0.62, 1)
+        graphics.printf("Esc returns to the main menu", self.sidePanel.x + 18, self.sidePanel.y + 64, self.sidePanel.w - 36)
+        self:drawDefaultSidePanel(game)
+    end
+
+    self:drawColorPicker(game)
 
     graphics.setColor(0.7, 0.76, 0.82, 1)
     local sourceLabel
@@ -2383,12 +3331,7 @@ function mapEditor:draw(game)
         sourceLabel = "Current source: " .. (self.currentMapName or (self.level and self.level.title) or "Blank")
     end
     graphics.printf(sourceLabel, self.canvas.x + 18, self.canvas.y + 16, self.canvas.w - 36)
-    graphics.printf(
-        "Create starts from the top edge. Imported maps are editable immediately.",
-        self.canvas.x + 18,
-        self.canvas.y + self.spawnBandHeight - 24,
-        self.canvas.w - 36
-    )
+    graphics.printf("Create starts from the top edge. Imported maps are editable immediately.", self.canvas.x + 18, self.canvas.y + self.spawnBandHeight - 24, self.canvas.w - 36)
 
     self:drawDialog(game)
 end

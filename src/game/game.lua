@@ -77,6 +77,8 @@ function Game.new()
     self.levelSelectFilterHoverId = nil
     self.levelSelectVisualIndex = nil
     self.levelSelectScroll = 0
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -219,6 +221,8 @@ function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
     self.levelSelectFilterHoverId = nil
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
     self:refreshMaps()
 end
 
@@ -227,6 +231,8 @@ function Game:openLevelSelect()
     self.levelSelectIssue = nil
     self.levelSelectFilter = "all"
     self.levelSelectFilterHoverId = nil
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
     self:refreshMaps()
     local preferredMap = self.currentMapDescriptor
     if preferredMap then
@@ -246,6 +252,8 @@ end
 function Game:openEditorBlank()
     self.screen = "editor"
     self.levelSelectIssue = nil
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -259,6 +267,8 @@ function Game:openEditorMap(mapDescriptor)
 
     self.screen = "editor"
     self.levelSelectIssue = nil
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
 end
@@ -285,6 +295,8 @@ function Game:startMap(mapDescriptor)
     self.failureReason = nil
     self.currentMapDescriptor = mapDescriptor
     self.levelSelectIssue = nil
+    self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -302,6 +314,17 @@ function Game:isRunLocked()
     return self.levelComplete or self.failureReason ~= nil
 end
 
+function Game:openResults()
+    if not self.world then
+        return
+    end
+
+    self.resultsSummary = self.world:getRunSummary()
+    self.failureReason = self.resultsSummary.endReason == "level_clear" and nil or self.resultsSummary.endReason
+    self.levelComplete = self.resultsSummary.endReason == "level_clear"
+    self.screen = "results"
+end
+
 function Game:update(dt)
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
@@ -313,18 +336,19 @@ function Game:update(dt)
         return
     end
 
-    if self.screen ~= "play" or not self.world then
+    if (self.screen ~= "play" and self.screen ~= "results") or not self.world then
         return
     end
 
-    if self:isRunLocked() then
+    if self.screen == "results" or self:isRunLocked() then
         return
     end
 
     self.world:update(dt)
     self.failureReason = self.world:getFailureReason()
-    if not self.failureReason then
-        self.levelComplete = self.world:isLevelComplete()
+    self.levelComplete = self.world:isLevelComplete()
+    if self.failureReason or self.levelComplete then
+        self:openResults()
     end
 end
 
@@ -341,6 +365,8 @@ function Game:draw()
         ui.drawLevelSelect(self)
     elseif self.screen == "editor" then
         self.editor:draw(self)
+    elseif self.screen == "results" then
+        ui.drawResults(self)
     elseif self.screen == "play" and self.world then
         self.world:draw()
         ui.drawPlay(self)
@@ -443,7 +469,40 @@ function Game:keypressed(key)
         return
     end
 
+    if self.screen == "results" then
+        if key == "m" then
+            self:openMenu()
+            return
+        end
+        if (key == "e" or key == "tab") and self.currentMapDescriptor then
+            self:openEditorMap(self.currentMapDescriptor)
+            return
+        end
+        if key == "r" or key == "return" or key == "space" then
+            self:restart()
+        end
+        return
+    end
+
     if self.screen ~= "play" or not self.world then
+        return
+    end
+
+    if key == "f2" then
+        if self.playOverlayMode == "help" then
+            self.playOverlayMode = nil
+        else
+            self.playOverlayMode = "help"
+        end
+        return
+    end
+
+    if key == "f3" then
+        if self.playOverlayMode == "debug" then
+            self.playOverlayMode = nil
+        else
+            self.playOverlayMode = "debug"
+        end
         return
     end
 
@@ -455,15 +514,6 @@ function Game:keypressed(key)
     if key == "e" or key == "tab" then
         if self.currentMapDescriptor then
             self:openEditorMap(self.currentMapDescriptor)
-        end
-        return
-    end
-
-    local requestedLevel = input.getLevelShortcut(key)
-    if requestedLevel then
-        local descriptor = self:getBuiltinShortcutMap(requestedLevel)
-        if descriptor then
-            self:startMap(descriptor)
         end
         return
     end
@@ -536,6 +586,26 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self.screen == "results" then
+        if button ~= 1 then
+            return
+        end
+
+        local hit = ui.getResultsHit(self, viewportX, viewportY)
+        if not hit then
+            return
+        end
+
+        if hit == "replay" then
+            self:restart()
+        elseif hit == "menu" then
+            self:openMenu()
+        elseif hit == "editor" and self.currentMapDescriptor then
+            self:openEditorMap(self.currentMapDescriptor)
+        end
+        return
+    end
+
     if self.screen ~= "play" or not self.world then
         return
     end
@@ -546,11 +616,6 @@ function Game:mousepressed(x, y, button)
 
     if ui.getPlayBackHit(self, viewportX, viewportY) then
         self:openMenu()
-        return
-    end
-
-    if self:isRunLocked() then
-        self:restart()
         return
     end
 
@@ -581,10 +646,18 @@ end
 function Game:keyreleased(_)
 end
 
-function Game:wheelmoved(_, y)
+function Game:wheelmoved(screenX, screenY)
+    if self.screen == "editor" then
+        return self.editor:wheelmoved(screenX, screenY)
+    end
+
+    local y = screenY
     if self.screen == "level_select" and not self.levelSelectIssue and y ~= 0 then
         self:scrollLevelSelect(y > 0 and -1 or 1)
+        return true
     end
+
+    return false
 end
 
 function Game:gamepadpressed(_, button)
