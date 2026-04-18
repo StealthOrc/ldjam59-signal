@@ -1,3 +1,5 @@
+local levels = require("src.game.levels")
+
 local ui = {}
 
 local function pointInRect(x, y, rect)
@@ -7,26 +9,93 @@ local function pointInRect(x, y, rect)
         and y <= rect.y + rect.h
 end
 
-local function getLevelTabRects(game)
-    local tabWidth = 124
-    local tabHeight = 32
-    local gap = 10
-    local levelCount = game.world:getLevelCount()
-    local totalWidth = tabWidth * levelCount + gap * (levelCount - 1)
-    local startX = game.viewport.w - totalWidth - 22
-    local y = 20
-    local rects = {}
+local function drawButton(rect, label, fillColor, strokeColor, font)
+    local graphics = love.graphics
+    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+    graphics.setColor(strokeColor[1], strokeColor[2], strokeColor[3], strokeColor[4] or 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
+    love.graphics.setFont(font)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(label, rect.x, rect.y + rect.h * 0.5 - 9, rect.w, "center")
+end
 
-    for levelIndex = 1, levelCount do
+local function getMenuButtons(game)
+    local centerX = game.viewport.w * 0.5 - 160
+    return {
+        {
+            id = "play",
+            x = centerX,
+            y = 280,
+            w = 320,
+            h = 56,
+            label = "Level Select",
+        },
+        {
+            id = "editor",
+            x = centerX,
+            y = 352,
+            w = 320,
+            h = 56,
+            label = "Map Editor",
+        },
+        {
+            id = "quit",
+            x = centerX,
+            y = 424,
+            w = 320,
+            h = 56,
+            label = "Quit",
+        },
+    }
+end
+
+local function getLevelSelectBackRect()
+    return {
+        x = 32,
+        y = 28,
+        w = 116,
+        h = 38,
+    }
+end
+
+local function getBuiltinEntryRects()
+    local rects = {}
+    local startY = 128
+    for index, level in ipairs(levels) do
         rects[#rects + 1] = {
-            id = levelIndex,
-            x = startX + (levelIndex - 1) * (tabWidth + gap),
-            y = y,
-            w = tabWidth,
-            h = tabHeight,
+            kind = "builtin",
+            index = index,
+            level = level,
+            x = 40,
+            y = startY + (index - 1) * 94,
+            w = 540,
+            h = 78,
         }
     end
+    return rects
+end
 
+local function getSavedEntryRects(game)
+    local rects = {}
+    local startY = 128
+    for index, savedMap in ipairs(game.savedMaps or {}) do
+        rects[#rects + 1] = {
+            kind = "saved",
+            fileName = savedMap.fileName,
+            map = savedMap,
+            x = 700,
+            y = startY + (index - 1) * 94,
+            w = 540,
+            h = 78,
+            editRect = {
+                x = 1110,
+                y = startY + (index - 1) * 94 + 20,
+                w = 104,
+                h = 36,
+            },
+        }
+    end
     return rects
 end
 
@@ -58,8 +127,8 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
     graphics.printf(footer, 0, game.viewport.h * 0.5 + 72, game.viewport.w, "center")
 end
 
-function ui.getLevelTabAt(game, x, y)
-    for _, rect in ipairs(getLevelTabRects(game)) do
+function ui.getMenuActionAt(game, x, y)
+    for _, rect in ipairs(getMenuButtons(game)) do
         if pointInRect(x, y, rect) then
             return rect.id
         end
@@ -68,7 +137,137 @@ function ui.getLevelTabAt(game, x, y)
     return nil
 end
 
-function ui.draw(game)
+function ui.getLevelSelectHit(game, x, y)
+    local backRect = getLevelSelectBackRect()
+    if pointInRect(x, y, backRect) then
+        return { kind = "back" }
+    end
+
+    for _, rect in ipairs(getBuiltinEntryRects()) do
+        if pointInRect(x, y, rect) then
+            return { kind = "builtin", index = rect.index }
+        end
+    end
+
+    for _, rect in ipairs(getSavedEntryRects(game)) do
+        if pointInRect(x, y, rect.editRect) then
+            return { kind = "edit_saved", fileName = rect.fileName }
+        end
+        if pointInRect(x, y, rect) then
+            return { kind = "saved", fileName = rect.fileName }
+        end
+    end
+
+    return nil
+end
+
+function ui.getPlayBackHit(_, x, y)
+    return pointInRect(x, y, {
+        x = 1114,
+        y = 28,
+        w = 134,
+        h = 38,
+    })
+end
+
+function ui.drawMenu(game)
+    local graphics = love.graphics
+
+    graphics.setColor(0.05, 0.07, 0.1, 1)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+
+    graphics.setColor(0, 0, 0, 0.22)
+    graphics.circle("fill", 200, 140, 180)
+    graphics.circle("fill", 1080, 560, 220)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf("Out of Signal", 0, 128, game.viewport.w, "center")
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    graphics.printf(
+        "Route trains through lever-controlled merges, or build your own maps and save them for later.",
+        game.viewport.w * 0.5 - 280,
+        188,
+        560,
+        "center"
+    )
+
+    for _, rect in ipairs(getMenuButtons(game)) do
+        drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+    end
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.printf("Enter opens level select. E opens the editor directly. Esc quits.", 0, 620, game.viewport.w, "center")
+end
+
+function ui.drawLevelSelect(game)
+    local graphics = love.graphics
+
+    graphics.setColor(0.05, 0.07, 0.1, 1)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print("Level Select", 40, 28)
+
+    drawButton(getLevelSelectBackRect(), "Back", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.48, 0.92, 0.62, 1)
+    graphics.print("Built-In Maps", 40, 90)
+    graphics.print("Saved Maps", 700, 90)
+
+    for _, rect in ipairs(getBuiltinEntryRects()) do
+        graphics.setColor(0.09, 0.11, 0.15, 0.98)
+        graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+        graphics.setColor(0.26, 0.34, 0.42, 1)
+        graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
+
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(rect.level.title, rect.x + 18, rect.y + 14)
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.82, 0.86, 0.9, 1)
+        graphics.printf(rect.level.description, rect.x + 18, rect.y + 42, rect.w - 36)
+    end
+
+    local savedRects = getSavedEntryRects(game)
+    if #savedRects == 0 then
+        graphics.setColor(0.09, 0.11, 0.15, 0.98)
+        graphics.rectangle("fill", 700, 128, 540, 120, 16, 16)
+        graphics.setColor(0.26, 0.34, 0.42, 1)
+        graphics.rectangle("line", 700, 128, 540, 120, 16, 16)
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("No saved maps yet. Open the editor from the main menu and save one there.", 730, 166, 480, "center")
+    else
+        for _, rect in ipairs(savedRects) do
+            graphics.setColor(0.09, 0.11, 0.15, 0.98)
+            graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+            graphics.setColor(0.26, 0.34, 0.42, 1)
+            graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
+
+            love.graphics.setFont(game.fonts.body)
+            graphics.setColor(0.97, 0.98, 1, 1)
+            graphics.print(rect.map.name, rect.x + 18, rect.y + 14)
+
+            love.graphics.setFont(game.fonts.small)
+            graphics.setColor(0.82, 0.86, 0.9, 1)
+            if rect.map.hasLevel then
+                graphics.print("Click to play", rect.x + 18, rect.y + 46)
+            else
+                graphics.print("Saved for editing only", rect.x + 18, rect.y + 46)
+            end
+
+            drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
+        end
+    end
+end
+
+function ui.drawPlay(game)
     local graphics = love.graphics
     local level = game.world:getLevel()
 
@@ -97,39 +296,25 @@ function ui.draw(game)
         graphics.print(string.format("Time left: %.1fs", game.world.timeRemaining), 220, 172)
     end
 
-    local tabRects = getLevelTabRects(game)
-    love.graphics.setFont(game.fonts.small)
-    for _, rect in ipairs(tabRects) do
-        local selected = rect.id == game.levelIndex
-
-        if selected then
-            graphics.setColor(0.2, 0.28, 0.34, 0.98)
-        else
-            graphics.setColor(0.08, 0.1, 0.12, 0.94)
-        end
-        graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
-
-        if selected then
-            graphics.setColor(0.48, 0.92, 0.62, 1)
-        else
-            graphics.setColor(0.3, 0.36, 0.42, 1)
-        end
-        graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
-
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.printf("F" .. rect.id .. "  Map " .. rect.id, rect.x, rect.y + 8, rect.w, "center")
-    end
+    drawButton(
+        { x = 1114, y = 28, w = 134, h = 38 },
+        "Main Menu",
+        { 0.09, 0.11, 0.15, 0.98 },
+        { 0.3, 0.36, 0.42, 1 },
+        game.fonts.small
+    )
 
     graphics.setColor(0.8, 0.84, 0.9, 0.82)
     graphics.printf(level.hint, 0, game.viewport.h - 66, game.viewport.w, "center")
     graphics.printf(level.footer, 0, game.viewport.h - 42, game.viewport.w, "center")
+    graphics.printf("Press M for the main menu, E for the editor, or R to restart", 0, game.viewport.h - 90, game.viewport.w, "center")
 
     if game.failureReason == "collision" then
         drawCenteredOverlay(
             game,
             "Signal Failure",
             "Two trains overlapped because the routes were switched unsafely.",
-            "Click, press Enter, Space, or R to retry the current map",
+            "Click, press Enter, Space, or R to retry this map",
             { 0.97, 0.36, 0.3 }
         )
     elseif game.failureReason == "timeout" then
@@ -137,7 +322,7 @@ function ui.draw(game)
             game,
             "Too Late",
             "The timer expired before every train cleared its exit.",
-            "Retry the map and use the delayed button earlier",
+            "Retry the map and arm route changes earlier",
             { 0.99, 0.83, 0.44 }
         )
     elseif game.levelComplete then
@@ -145,7 +330,7 @@ function ui.draw(game)
             game,
             "Level Clear",
             "All trains cleared their exits.",
-            "Click a map tab to continue, or press R to replay this one",
+            "Click, press Enter, Space, or R to replay. Press M for the main menu.",
             { 0.48, 0.92, 0.62 }
         )
     end

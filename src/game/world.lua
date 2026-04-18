@@ -37,6 +37,23 @@ local function distanceSquared(ax, ay, bx, by)
     return dx * dx + dy * dy
 end
 
+local function copyPoint(point)
+    return { x = point.x, y = point.y }
+end
+
+local function denormalizePoints(points, viewportW, viewportH)
+    local denormalized = {}
+
+    for _, point in ipairs(points or {}) do
+        denormalized[#denormalized + 1] = {
+            x = viewportW * point.x,
+            y = viewportH * point.y,
+        }
+    end
+
+    return denormalized
+end
+
 local function buildPolyline(points)
     local segments = {}
     local totalLength = 0
@@ -112,7 +129,16 @@ local function pointOnPath(path, distance)
     return last.b.x, last.b.y, angleBetweenPoints(last.a, last.b)
 end
 
-function world.new(viewportW, viewportH, levelIndex)
+local function flattenPoints(points)
+    local flattened = {}
+    for _, point in ipairs(points or {}) do
+        flattened[#flattened + 1] = point.x
+        flattened[#flattened + 1] = point.y
+    end
+    return flattened
+end
+
+function world.new(viewportW, viewportH, levelSource)
     local self = setmetatable({}, world)
 
     self.viewport = { w = viewportW, h = viewportH }
@@ -128,8 +154,13 @@ function world.new(viewportW, viewportH, levelIndex)
     self.collisionPoint = nil
     self.failureReason = nil
     self.timeRemaining = nil
-    self.levelIndex = clamp(levelIndex or 1, 1, #levels)
-    self.level = levels[self.levelIndex]
+    if type(levelSource) == "table" then
+        self.levelIndex = nil
+        self.level = levelSource
+    else
+        self.levelIndex = clamp(levelSource or 1, 1, #levels)
+        self.level = levels[self.levelIndex]
+    end
     self.junctions = {}
     self.junctionOrder = {}
     self.trains = {}
@@ -148,26 +179,38 @@ function world:getLevel()
 end
 
 function world:buildTrack(branchDef, mergeX, mergeY, exitY)
-    local startY = -120
-    local bendY = mergeY - self.viewport.h * 0.22
-    local startX = self.viewport.w * branchDef.startX
-    local branchPath = buildPolyline({
-        { x = startX, y = startY },
-        { x = startX, y = bendY },
-        { x = mergeX, y = mergeY },
-    })
+    local branchPoints
+    local sharedPoints
 
-    local sharedPath = buildPolyline({
-        { x = mergeX, y = mergeY },
-        { x = mergeX, y = exitY },
-    })
+    if branchDef.branchPoints and branchDef.sharedPoints then
+        branchPoints = denormalizePoints(branchDef.branchPoints, self.viewport.w, self.viewport.h)
+        sharedPoints = denormalizePoints(branchDef.sharedPoints, self.viewport.w, self.viewport.h)
+    else
+        local startY = -120
+        local bendY = mergeY - self.viewport.h * 0.22
+        local startX = self.viewport.w * branchDef.startX
+        branchPoints = {
+            { x = startX, y = startY },
+            { x = startX, y = bendY },
+            { x = mergeX, y = mergeY },
+        }
+        sharedPoints = {
+            { x = mergeX, y = mergeY },
+            { x = mergeX, y = exitY },
+        }
+    end
 
-    local fullPath = buildPolyline({
-        { x = startX, y = startY },
-        { x = startX, y = bendY },
-        { x = mergeX, y = mergeY },
-        { x = mergeX, y = exitY },
-    })
+    local fullPoints = {}
+    for _, point in ipairs(branchPoints) do
+        fullPoints[#fullPoints + 1] = copyPoint(point)
+    end
+    for pointIndex = 2, #sharedPoints do
+        fullPoints[#fullPoints + 1] = copyPoint(sharedPoints[pointIndex])
+    end
+
+    local branchPath = buildPolyline(branchPoints)
+    local sharedPath = buildPolyline(sharedPoints)
+    local fullPath = buildPolyline(fullPoints)
 
     local signalDistance = math.max(branchPath.length - (self.crossingRadius + 10), 0)
     local stopDistance = math.max(signalDistance - (self.carriageLength + 12), 0)
@@ -190,9 +233,24 @@ function world:buildTrack(branchDef, mergeX, mergeY, exitY)
 end
 
 function world:buildJunction(definition, existing)
-    local mergeX = self.viewport.w * definition.mergeX
-    local mergeY = self.viewport.h * definition.mergeY
-    local exitY = self.viewport.h * (definition.exitY or 1.25)
+    local mergeX
+    local mergeY
+    local exitY
+
+    if definition.branches
+        and definition.branches[1]
+        and definition.branches[1].branchPoints
+        and definition.branches[1].sharedPoints then
+        local mergePoint = definition.branches[1].sharedPoints[1]
+        local exitPoint = definition.branches[1].sharedPoints[#definition.branches[1].sharedPoints]
+        mergeX = self.viewport.w * mergePoint.x
+        mergeY = self.viewport.h * mergePoint.y
+        exitY = self.viewport.h * exitPoint.y
+    else
+        mergeX = self.viewport.w * definition.mergeX
+        mergeY = self.viewport.h * definition.mergeY
+        exitY = self.viewport.h * (definition.exitY or 1.25)
+    end
     local controlDefinition = definition.control or { type = "direct" }
 
     local junction = {
@@ -521,38 +579,30 @@ function world:drawBranch(track, isActive)
     local graphics = love.graphics
     local branchColor = isActive and track.color or track.darkColor
     local branchAlpha = isActive and 0.96 or 0.72
-    local branchPoints = track.branchPath.points
+    local branchPoints = flattenPoints(track.branchPath.points)
 
     graphics.setLineStyle("rough")
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(self.trackWidth + 10)
-    graphics.line(
-        branchPoints[1].x, branchPoints[1].y,
-        branchPoints[2].x, branchPoints[2].y,
-        branchPoints[3].x, branchPoints[3].y
-    )
+    graphics.line(branchPoints)
 
     graphics.setColor(branchColor[1], branchColor[2], branchColor[3], branchAlpha)
     graphics.setLineWidth(self.trackWidth)
-    graphics.line(
-        branchPoints[1].x, branchPoints[1].y,
-        branchPoints[2].x, branchPoints[2].y,
-        branchPoints[3].x, branchPoints[3].y
-    )
+    graphics.line(branchPoints)
 end
 
 function world:drawSharedTrack(junction)
     local graphics = love.graphics
     local activeTrack = junction.branches[junction.activeBranch]
-    local sharedPoints = activeTrack.sharedPath.points
+    local sharedPoints = flattenPoints(activeTrack.sharedPath.points)
 
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(self.sharedWidth + 10)
-    graphics.line(sharedPoints[1].x, sharedPoints[1].y, sharedPoints[2].x, sharedPoints[2].y)
+    graphics.line(sharedPoints)
 
     graphics.setColor(activeTrack.color[1], activeTrack.color[2], activeTrack.color[3], 0.98)
     graphics.setLineWidth(self.sharedWidth)
-    graphics.line(sharedPoints[1].x, sharedPoints[1].y, sharedPoints[2].x, sharedPoints[2].y)
+    graphics.line(sharedPoints)
 end
 
 function world:drawControlOverlay(junction)
