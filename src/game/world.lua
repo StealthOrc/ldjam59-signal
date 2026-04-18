@@ -226,6 +226,14 @@ local function combinePointLists(firstPoints, secondPoints)
     return combined
 end
 
+local function roundScoreValue(value)
+    return math.floor((value or 0) + 0.5)
+end
+
+local function getTailClearanceDistance(wagonCount, carriageLength, carriageGap)
+    return math.max(0, ((wagonCount or 1) - 1) * ((carriageLength or 0) + (carriageGap or 0)))
+end
+
 function world.new(viewportW, viewportH, levelSource)
     local self = setmetatable({}, world)
 
@@ -244,6 +252,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.timeRemaining = nil
     self.elapsedTime = 0
     self.failureTrain = nil
+    self.interactionCount = 0
 
     self.level = self:normalizeLevel(levelSource or {})
 
@@ -262,6 +271,16 @@ end
 
 function world:getLevel()
     return self.level
+end
+
+function world:getScoringConstants()
+    return {
+        onTimeClear = 10,
+        lateClear = 5,
+        secondsPenalty = 0.25,
+        interactionPenalty = 1,
+        extraDistancePenalty = 1,
+    }
 end
 
 function world:normalizeLevel(sourceLevel)
@@ -562,6 +581,88 @@ function world:buildJunction(definition, existing)
     return junction
 end
 
+function world:registerInteraction()
+    self.interactionCount = (self.interactionCount or 0) + 1
+end
+
+function world:doesEdgeAcceptGoalColor(inputEdge, outputEdge, goalColor)
+    if containsColorId(outputEdge and outputEdge.colors, goalColor) then
+        return true
+    end
+
+    if outputEdge and outputEdge.adoptInputColor and containsColorId(inputEdge and inputEdge.colors, goalColor) then
+        return true
+    end
+
+    return outputEdge and nearestColorId(outputEdge.color) == goalColor or false
+end
+
+function world:buildMinimumDistanceLookup()
+    self.minimumDistanceByTrainId = {}
+
+    for _, train in ipairs(self.trains) do
+        local startEdge = self.edges[train.startEdgeId]
+        local goalColor = train.goalColor
+        local bestDistance = nil
+
+        if startEdge and startEdge.targetType == "junction" then
+            local queue = {
+                {
+                    edgeId = startEdge.id,
+                    distance = startEdge.path.length,
+                },
+            }
+            local bestByEdge = {
+                [startEdge.id] = startEdge.path.length,
+            }
+            local queueIndex = 1
+
+            while queueIndex <= #queue do
+                local current = queue[queueIndex]
+                queueIndex = queueIndex + 1
+
+                if bestDistance and current.distance >= bestDistance then
+                    goto continue_distance_search
+                end
+
+                local currentEdge = self.edges[current.edgeId]
+                if not currentEdge or currentEdge.targetType ~= "junction" then
+                    goto continue_distance_search
+                end
+
+                local junction = self.junctions[currentEdge.targetId]
+                for _, outputEdge in ipairs(junction and junction.outputs or {}) do
+                    if self:doesEdgeAcceptGoalColor(currentEdge, outputEdge, goalColor) then
+                        local nextDistance = current.distance + outputEdge.path.length
+                        if outputEdge.targetType == "exit" then
+                            if not bestDistance or nextDistance < bestDistance then
+                                bestDistance = nextDistance
+                            end
+                        elseif nextDistance < (bestByEdge[outputEdge.id] or math.huge) then
+                            bestByEdge[outputEdge.id] = nextDistance
+                            queue[#queue + 1] = {
+                                edgeId = outputEdge.id,
+                                distance = nextDistance,
+                            }
+                        end
+                    end
+                end
+
+                ::continue_distance_search::
+            end
+        end
+
+        if bestDistance then
+            bestDistance = bestDistance + self.exitPadding + getTailClearanceDistance(train.wagonCount, self.carriageLength, self.carriageGap)
+        else
+            bestDistance = 0
+        end
+
+        train.minimumDistance = bestDistance
+        self.minimumDistanceByTrainId[train.id or tostring(#self.minimumDistanceByTrainId + 1)] = bestDistance
+    end
+end
+
 function world:initializeLevel()
     self.junctions = {}
     self.junctionOrder = {}
@@ -603,15 +704,23 @@ function world:initializeLevel()
                 spawned = spawned,
                 completed = false,
                 completedAt = nil,
+                deliveredCorrectly = false,
+                deliveredLate = false,
+                failedWrongDestination = false,
+                actualDistance = 0,
+                minimumDistance = 0,
             }
         end
     end
+
+    self:buildMinimumDistanceLookup()
 
     self.elapsedTime = 0
     self.timeRemaining = self.level.timeLimit
     self.collisionPoint = nil
     self.failureReason = nil
     self.failureTrain = nil
+    self.interactionCount = 0
 end
 
 function world:getOccupiedEdges(train)
@@ -641,6 +750,8 @@ function world:completeTrain(train)
     train.completed = true
     train.currentSpeed = 0
     train.completedAt = self.elapsedTime
+    train.deliveredCorrectly = not train.failedWrongDestination
+    train.deliveredLate = train.deliveredCorrectly and train.deadline ~= nil and train.completedAt > train.deadline
 end
 
 function world:doesOutputAcceptTrain(train, junction, outputEdge)
@@ -727,19 +838,20 @@ end
 function world:cycleInput(junction)
     if #junction.inputs <= 1 then
         junction.activeInputIndex = 1
-        return
+        return false
     end
 
     junction.activeInputIndex = junction.activeInputIndex + 1
     if junction.activeInputIndex > #junction.inputs then
         junction.activeInputIndex = 1
     end
+    return true
 end
 
 function world:cycleOutput(junction, direction)
     if #junction.outputs <= 1 then
         junction.activeOutputIndex = 1
-        return
+        return false
     end
 
     junction.activeOutputIndex = junction.activeOutputIndex + direction
@@ -748,23 +860,24 @@ function world:cycleOutput(junction, direction)
     elseif junction.activeOutputIndex > #junction.outputs then
         junction.activeOutputIndex = 1
     end
+    return true
 end
 
 function world:activateControl(junction)
     local control = junction.control
 
     if control.type == "direct" then
-        self:cycleInput(junction)
-        return
+        return self:cycleInput(junction)
     end
 
     if control.type == "delayed" then
         control.armed = true
         control.remainingDelay = control.delay
-        return
+        return true
     end
 
     if control.type == "pump" then
+        local previousPumpCount = control.pumpCount
         control.pumpCount = math.min(control.target, control.pumpCount + 1)
         control.decayHold = control.decayDelay
         control.decayTimer = control.decayInterval
@@ -775,7 +888,10 @@ function world:activateControl(junction)
             control.decayHold = 0
             control.decayTimer = 0
         end
+        return control.pumpCount ~= previousPumpCount or control.target > 0
     end
+
+    return false
 end
 
 function world:isCrossingHit(junction, x, y)
@@ -794,16 +910,22 @@ end
 function world:handleClick(x, y, button)
     for _, junction in ipairs(self.junctionOrder) do
         if self:isOutputSelectorHit(junction, x, y) then
+            local changed
             if button == 2 then
-                self:cycleOutput(junction, -1)
+                changed = self:cycleOutput(junction, -1)
             else
-                self:cycleOutput(junction, 1)
+                changed = self:cycleOutput(junction, 1)
+            end
+            if changed then
+                self:registerInteraction()
             end
             return true
         end
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
-            self:activateControl(junction)
+            if self:activateControl(junction) then
+                self:registerInteraction()
+            end
             return true
         end
     end
@@ -869,9 +991,7 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
     end
 
     if not self:doesOutputAcceptTrain(train, junction, outputEdge) then
-        self.failureReason = "wrong_destination"
-        self.failureTrain = train
-        return false
+        train.failedWrongDestination = true
     end
 
     train.edgeId = outputEdge.id
@@ -920,6 +1040,8 @@ function world:updateTrain(train, dt)
         nextProgress = desiredStopDistance
         train.currentSpeed = 0
     end
+    local movedDistance = math.max(0, nextProgress - localProgress)
+    train.actualDistance = (train.actualDistance or 0) + movedDistance
 
     local previousLength = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
     train.headDistance = previousLength + nextProgress
@@ -1018,9 +1140,7 @@ end
 function world:updateDeadlineState()
     for _, train in ipairs(self.trains) do
         if not train.completed and train.deadline and self.elapsedTime > train.deadline then
-            self.failureReason = "missed_deadline"
             self.failureTrain = train
-            return
         end
     end
 end
@@ -1057,9 +1177,6 @@ function world:update(dt)
     end
 
     self:updateCollisionState()
-    if not self.failureReason then
-        self:updateDeadlineState()
-    end
 
     if not self.failureReason and self.timeRemaining and self.timeRemaining <= 0 and not self:isLevelComplete() then
         self.failureReason = "timeout"
@@ -1091,6 +1208,76 @@ function world:countCompletedTrains()
         end
     end
     return completedCount
+end
+
+function world:getRunEndReason()
+    if self.failureReason then
+        return self.failureReason
+    end
+    if self:isLevelComplete() then
+        return "level_clear"
+    end
+    return nil
+end
+
+function world:getRunSummary()
+    local scoring = self:getScoringConstants()
+    local summary = {
+        endReason = self:getRunEndReason(),
+        correctOnTimeCount = 0,
+        correctLateCount = 0,
+        wrongDestinationCount = 0,
+        elapsedSeconds = self.elapsedTime or 0,
+        interactionCount = self.interactionCount or 0,
+        actualDrivenDistance = 0,
+        minimumRequiredDistance = 0,
+        extraDistance = 0,
+        scoreBreakdown = {
+            onTimeClears = 0,
+            lateClears = 0,
+            timePenalty = 0,
+            interactionPenalty = 0,
+            extraDistancePenalty = 0,
+        },
+        finalScore = 0,
+    }
+
+    for _, train in ipairs(self.trains) do
+        summary.actualDrivenDistance = summary.actualDrivenDistance + (train.actualDistance or 0)
+
+        if train.completed and train.deliveredCorrectly then
+            local minimumDistance = train.minimumDistance or 0
+            local extraDistance = math.max(0, (train.actualDistance or 0) - minimumDistance)
+            summary.minimumRequiredDistance = summary.minimumRequiredDistance + minimumDistance
+            summary.extraDistance = summary.extraDistance + extraDistance
+
+            if train.deliveredLate then
+                summary.correctLateCount = summary.correctLateCount + 1
+                summary.scoreBreakdown.lateClears = summary.scoreBreakdown.lateClears + scoring.lateClear
+            else
+                summary.correctOnTimeCount = summary.correctOnTimeCount + 1
+                summary.scoreBreakdown.onTimeClears = summary.scoreBreakdown.onTimeClears + scoring.onTimeClear
+            end
+        elseif train.completed and train.failedWrongDestination then
+            summary.wrongDestinationCount = summary.wrongDestinationCount + 1
+        end
+    end
+
+    summary.scoreBreakdown.timePenalty = summary.elapsedSeconds * scoring.secondsPenalty
+    summary.scoreBreakdown.interactionPenalty = roundScoreValue(summary.interactionCount * scoring.interactionPenalty)
+    summary.scoreBreakdown.extraDistancePenalty = roundScoreValue(summary.extraDistance * scoring.extraDistancePenalty)
+
+    summary.finalScore = summary.scoreBreakdown.onTimeClears
+        + summary.scoreBreakdown.lateClears
+        - summary.scoreBreakdown.timePenalty
+        - summary.scoreBreakdown.interactionPenalty
+        - summary.scoreBreakdown.extraDistancePenalty
+
+    return summary
+end
+
+function world:getCurrentScore()
+    return self:getRunSummary().finalScore
 end
 
 function world:getNextQueuedTrain()
