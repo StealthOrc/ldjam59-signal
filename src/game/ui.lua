@@ -3,17 +3,15 @@ local uiControls = require("src.game.ui_controls")
 
 local LEVEL_SELECT = {
     chromeH = 74,
-    categoryY = 92,
-    titleBarY = 118,
-    titleBarH = 62,
-    carouselCenterY = 378,
+    titleBarY = 100,
+    titleBarH = 74,
+    carouselCenterY = 354,
     cardBaseW = 292,
-    cardBaseH = 344,
+    cardBaseH = 286,
     sideLift = 46,
-    filterY = 558,
     filterW = 536,
     filterH = 42,
-    bottomBarY = 612,
+    bottomBarY = 626,
     bottomBarH = 92,
 }
 
@@ -360,6 +358,33 @@ local function drawMapPreview(descriptor, rect)
     end
 end
 
+local function getBadgeWidths(game, descriptor, maxWidth)
+    local controls = getMapControlTypes(descriptor)
+    local font = game.fonts.small
+    local widths = {}
+    local totalWidth = 0
+
+    for index, controlType in ipairs(controls) do
+        local label = CONTROL_SHORT_LABELS[controlType] or controlType
+        local badgeWidth = font:getWidth(label) + 22
+        local nextWidth = totalWidth + badgeWidth
+        if index > 1 then
+            nextWidth = nextWidth + 6
+        end
+        if nextWidth > maxWidth then
+            break
+        end
+        widths[#widths + 1] = {
+            controlType = controlType,
+            label = label,
+            width = badgeWidth,
+        }
+        totalWidth = nextWidth
+    end
+
+    return widths, totalWidth
+end
+
 local function getLevelSelectBackRect()
     return {
         x = 24,
@@ -369,10 +394,26 @@ local function getLevelSelectBackRect()
     }
 end
 
+local function getSettledSelectedCardRect(game)
+    local width = LEVEL_SELECT.cardBaseW
+    local height = LEVEL_SELECT.cardBaseH
+    return {
+        x = math.floor(game.viewport.w * 0.5 - width * 0.5 + 0.5),
+        y = math.floor(LEVEL_SELECT.carouselCenterY - height * 0.5 + 0.5),
+        w = width,
+        h = height,
+    }
+end
+
 local function getLevelSelectFilterRect(game)
+    local panelTop = LEVEL_SELECT.bottomBarY
+    local selectedCardRect = getSettledSelectedCardRect(game)
+    local selectedBottom = selectedCardRect.y + selectedCardRect.h
+    local centerY = math.floor((selectedBottom + panelTop) * 0.5 + 0.5)
+
     return {
         x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.filterW * 0.5 + 0.5),
-        y = LEVEL_SELECT.filterY,
+        y = centerY - math.floor(LEVEL_SELECT.filterH * 0.5 + 0.5),
         w = LEVEL_SELECT.filterW,
         h = LEVEL_SELECT.filterH,
     }
@@ -444,11 +485,11 @@ local function getCarouselOffset(distance)
     local magnitude
 
     if absDistance <= 1 then
-        magnitude = lerp(0, 318, absDistance)
+        magnitude = lerp(0, 275, absDistance)
     elseif absDistance <= 2 then
-        magnitude = lerp(318, 540, absDistance - 1)
+        magnitude = lerp(275, 550, absDistance - 1)
     else
-        magnitude = lerp(540, 720, math.min(1, absDistance - 2))
+        magnitude = lerp(550, 720, math.min(1, absDistance - 2))
     end
 
     return magnitude * direction
@@ -513,12 +554,24 @@ local function buildLevelSelectCardRects(game)
                 h = height,
             }
 
-            local previewSize = math.floor(math.min(width * 0.7, height * 0.46) + 0.5)
+            local badgeGap = 12
+            local badgeH = 22
+            local badgeWidths, badgeTotalWidth = getBadgeWidths(game, descriptor, width - 36)
+            local badgeBottomPadding = 18
+            local badgeY = y + height - badgeH - badgeBottomPadding
+            local previewTop = y + 18
+            local previewBottom = badgeY - badgeGap
             rects[#rects].previewRect = {
-                x = x + math.floor((width - previewSize) * 0.5 + 0.5),
-                y = y + math.floor(height * 0.12 + 0.5),
-                w = previewSize,
-                h = previewSize,
+                x = x + 18,
+                y = previewTop,
+                w = width - 36,
+                h = math.max(56, previewBottom - previewTop),
+            }
+            rects[#rects].badgeRow = {
+                x = x + math.floor((width - badgeTotalWidth) * 0.5 + 0.5),
+                y = badgeY,
+                widths = badgeWidths,
+                totalWidth = badgeTotalWidth,
             }
         end
     end
@@ -535,28 +588,30 @@ local function buildLevelSelectCardRects(game)
     return rects, maps, selectedIndex
 end
 
-local function drawControlBadges(game, descriptor, x, y, maxWidth)
+local function drawControlBadges(game, descriptor, x, y, maxWidth, badgeRow)
     local graphics = love.graphics
-    local controls = getMapControlTypes(descriptor)
-    local badgeX = x
-
     love.graphics.setFont(game.fonts.small)
 
-    for _, controlType in ipairs(controls) do
-        local label = CONTROL_SHORT_LABELS[controlType] or controlType
-        local badgeWidth = game.fonts.small:getWidth(label) + 22
-        if badgeX + badgeWidth > x + maxWidth then
-            break
-        end
+    local widths = {}
+    local totalWidth = 0
 
-        local color = PREVIEW_COLORS.control[controlType] or PREVIEW_COLORS.control.direct
+    if badgeRow and badgeRow.widths then
+        widths = badgeRow.widths
+        totalWidth = badgeRow.totalWidth or 0
+    else
+        widths, totalWidth = getBadgeWidths(game, descriptor, maxWidth)
+    end
+
+    local badgeX = x + math.floor((maxWidth - totalWidth) * 0.5 + 0.5)
+    for _, badge in ipairs(widths) do
+        local color = PREVIEW_COLORS.control[badge.controlType] or PREVIEW_COLORS.control.direct
         graphics.setColor(color[1], color[2], color[3], 0.96)
-        graphics.rectangle("fill", badgeX, y, badgeWidth, 22, 11, 11)
+        graphics.rectangle("fill", badgeX, y, badge.width, 22, 11, 11)
         graphics.setColor(0.06, 0.08, 0.1, 0.4)
-        graphics.rectangle("line", badgeX, y, badgeWidth, 22, 11, 11)
+        graphics.rectangle("line", badgeX, y, badge.width, 22, 11, 11)
         graphics.setColor(0.08, 0.1, 0.14, 1)
-        graphics.printf(label, badgeX, y + 3, badgeWidth, "center")
-        badgeX = badgeX + badgeWidth + 6
+        graphics.printf(badge.label, badgeX, y + 3, badge.width, "center")
+        badgeX = badgeX + badge.width + 6
     end
 end
 
@@ -569,7 +624,6 @@ local function drawLevelSelectChrome(game)
 
     graphics.setColor(0.18, 0.26, 0.34, 0.5)
     graphics.setLineWidth(2)
-    graphics.line(86, 204, 1190, 204)
     graphics.line(128, 520, 1152, 520)
     graphics.setLineWidth(1)
 
@@ -601,7 +655,11 @@ local function drawLevelSelectTitleBar(game, selectedMap)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
-    graphics.printf(getMapDisplayName(selectedMap), barRect.x + 30, barRect.y + 12, barRect.w - 60, "center")
+    graphics.printf(getMapDisplayName(selectedMap), barRect.x + 30, barRect.y + 8, barRect.w - 60, "center")
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(getMapKindLabel(selectedMap), barRect.x + 30, barRect.y + 48, barRect.w - 60, "center")
 end
 
 local function drawLevelCard(game, rect)
@@ -610,7 +668,6 @@ local function drawLevelCard(game, rect)
     local selected = rect.selected
     local cardFill = selected and { 0.09, 0.11, 0.15, 0.98 } or { 0.08, 0.1, 0.13, 0.94 }
     local trim = selected and { 0.45, 0.7, 0.92, 1 } or { 0.24, 0.34, 0.44, 0.95 }
-    local footerH = math.max(48, math.floor(rect.h * 0.18))
 
     graphics.setColor(0.09, 0.1, 0.11, 0.26)
     graphics.rectangle("fill", rect.x + 6, rect.y + rect.h - 8, rect.w, 16, 10, 10)
@@ -629,24 +686,8 @@ local function drawLevelCard(game, rect)
 
     drawMapPreview(descriptor, rect.previewRect)
 
-    graphics.setColor(0.07, 0.09, 0.12, 0.98)
-    graphics.rectangle("fill", rect.x, rect.y + rect.h - footerH, rect.w, footerH, 0, 0, 18, 18)
-    graphics.setColor(0.14, 0.2, 0.28, 0.92)
-    graphics.rectangle("line", rect.x, rect.y + rect.h - footerH, rect.w, footerH, 0, 0, 18, 18)
-
-    love.graphics.setFont(selected and game.fonts.body or game.fonts.small)
-    graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
-    graphics.printf(
-        getMapDisplayName(descriptor),
-        rect.x + 12,
-        rect.y + rect.h - footerH + (selected and 10 or 14),
-        rect.w - 24,
-        "center"
-    )
-
-    if selected then
-        drawControlBadges(game, descriptor, rect.x + 18, rect.y + rect.h - footerH - 34, rect.w - 36)
-    end
+    local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
+    drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
 end
 
 local function drawLevelSelectEmptyState(game, filterId)
@@ -725,6 +766,7 @@ function ui.getLevelSelectHit(game, x, y)
         return { kind = "back" }
     end
 
+    local cardRects = buildLevelSelectCardRects(game)
     local filterRect = getLevelSelectFilterRect(game)
     local filterSegments = getLevelSelectFilterSegments()
     if pointInRect(x, y, filterRect) then
@@ -747,7 +789,6 @@ function ui.getLevelSelectHit(game, x, y)
         return { kind = "edit_map", map = selectedMap }
     end
 
-    local cardRects = buildLevelSelectCardRects(game)
     for _, rect in ipairs(cardRects) do
         if pointInRect(x, y, rect) then
             if rect.selected then
@@ -866,16 +907,6 @@ function ui.drawLevelSelect(game)
     drawLevelSelectTitleBar(game, selectedMap)
 
     drawButton(getLevelSelectBackRect(), "Back", { 0.12, 0.15, 0.19, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.small)
-
-    if selectedMap then
-        love.graphics.setFont(game.fonts.small)
-        graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
-        graphics.printf(getMapKindLabel(selectedMap), 0, LEVEL_SELECT.categoryY, game.viewport.w, "center")
-    else
-        love.graphics.setFont(game.fonts.small)
-        graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
-        graphics.printf("Level Select", 0, LEVEL_SELECT.categoryY, game.viewport.w, "center")
-    end
 
     for _, cardRect in ipairs(cardRects) do
         drawLevelCard(game, cardRect)
