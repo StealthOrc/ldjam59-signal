@@ -145,6 +145,7 @@ local function buildDescriptor(source, fileName, data)
         savedAt = data.savedAt,
         hasEditor = data.editor ~= nil,
         hasLevel = data.level ~= nil,
+        hasErrors = #((data.validationErrors) or {}) > 0,
         isTemplate = source == "builtin" and data.template == true,
     }
 end
@@ -207,10 +208,14 @@ function mapStorage.loadMap(fileNameOrDescriptor, source)
     data.path = path
     data.source = resolvedSource
     data.isTemplate = resolvedSource == "builtin" and data.template == true
-    if not data.level and data.editor then
-        local derivedLevel = authoredMap.buildPlayableLevel(data.name or fileName:gsub("%.lua$", ""), data.editor)
-        if derivedLevel then
-            data.level = derivedLevel
+    data.validationErrors = {}
+    data.validationErrorText = nil
+    if data.editor then
+        local level, errorText, errors = authoredMap.buildPlayableLevel(data.name or fileName:gsub("%.lua$", ""), data.editor)
+        data.validationErrors = errors or {}
+        data.validationErrorText = errorText
+        if level then
+            data.level = level
         end
     end
     return data

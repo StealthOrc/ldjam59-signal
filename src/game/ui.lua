@@ -18,6 +18,17 @@ local function drawButton(rect, label, fillColor, strokeColor, font)
     graphics.printf(label, rect.x, rect.y + rect.h * 0.5 - 9, rect.w, "center")
 end
 
+local function getWrappedLineCount(font, text, width)
+    local firstValue, secondValue = font:getWrap(text, width)
+    if type(firstValue) == "table" then
+        return math.max(1, #firstValue)
+    end
+    if type(secondValue) == "table" then
+        return math.max(1, #secondValue)
+    end
+    return 1
+end
+
 local function getMenuButtons(game)
     local centerX = game.viewport.w * 0.5 - 160
     return {
@@ -54,6 +65,31 @@ local function getLevelSelectBackRect()
         y = 28,
         w = 116,
         h = 38,
+    }
+end
+
+local function getLevelIssueOverlayRects(game)
+    local panel = {
+        x = game.viewport.w * 0.5 - 280,
+        y = game.viewport.h * 0.5 - 170,
+        w = 560,
+        h = 340,
+    }
+
+    return {
+        panel = panel,
+        edit = {
+            x = panel.x + 42,
+            y = panel.y + panel.h - 68,
+            w = 220,
+            h = 40,
+        },
+        cancel = {
+            x = panel.x + panel.w - 262,
+            y = panel.y + panel.h - 68,
+            w = 220,
+            h = 40,
+        },
     }
 end
 
@@ -156,6 +192,20 @@ function ui.getMenuActionAt(game, x, y)
 end
 
 function ui.getLevelSelectHit(game, x, y)
+    if game.levelSelectIssue then
+        local overlay = getLevelIssueOverlayRects(game)
+        if pointInRect(x, y, overlay.edit) then
+            return { kind = "issue_edit", map = game.levelSelectIssue.map }
+        end
+        if pointInRect(x, y, overlay.cancel) then
+            return { kind = "issue_cancel" }
+        end
+        if not pointInRect(x, y, overlay.panel) then
+            return { kind = "issue_cancel" }
+        end
+        return { kind = "issue_blocked" }
+    end
+
     local backRect = getLevelSelectBackRect()
     if pointInRect(x, y, backRect) then
         return { kind = "back" }
@@ -263,7 +313,7 @@ function ui.drawLevelSelect(game)
 
             love.graphics.setFont(game.fonts.small)
             graphics.setColor(0.82, 0.86, 0.9, 1)
-            graphics.print(rect.map.hasLevel and "Click to play" or "Template map", rect.x + 18, rect.y + 46)
+            graphics.print("Click to play", rect.x + 18, rect.y + 46)
 
             drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
         end
@@ -291,14 +341,67 @@ function ui.drawLevelSelect(game)
 
             love.graphics.setFont(game.fonts.small)
             graphics.setColor(0.82, 0.86, 0.9, 1)
-            if rect.map.hasLevel then
-                graphics.print("Click to play", rect.x + 18, rect.y + 46)
-            else
-                graphics.print("Saved for editing only", rect.x + 18, rect.y + 46)
-            end
+            graphics.print("Click to play", rect.x + 18, rect.y + 46)
 
             drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
         end
+    end
+
+    if game.levelSelectIssue then
+        local overlay = getLevelIssueOverlayRects(game)
+        local issue = game.levelSelectIssue
+
+        graphics.setColor(0, 0, 0, 0.62)
+        graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+
+        graphics.setColor(0.09, 0.11, 0.15, 0.98)
+        graphics.rectangle("fill", overlay.panel.x, overlay.panel.y, overlay.panel.w, overlay.panel.h, 18, 18)
+        graphics.setColor(0.3, 0.36, 0.42, 1)
+        graphics.rectangle("line", overlay.panel.x, overlay.panel.y, overlay.panel.w, overlay.panel.h, 18, 18)
+
+        love.graphics.setFont(game.fonts.title)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.printf("Map Has Issues", overlay.panel.x, overlay.panel.y + 20, overlay.panel.w, "center")
+
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.printf(issue.map.name, overlay.panel.x + 24, overlay.panel.y + 74, overlay.panel.w - 48, "center")
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf(
+            "Fix these issues in the editor before this run can start:",
+            overlay.panel.x + 30,
+            overlay.panel.y + 114,
+            overlay.panel.w - 60,
+            "left"
+        )
+
+        local errorY = overlay.panel.y + 146
+        local maxErrors = math.min(5, #(issue.errors or {}))
+        for index = 1, maxErrors do
+            local message = issue.errors[index]
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+            graphics.print(string.format("%d.", index), overlay.panel.x + 34, errorY)
+            graphics.setColor(0.84, 0.88, 0.92, 1)
+            graphics.printf(message, overlay.panel.x + 58, errorY, overlay.panel.w - 92)
+            local lineCount = getWrappedLineCount(game.fonts.small, message, overlay.panel.w - 92)
+            errorY = errorY + math.max(game.fonts.small:getHeight(), lineCount * game.fonts.small:getHeight()) + 8
+        end
+
+        if #(issue.errors or {}) > maxErrors then
+            graphics.setColor(0.68, 0.74, 0.8, 1)
+            graphics.printf(
+                string.format("%d more issue(s) hidden here. Open the editor for the full list.", #(issue.errors or {}) - maxErrors),
+                overlay.panel.x + 30,
+                overlay.panel.y + 262,
+                overlay.panel.w - 60,
+                "center"
+            )
+        end
+
+        drawButton(overlay.edit, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
+        drawButton(overlay.cancel, "Cancel", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
     end
 end
 

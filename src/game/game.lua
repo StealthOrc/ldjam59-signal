@@ -32,6 +32,7 @@ function Game.new()
     self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
     self.availableMaps = {}
     self.currentMapDescriptor = nil
+    self.levelSelectIssue = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -69,16 +70,19 @@ end
 
 function Game:openMenu()
     self.screen = "menu"
+    self.levelSelectIssue = nil
     self:refreshMaps()
 end
 
 function Game:openLevelSelect()
     self.screen = "level_select"
+    self.levelSelectIssue = nil
     self:refreshMaps()
 end
 
 function Game:openEditorBlank()
     self.screen = "editor"
+    self.levelSelectIssue = nil
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -91,19 +95,33 @@ function Game:openEditorMap(mapDescriptor)
     end
 
     self.screen = "editor"
+    self.levelSelectIssue = nil
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
+end
+
+function Game:showMapIssue(mapDescriptor, mapData, fallbackError)
+    local errors = (mapData and mapData.validationErrors) or {}
+    if #errors == 0 then
+        errors = { fallbackError or "This map still has unresolved issues." }
+    end
+
+    self.levelSelectIssue = {
+        map = mapDescriptor,
+        errors = errors,
+    }
 end
 
 function Game:startMap(mapDescriptor)
     local mapData, loadError = mapStorage.loadMap(mapDescriptor)
     if not mapData or not mapData.level then
-        return false, loadError or "That map does not contain playable level data."
+        return false, loadError or "That map does not contain playable level data.", mapData
     end
 
     self.levelComplete = false
     self.failureReason = nil
     self.currentMapDescriptor = mapDescriptor
+    self.levelSelectIssue = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -173,6 +191,8 @@ function Game:keypressed(key)
     if key == "escape" then
         if self.screen == "menu" then
             love.event.quit()
+        elseif self.screen == "level_select" and self.levelSelectIssue then
+            self.levelSelectIssue = nil
         elseif self.screen == "editor" then
             if not self.editor:keypressed(key) then
                 self:openMenu()
@@ -193,11 +213,18 @@ function Game:keypressed(key)
     end
 
     if self.screen == "level_select" then
+        if self.levelSelectIssue and key == "return" then
+            self:openEditorMap(self.levelSelectIssue.map)
+            return
+        end
         local requestedLevel = input.getLevelShortcut(key)
         if requestedLevel then
             local descriptor = self:getBuiltinShortcutMap(requestedLevel)
             if descriptor then
-                self:startMap(descriptor)
+                local ok, startError, mapData = self:startMap(descriptor)
+                if not ok then
+                    self:showMapIssue(descriptor, mapData, startError)
+                end
             end
         end
         return
@@ -279,11 +306,16 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
+        elseif hit.kind == "issue_edit" then
+            self:openEditorMap(hit.map)
+        elseif hit.kind == "issue_cancel" then
+            self.levelSelectIssue = nil
+        elseif hit.kind == "issue_blocked" then
+            return
         elseif hit.kind == "open_map" then
-            if hit.map.hasLevel then
-                self:startMap(hit.map)
-            else
-                self:openEditorMap(hit.map)
+            local ok, startError, mapData = self:startMap(hit.map)
+            if not ok then
+                self:showMapIssue(hit.map, mapData, startError)
             end
         elseif hit.kind == "edit_map" then
             self:openEditorMap(hit.map)

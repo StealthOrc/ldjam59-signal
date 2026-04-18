@@ -259,6 +259,17 @@ local function pointOnSegment(point, a, b, toleranceSquared)
     return nil
 end
 
+local function getWrappedLineCount(font, text, width)
+    local firstValue, secondValue = font:getWrap(text, width)
+    if type(firstValue) == "table" then
+        return math.max(1, #firstValue)
+    end
+    if type(secondValue) == "table" then
+        return math.max(1, #secondValue)
+    end
+    return 1
+end
+
 function mapEditor.new(viewportW, viewportH, level)
     local self = setmetatable({}, mapEditor)
 
@@ -276,6 +287,7 @@ function mapEditor.new(viewportW, viewportH, level)
     self.sourceInfo = nil
     self.loadedMapPayload = nil
     self.lastValidationError = nil
+    self.validationErrors = {}
     self.statusText = nil
     self.statusTimer = 0
     self.intersections = {}
@@ -417,6 +429,16 @@ end
 function mapEditor:showStatus(text)
     self.statusText = text
     self.statusTimer = 2.8
+end
+
+function mapEditor:refreshValidation(mapName)
+    local level, buildError, buildErrors = authoredMap.buildPlayableLevel(
+        mapName or self.currentMapName or "Untitled",
+        self:getExportData()
+    )
+    self.lastValidationError = buildError
+    self.validationErrors = buildErrors or {}
+    return level, buildError, self.validationErrors
 end
 
 function mapEditor:createRoute(points, color, id, label, colorId, startColors, endColors, startEndpointId, endEndpointId)
@@ -836,9 +858,7 @@ function mapEditor:buildOutputRoutesByEndpoint(intersection)
 end
 
 function mapEditor:buildPlayableLevel(mapName)
-    local level, buildError = authoredMap.buildPlayableLevel(mapName, self:getExportData())
-    self.lastValidationError = buildError
-    return level, buildError
+    return self:refreshValidation(mapName)
 end
 
 function mapEditor:saveMap(name)
@@ -847,7 +867,7 @@ function mapEditor:saveMap(name)
         return false, "Give the map a name before saving it."
     end
 
-    local level, buildError = self:buildPlayableLevel(trimmedName)
+    local level, buildError, buildErrors = self:buildPlayableLevel(trimmedName)
     if not level then
         buildError = buildError or "This map cannot be played yet, but the editor layout can still be saved."
     end
@@ -870,11 +890,12 @@ function mapEditor:saveMap(name)
     self.currentMapName = trimmedName
     self.sourceInfo = record
     self.loadedMapPayload = payload
+    self.validationErrors = buildErrors or {}
     self:closeDialog()
     if level then
         self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory())
     else
-        self:showStatus("Saved editor map only: " .. trimmedName .. ". " .. buildError)
+        self:showStatus("Saved map: " .. trimmedName .. ". Remaining issues: " .. buildError)
     end
     return true
 end
@@ -1305,6 +1326,8 @@ function mapEditor:rebuildIntersections()
         end
         return a.x < b.x
     end)
+
+    self:refreshValidation()
 end
 
 function mapEditor:beginRoute(x, y)
@@ -2009,6 +2032,33 @@ function mapEditor:drawPanelButton(rect, label, accentColor)
     graphics.printf(label, rect.x, rect.y + 11, rect.w, "center")
 end
 
+function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numberColor)
+    local graphics = love.graphics
+    local currentY = y
+    local renderedCount = 0
+
+    love.graphics.setFont(font)
+    for index, item in ipairs(items or {}) do
+        local bullet = string.format("%d. ", index)
+        local lineHeight = font:getHeight()
+        local lineCount = getWrappedLineCount(font, item, math.max(20, width - 22))
+        local itemHeight = math.max(lineHeight, lineCount * lineHeight)
+
+        if currentY + itemHeight > limitY then
+            break
+        end
+
+        graphics.setColor(numberColor[1], numberColor[2], numberColor[3], numberColor[4] or 1)
+        graphics.print(bullet, x, currentY)
+        graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+        graphics.printf(item, x + 22, currentY, width - 22)
+        currentY = currentY + itemHeight + 10
+        renderedCount = renderedCount + 1
+    end
+
+    return currentY, renderedCount
+end
+
 function mapEditor:drawColorPicker(game)
     local layout = self:getColorPickerLayout()
     if not layout then
@@ -2169,25 +2219,59 @@ function mapEditor:draw(game)
     graphics.setColor(0.48, 0.92, 0.62, 1)
     graphics.printf("Esc returns to the main menu", self.sidePanel.x + 18, self.sidePanel.y + 64, self.sidePanel.w - 36)
 
+    local panelX = self.sidePanel.x + 18
+    local panelWidth = self.sidePanel.w - 36
+    local panelBottom = self:getSaveButtonRect().y - 16
+    local currentY = self.sidePanel.y + 104
+
     love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf("Click the top band to create a new route. Release to place its endpoint.", self.sidePanel.x + 18, self.sidePanel.y + 110, self.sidePanel.w - 36)
-    graphics.printf("Drag any segment to create a bend point. Drag existing points to reshape the route.", self.sidePanel.x + 18, self.sidePanel.y + 182, self.sidePanel.w - 36)
-    graphics.printf("Click an IN or OUT magnet to open its color grid. Right-click a color there to split it into a new magnet.", self.sidePanel.x + 18, self.sidePanel.y + 254, self.sidePanel.w - 36)
-    graphics.printf("Click a lever at an intersection to cycle inputs. Click the bottom selector to cycle outputs, or right-click it to go backwards.", self.sidePanel.x + 18, self.sidePanel.y + 340, self.sidePanel.w - 36)
-    graphics.printf("Playable saves support up to five input tracks and five output tracks per junction.", self.sidePanel.x + 18, self.sidePanel.y + 426, self.sidePanel.w - 36)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print("Map Issues", panelX, currentY)
+    currentY = currentY + 28
 
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.68, 0.74, 0.8, 1)
     graphics.printf(
-        string.format("Routes: %d\nIntersections: %d", #self.routes, #self.intersections),
-        self.sidePanel.x + 18,
-        self.sidePanel.y + 462,
-        self.sidePanel.w - 36
+        string.format("Routes: %d  |  Intersections: %d", #self.routes, #self.intersections),
+        panelX,
+        currentY,
+        panelWidth
     )
+    currentY = currentY + 30
+
+    if #(self.validationErrors or {}) == 0 then
+        graphics.setColor(0.48, 0.92, 0.62, 1)
+        graphics.printf("No blocking issues. This map can start.", panelX, currentY, panelWidth)
+        currentY = currentY + 40
+    else
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.printf("Resolve these before the run can start:", panelX, currentY, panelWidth)
+        currentY = currentY + 28
+        local renderedCount
+        currentY, renderedCount = self:drawWrappedList(
+            game.fonts.small,
+            self.validationErrors,
+            panelX,
+            currentY,
+            panelWidth,
+            panelBottom - 90,
+            { 0.84, 0.88, 0.92, 1 },
+            { 0.99, 0.78, 0.32, 1 }
+        )
+        if renderedCount < #self.validationErrors and currentY + 20 < panelBottom then
+            graphics.setColor(0.68, 0.74, 0.8, 1)
+            graphics.printf(
+                string.format("%d more issue(s) below the fold.", #self.validationErrors - renderedCount),
+                panelX,
+                currentY,
+                panelWidth
+            )
+            currentY = currentY + 24
+        end
+    end
 
     local selectedRoute = self:getSelectedRoute()
-    if selectedRoute then
+    if selectedRoute and currentY + 56 < panelBottom then
         local startEndpoint = self:getRouteStartEndpoint(selectedRoute)
         local endEndpoint = self:getRouteEndEndpoint(selectedRoute)
         local startColors = table.concat(lookupToSortedIds(startEndpoint and startEndpoint.colors or {}), ", ")
@@ -2195,22 +2279,23 @@ function mapEditor:draw(game)
         graphics.setColor(selectedRoute.color[1], selectedRoute.color[2], selectedRoute.color[3], 1)
         graphics.printf(
             "Selected route: " .. (selectedRoute.label or selectedRoute.id),
-            self.sidePanel.x + 18,
-            self.sidePanel.y + 520,
-            self.sidePanel.w - 36
+            panelX,
+            currentY,
+            panelWidth
         )
+        currentY = currentY + 24
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf(
             "Start magnet: " .. startColors .. "\nExit magnet: " .. endColors,
-            self.sidePanel.x + 18,
-            self.sidePanel.y + 546,
-            self.sidePanel.w - 36
+            panelX,
+            currentY,
+            panelWidth
         )
     end
 
     if self.statusText then
         graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf(self.statusText, self.sidePanel.x + 18, self.sidePanel.y + 610, self.sidePanel.w - 36)
+        graphics.printf(self.statusText, panelX, panelBottom - 42, panelWidth)
     end
 
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })

@@ -15,6 +15,12 @@ local function distanceSquared(ax, ay, bx, by)
     return dx * dx + dy * dy
 end
 
+local function segmentLength(a, b)
+    local dx = b.x - a.x
+    local dy = b.y - a.y
+    return math.sqrt(dx * dx + dy * dy)
+end
+
 local function copyPoint(point)
     return { x = point.x, y = point.y }
 end
@@ -54,6 +60,13 @@ local function closestPointOnSegment(px, py, a, b)
     local x = a.x + abX * t
     local y = a.y + abY * t
     return x, y, t, distanceSquared(px, py, x, y)
+end
+
+local function interpolatePoint(a, b, t)
+    return {
+        x = a.x + (b.x - a.x) * t,
+        y = a.y + (b.y - a.y) * t,
+    }
 end
 
 local function pointOnSegment(point, a, b, toleranceSquared)
@@ -104,6 +117,62 @@ local function splitRouteSuffixAtPoint(routePoints, junctionPoint)
     end
 
     return nil
+end
+
+local function findDistanceAlongRoute(routePoints, point)
+    local totalDistance = 0
+
+    for pointIndex = 1, #routePoints - 1 do
+        local a = routePoints[pointIndex]
+        local b = routePoints[pointIndex + 1]
+        local hitPoint = pointOnSegment(point, a, b)
+
+        if hitPoint then
+            return totalDistance + segmentLength(a, hitPoint), hitPoint
+        end
+
+        totalDistance = totalDistance + segmentLength(a, b)
+    end
+
+    return nil, nil
+end
+
+local function extractRouteSegment(routePoints, startDistance, endDistance)
+    local segmentPoints = {}
+    local totalDistance = 0
+    local epsilon = 0.0000001
+
+    for pointIndex = 1, #routePoints - 1 do
+        local a = routePoints[pointIndex]
+        local b = routePoints[pointIndex + 1]
+        local length = segmentLength(a, b)
+        local segmentStart = totalDistance
+        local segmentEnd = totalDistance + length
+
+        if endDistance < segmentStart - epsilon then
+            break
+        end
+
+        if startDistance <= segmentEnd + epsilon and endDistance >= segmentStart - epsilon and length > epsilon then
+            local localStart = math.max(0, startDistance - segmentStart)
+            local localEnd = math.min(length, endDistance - segmentStart)
+            local startPoint = interpolatePoint(a, b, localStart / length)
+            local endPoint = interpolatePoint(a, b, localEnd / length)
+
+            if #segmentPoints == 0
+                or distanceSquared(segmentPoints[#segmentPoints].x, segmentPoints[#segmentPoints].y, startPoint.x, startPoint.y) > epsilon then
+                segmentPoints[#segmentPoints + 1] = startPoint
+            end
+
+            if distanceSquared(segmentPoints[#segmentPoints].x, segmentPoints[#segmentPoints].y, endPoint.x, endPoint.y) > epsilon then
+                segmentPoints[#segmentPoints + 1] = endPoint
+            end
+        end
+
+        totalDistance = segmentEnd
+    end
+
+    return segmentPoints
 end
 
 local function pointsRoughlyMatch(firstPoints, secondPoints, tolerance)
@@ -181,108 +250,75 @@ local function buildOutputRoutesByEndpoint(editorData, junctionData)
     return routesByEndpoint
 end
 
-function authoredMap.buildPlayableLevel(mapName, editorData)
-    if not editorData or #(editorData.junctions or {}) == 0 then
-        return nil, "Add at least one lever intersection before saving a playable map."
+local function roundPointKey(point)
+    return string.format("%.4f:%.4f", point.x, point.y)
+end
+
+local function buildEdgeKey(edge)
+    local parts = {
+        edge.sourceType or "unknown",
+        edge.sourceId or "none",
+        edge.targetType or "unknown",
+        edge.targetId or "none",
+    }
+
+    for _, point in ipairs(edge.points or {}) do
+        parts[#parts + 1] = roundPointKey(point)
     end
 
-    local routeMembership = {}
-    local junctions = {}
-    local trains = {}
+    return table.concat(parts, "|")
+end
+
+local function sortEdgesByStart(edges)
+    table.sort(edges, function(a, b)
+        local firstPoint = (a.points or {})[1] or { x = 0, y = 0 }
+        local secondPoint = (b.points or {})[1] or { x = 0, y = 0 }
+        if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+            return firstPoint.x < secondPoint.x
+        end
+        if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+            return firstPoint.y < secondPoint.y
+        end
+        return (a.id or "") < (b.id or "")
+    end)
+end
+
+local function sortEdgesByEnd(edges)
+    table.sort(edges, function(a, b)
+        local firstPoints = a.points or {}
+        local secondPoints = b.points or {}
+        local firstPoint = firstPoints[#firstPoints] or { x = 0, y = 0 }
+        local secondPoint = secondPoints[#secondPoints] or { x = 0, y = 0 }
+        if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+            return firstPoint.y < secondPoint.y
+        end
+        if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+            return firstPoint.x < secondPoint.x
+        end
+        return (a.id or "") < (b.id or "")
+    end)
+end
+
+function authoredMap.validateEditorMap(mapName, editorData)
     local errors = {}
 
+    if not editorData or #(editorData.junctions or {}) == 0 then
+        errors[#errors + 1] = "Add at least one lever intersection before starting this map."
+        return nil, errors, errors[1]
+    end
+
+    local junctionLookup = {}
+    local orderedJunctions = {}
+    local routeJunctions = {}
+
     for junctionIndex, junctionData in ipairs(editorData.junctions or {}) do
-        local junctionPoint = { x = junctionData.x, y = junctionData.y }
-        local routeIds = {}
-        for _, routeId in ipairs(junctionData.routes or {}) do
-            routeIds[#routeIds + 1] = routeId
-        end
-
-        local inputRouteIds = {}
-        for _, routeId in ipairs(routeIds) do
-            inputRouteIds[#inputRouteIds + 1] = routeId
-            routeMembership[routeId] = (routeMembership[routeId] or 0) + 1
-        end
-        sortRouteIdsByMagnet(editorData, inputRouteIds, "start")
-
-        local outputRoutesByEndpoint = buildOutputRoutesByEndpoint(editorData, junctionData)
-        local outputEndpointIds = {}
-        for _, endpointId in ipairs(junctionData.outputEndpointIds or {}) do
-            outputEndpointIds[#outputEndpointIds + 1] = endpointId
-        end
-
-        if #inputRouteIds > 5 or #outputEndpointIds > 5 then
-            errors[#errors + 1] = "A junction exceeds the current limit of five inputs or five outputs."
-            goto continue
-        end
-
-        local inputs = {}
-        for _, routeId in ipairs(inputRouteIds) do
-            local route = getRouteById(editorData, routeId)
-            local endpoint = route and getEndpointById(editorData, route.startEndpointId) or nil
-            if route and endpoint then
-                local prefix = splitRouteAtPoint(route.points or {}, junctionPoint)
-                if not prefix then
-                    errors[#errors + 1] = "An input route did not actually reach its junction."
-                    goto continue
-                end
-
-                inputs[#inputs + 1] = {
-                    id = route.id .. "_input",
-                    routeId = route.id,
-                    endpointId = endpoint.id,
-                    label = "Input " .. tostring(#inputs + 1),
-                    colors = endpoint.colors or {},
-                    color = getColor(route.color),
-                    darkColor = darkerColor(getColor(route.color)),
-                    inputPoints = prefix,
-                }
-            end
-        end
-
-        local outputs = {}
-        for _, endpointId in ipairs(outputEndpointIds) do
-            local endpoint = getEndpointById(editorData, endpointId)
-            local attachedRoutes = outputRoutesByEndpoint[endpointId] or {}
-            local representativeRoute = attachedRoutes[1]
-
-            if endpoint and representativeRoute then
-                local suffix = splitRouteSuffixAtPoint(representativeRoute.points or {}, junctionPoint)
-                if not suffix then
-                    errors[#errors + 1] = "An output route did not actually leave its junction."
-                    goto continue
-                end
-
-                for routeIndex = 2, #attachedRoutes do
-                    local candidateSuffix = splitRouteSuffixAtPoint(attachedRoutes[routeIndex].points or {}, junctionPoint)
-                    if not candidateSuffix or not pointsRoughlyMatch(suffix, candidateSuffix) then
-                        errors[#errors + 1] = "Merged outputs must share the same path from the junction to the exit."
-                        goto continue
-                    end
-                end
-
-                outputs[#outputs + 1] = {
-                    id = endpoint.id,
-                    endpointId = endpoint.id,
-                    label = "Output " .. tostring(#outputs + 1),
-                    colors = endpoint.colors or {},
-                    color = getColor(representativeRoute.color),
-                    darkColor = darkerColor(getColor(representativeRoute.color)),
-                    adoptInputColor = #(endpoint.colors or {}) > 1,
-                    outputPoints = suffix,
-                }
-            end
-        end
-
-        if #inputs == 0 or #outputs == 0 then
-            errors[#errors + 1] = "A playable junction needs at least one input and one output."
-            goto continue
-        end
-
-        junctions[#junctions + 1] = {
-            id = "saved_junction_" .. junctionIndex,
-            activeInputIndex = math.min(junctionData.activeInputIndex or 1, #inputs),
-            activeOutputIndex = math.min(junctionData.activeOutputIndex or 1, #outputs),
+        local junctionId = junctionData.id or ("saved_junction_" .. junctionIndex)
+        local junction = {
+            id = junctionId,
+            x = junctionData.x,
+            y = junctionData.y,
+            activeInputIndex = junctionData.activeInputIndex or 1,
+            activeOutputIndex = junctionData.activeOutputIndex or 1,
             control = {
                 type = junctionData.control or "direct",
                 label = junctionData.control == "delayed" and "Delayed Button"
@@ -293,39 +329,217 @@ function authoredMap.buildPlayableLevel(mapName, editorData)
                 decayDelay = junctionData.control == "pump" and 0.55 or nil,
                 decayInterval = junctionData.control == "pump" and 0.2 or nil,
             },
-            inputs = inputs,
-            outputs = outputs,
+            inputEdgeIds = {},
+            outputEdgeIds = {},
         }
 
-        local trainOffset = 0
-        for inputIndex, inputDefinition in ipairs(inputs) do
-            for colorIndex, colorId in ipairs(inputDefinition.colors or {}) do
-                trains[#trains + 1] = {
-                    id = string.format("saved_junction_%d_train_%d_%s", junctionIndex, inputIndex, colorId),
-                    junctionId = "saved_junction_" .. junctionIndex,
-                    inputIndex = inputIndex,
-                    progress = -70 - trainOffset,
-                    speedScale = 1.0 - math.min(0.18, (colorIndex - 1) * 0.05),
-                    color = getColor(colorId),
+        junctionLookup[junctionId] = junction
+        orderedJunctions[#orderedJunctions + 1] = junction
+
+        for _, routeId in ipairs(junctionData.routes or {}) do
+            routeJunctions[routeId] = routeJunctions[routeId] or {}
+            routeJunctions[routeId][#routeJunctions[routeId] + 1] = {
+                junctionId = junctionId,
+                point = { x = junctionData.x, y = junctionData.y },
+            }
+        end
+    end
+
+    local edgeLookup = {}
+    local startEdgeRecords = {}
+
+    for _, route in ipairs(editorData.routes or {}) do
+        local routeHits = routeJunctions[route.id] or {}
+        if #routeHits == 0 then
+            errors[#errors + 1] = string.format("Route '%s' is not attached to a playable junction.", route.label or route.id)
+            goto continue_route
+        end
+
+        for _, hit in ipairs(routeHits) do
+            local distanceAlongRoute, snappedPoint = findDistanceAlongRoute(route.points or {}, hit.point)
+            if not distanceAlongRoute then
+                errors[#errors + 1] = string.format("Route '%s' did not actually reach a detected junction.", route.label or route.id)
+                goto continue_route
+            end
+            hit.distance = distanceAlongRoute
+            hit.point = snappedPoint
+        end
+
+        table.sort(routeHits, function(first, second)
+            return first.distance < second.distance
+        end)
+
+        local routeTotalLength = 0
+        for pointIndex = 1, #(route.points or {}) - 1 do
+            routeTotalLength = routeTotalLength + segmentLength(route.points[pointIndex], route.points[pointIndex + 1])
+        end
+
+        local nodes = {
+            {
+                kind = "start",
+                id = route.startEndpointId,
+                point = copyPoint((route.points or {})[1]),
+                distance = 0,
+            },
+        }
+
+        for _, hit in ipairs(routeHits) do
+            nodes[#nodes + 1] = {
+                kind = "junction",
+                id = hit.junctionId,
+                point = copyPoint(hit.point),
+                distance = hit.distance,
+            }
+        end
+
+        nodes[#nodes + 1] = {
+            kind = "exit",
+            id = route.endEndpointId,
+            point = copyPoint((route.points or {})[#(route.points or {})]),
+            distance = routeTotalLength,
+        }
+
+        for nodeIndex = 1, #nodes - 1 do
+            local sourceNode = nodes[nodeIndex]
+            local targetNode = nodes[nodeIndex + 1]
+            local points = extractRouteSegment(route.points or {}, sourceNode.distance, targetNode.distance)
+
+            if #points < 2 then
+                errors[#errors + 1] = string.format("Route '%s' contains a zero-length segment near a junction.", route.label or route.id)
+                goto continue_route
+            end
+
+            local targetEndpoint = targetNode.kind == "exit" and getEndpointById(editorData, targetNode.id) or nil
+            local sourceEndpoint = sourceNode.kind == "start" and getEndpointById(editorData, sourceNode.id) or nil
+            local edge = {
+                id = string.format("%s_segment_%d", route.id, nodeIndex),
+                label = string.format("%s Segment %d", route.label or route.id, nodeIndex),
+                routeId = route.id,
+                points = points,
+                color = getColor(route.color),
+                darkColor = darkerColor(getColor(route.color)),
+                colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
+                adoptInputColor = targetEndpoint and #(targetEndpoint.colors or {}) > 1 or false,
+                sourceType = sourceNode.kind,
+                sourceId = sourceNode.id,
+                targetType = targetNode.kind,
+                targetId = targetNode.id,
+            }
+
+            local edgeKey = buildEdgeKey(edge)
+            local existingEdge = edgeLookup[edgeKey]
+            if existingEdge then
+                if not pointsRoughlyMatch(existingEdge.points, edge.points) then
+                    errors[#errors + 1] = "Merged tracks must share the same path between their nodes."
+                    goto continue_route
+                end
+                edge = existingEdge
+            else
+                edgeLookup[edgeKey] = edge
+            end
+
+            if sourceNode.kind == "junction" then
+                local sourceJunction = junctionLookup[sourceNode.id]
+                sourceJunction.outputEdgeIds[#sourceJunction.outputEdgeIds + 1] = edge.id
+            end
+            if targetNode.kind == "junction" then
+                local targetJunction = junctionLookup[targetNode.id]
+                targetJunction.inputEdgeIds[#targetJunction.inputEdgeIds + 1] = edge.id
+            end
+            if sourceNode.kind == "start" and targetNode.kind == "junction" then
+                startEdgeRecords[edge.id] = startEdgeRecords[edge.id] or {
+                    edgeId = edge.id,
+                    colors = {},
                 }
-                trainOffset = trainOffset + 110
+                for _, colorId in ipairs(sourceEndpoint and (sourceEndpoint.colors or {}) or {}) do
+                    startEdgeRecords[edge.id].colors[colorId] = true
+                end
             end
         end
 
-        ::continue::
+        ::continue_route::
     end
 
-    for _, route in ipairs(editorData.routes or {}) do
-        local membershipCount = routeMembership[route.id] or 0
-        if membershipCount == 0 then
-            errors[#errors + 1] = string.format("Route '%s' is not attached to a playable junction.", route.label or route.id)
-        elseif membershipCount > 1 then
-            errors[#errors + 1] = string.format("Route '%s' is attached to more than one junction.", route.label or route.id)
+    local edges = {}
+    for _, edge in pairs(edgeLookup) do
+        edges[#edges + 1] = edge
+    end
+    table.sort(edges, function(a, b)
+        return a.id < b.id
+    end)
+
+    local trains = {}
+    local edgeById = {}
+    for _, edge in ipairs(edges) do
+        edgeById[edge.id] = edge
+    end
+
+    for _, junction in ipairs(orderedJunctions) do
+        local inputEdges = {}
+        local outputEdges = {}
+        local uniqueInputLookup = {}
+        local uniqueOutputLookup = {}
+
+        for _, edgeId in ipairs(junction.inputEdgeIds) do
+            if not uniqueInputLookup[edgeId] then
+                uniqueInputLookup[edgeId] = true
+                inputEdges[#inputEdges + 1] = edgeById[edgeId]
+            end
+        end
+        for _, edgeId in ipairs(junction.outputEdgeIds) do
+            if not uniqueOutputLookup[edgeId] then
+                uniqueOutputLookup[edgeId] = true
+                outputEdges[#outputEdges + 1] = edgeById[edgeId]
+            end
+        end
+
+        sortEdgesByStart(inputEdges)
+        sortEdgesByEnd(outputEdges)
+
+        if #inputEdges > 5 or #outputEdges > 5 then
+            errors[#errors + 1] = "A junction exceeds the current limit of five inputs or five outputs."
+        end
+
+        if #inputEdges == 0 or #outputEdges == 0 then
+            errors[#errors + 1] = "A playable junction needs at least one input and one output."
+        end
+
+        junction.inputEdgeIds = {}
+        junction.outputEdgeIds = {}
+        for _, edge in ipairs(inputEdges) do
+            junction.inputEdgeIds[#junction.inputEdgeIds + 1] = edge.id
+        end
+        for _, edge in ipairs(outputEdges) do
+            junction.outputEdgeIds[#junction.outputEdgeIds + 1] = edge.id
+        end
+        junction.activeInputIndex = math.min(junction.activeInputIndex, math.max(1, #junction.inputEdgeIds))
+        junction.activeOutputIndex = math.min(junction.activeOutputIndex, math.max(1, #junction.outputEdgeIds))
+    end
+
+    local trainOffsetByEdge = {}
+    for _, startEdge in pairs(startEdgeRecords) do
+        local colorIds = {}
+        for colorId, enabled in pairs(startEdge.colors or {}) do
+            if enabled then
+                colorIds[#colorIds + 1] = colorId
+            end
+        end
+        table.sort(colorIds)
+        for colorIndex, colorId in ipairs(colorIds) do
+            local trainOffset = trainOffsetByEdge[startEdge.edgeId] or 0
+            trains[#trains + 1] = {
+                id = string.format("%s_train_%s_%d", startEdge.edgeId, colorId, colorIndex),
+                edgeId = startEdge.edgeId,
+                progress = -70 - trainOffset,
+                speedScale = 1.0 - math.min(0.18, (colorIndex - 1) * 0.05),
+                color = getColor(colorId),
+            }
+            trainOffsetByEdge[startEdge.edgeId] = trainOffset + 110
         end
     end
 
     if #errors > 0 then
-        return nil, table.concat(errors, " ")
+        return nil, errors, table.concat(errors, " ")
     end
 
     return {
@@ -334,9 +548,15 @@ function authoredMap.buildPlayableLevel(mapName, editorData)
         hint = "Click the junction center to switch inputs. Use the bottom selector to switch outputs.",
         footer = "Saved maps support up to five input tracks and five output tracks per junction.",
         timeLimit = nil,
-        junctions = junctions,
+        junctions = orderedJunctions,
+        edges = edges,
         trains = trains,
-    }
+    }, {}, nil
+end
+
+function authoredMap.buildPlayableLevel(mapName, editorData)
+    local level, errors, errorText = authoredMap.validateEditorMap(mapName, editorData)
+    return level, errorText, errors
 end
 
 return authoredMap

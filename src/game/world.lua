@@ -209,61 +209,6 @@ function world:getLevel()
     return self.level
 end
 
-function world:normalizeJunctionDefinition(definition)
-    if definition.inputs and definition.outputs then
-        return definition
-    end
-
-    local mergeX = definition.mergeX or 0.5
-    local mergeY = definition.mergeY or 0.5
-    local exitY = definition.exitY or 1.25
-    local startY = -120 / self.viewport.h
-    local bendY = mergeY - 0.22
-    local inputs = {}
-    local outputs = {}
-
-    for branchIndex, branch in ipairs(definition.branches or {}) do
-        local color = copyColor(branch.color)
-        inputs[#inputs + 1] = {
-            id = branch.id or ("input_" .. branchIndex),
-            label = branch.label or ("Input " .. branchIndex),
-            color = color,
-            darkColor = copyColor(branch.darkColor or darkerColor(color)),
-            colors = { branch.id or ("input_" .. branchIndex) },
-            inputPoints = branch.branchPoints or {
-                { x = branch.startX or 0.5, y = startY },
-                { x = branch.startX or 0.5, y = bendY },
-                { x = mergeX, y = mergeY },
-            },
-        }
-    end
-
-    local firstBranch = (definition.branches or {})[1] or {}
-    local outputColor = copyColor(firstBranch.color)
-    outputs[1] = {
-        id = firstBranch.id and (firstBranch.id .. "_output") or ((definition.id or "junction") .. "_output"),
-        label = "Output 1",
-        color = outputColor,
-        darkColor = copyColor(firstBranch.darkColor or darkerColor(outputColor)),
-        colors = {},
-        adoptInputColor = true,
-        outputPoints = firstBranch.sharedPoints or {
-            { x = mergeX, y = mergeY },
-            { x = mergeX, y = exitY },
-        },
-    }
-
-    return {
-        id = definition.id,
-        label = definition.label,
-        activeInputIndex = definition.activeBranch or 1,
-        activeOutputIndex = 1,
-        control = definition.control,
-        inputs = inputs,
-        outputs = outputs,
-    }
-end
-
 function world:normalizeLevel(sourceLevel)
     local normalized = {
         id = sourceLevel.id,
@@ -273,19 +218,163 @@ function world:normalizeLevel(sourceLevel)
         footer = sourceLevel.footer,
         timeLimit = sourceLevel.timeLimit,
         junctions = {},
+        edges = {},
         trains = {},
     }
 
+    if sourceLevel.edges then
+        for _, edgeDefinition in ipairs(sourceLevel.edges or {}) do
+            local color = edgeDefinition.color and copyColor(edgeDefinition.color) or { 0.8, 0.8, 0.8 }
+            normalized.edges[#normalized.edges + 1] = {
+                id = edgeDefinition.id,
+                label = edgeDefinition.label,
+                colors = edgeDefinition.colors or {},
+                color = color,
+                darkColor = edgeDefinition.darkColor and copyColor(edgeDefinition.darkColor) or darkerColor(color),
+                adoptInputColor = edgeDefinition.adoptInputColor == true,
+                points = edgeDefinition.points or {},
+                sourceType = edgeDefinition.sourceType,
+                sourceId = edgeDefinition.sourceId,
+                targetType = edgeDefinition.targetType,
+                targetId = edgeDefinition.targetId,
+            }
+        end
+
+        for _, junctionDefinition in ipairs(sourceLevel.junctions or {}) do
+            normalized.junctions[#normalized.junctions + 1] = {
+                id = junctionDefinition.id,
+                label = junctionDefinition.label,
+                activeInputIndex = junctionDefinition.activeInputIndex or 1,
+                activeOutputIndex = junctionDefinition.activeOutputIndex or 1,
+                control = junctionDefinition.control,
+                inputEdgeIds = junctionDefinition.inputEdgeIds or {},
+                outputEdgeIds = junctionDefinition.outputEdgeIds or {},
+            }
+        end
+
+        for _, trainDefinition in ipairs(sourceLevel.trains or {}) do
+            normalized.trains[#normalized.trains + 1] = {
+                id = trainDefinition.id,
+                edgeId = trainDefinition.edgeId,
+                progress = trainDefinition.progress or 0,
+                speedScale = trainDefinition.speedScale or 1,
+                color = trainDefinition.color and copyColor(trainDefinition.color) or nil,
+            }
+        end
+
+        return normalized
+    end
+
     for _, junctionDefinition in ipairs(sourceLevel.junctions or {}) do
-        normalized.junctions[#normalized.junctions + 1] = self:normalizeJunctionDefinition(junctionDefinition)
+        local definition = junctionDefinition
+        if not (definition.inputs and definition.outputs) then
+            local mergeX = definition.mergeX or 0.5
+            local mergeY = definition.mergeY or 0.5
+            local exitY = definition.exitY or 1.25
+            local startY = -120 / self.viewport.h
+            local bendY = mergeY - 0.22
+            local inputs = {}
+            local outputs = {}
+
+            for branchIndex, branch in ipairs(definition.branches or {}) do
+                local color = copyColor(branch.color)
+                inputs[#inputs + 1] = {
+                    id = branch.id or ("input_" .. branchIndex),
+                    label = branch.label or ("Input " .. branchIndex),
+                    color = color,
+                    darkColor = copyColor(branch.darkColor or darkerColor(color)),
+                    colors = { branch.id or ("input_" .. branchIndex) },
+                    inputPoints = branch.branchPoints or {
+                        { x = branch.startX or 0.5, y = startY },
+                        { x = branch.startX or 0.5, y = bendY },
+                        { x = mergeX, y = mergeY },
+                    },
+                }
+            end
+
+            local firstBranch = (definition.branches or {})[1] or {}
+            local outputColor = copyColor(firstBranch.color)
+            outputs[1] = {
+                id = firstBranch.id and (firstBranch.id .. "_output") or ((definition.id or "junction") .. "_output"),
+                label = "Output 1",
+                color = outputColor,
+                darkColor = copyColor(firstBranch.darkColor or darkerColor(outputColor)),
+                colors = {},
+                adoptInputColor = true,
+                outputPoints = firstBranch.sharedPoints or {
+                    { x = mergeX, y = mergeY },
+                    { x = mergeX, y = exitY },
+                },
+            }
+
+            definition = {
+                id = definition.id,
+                label = definition.label,
+                activeInputIndex = definition.activeBranch or 1,
+                activeOutputIndex = 1,
+                control = definition.control,
+                inputs = inputs,
+                outputs = outputs,
+            }
+        end
+
+        local normalizedJunction = {
+            id = definition.id,
+            label = definition.label,
+            activeInputIndex = definition.activeInputIndex or 1,
+            activeOutputIndex = definition.activeOutputIndex or 1,
+            control = definition.control,
+            inputEdgeIds = {},
+            outputEdgeIds = {},
+        }
+
+        for inputIndex, inputDefinition in ipairs(definition.inputs or {}) do
+            local inputColor = copyColor(inputDefinition.color)
+            local edgeId = string.format("%s_input_%d", definition.id or "junction", inputIndex)
+            normalized.edges[#normalized.edges + 1] = {
+                id = edgeId,
+                label = inputDefinition.label or ("Input " .. inputIndex),
+                colors = inputDefinition.colors or {},
+                color = inputColor,
+                darkColor = copyColor(inputDefinition.darkColor or darkerColor(inputColor)),
+                adoptInputColor = false,
+                points = inputDefinition.inputPoints or {},
+                sourceType = "start",
+                sourceId = edgeId .. "_start",
+                targetType = "junction",
+                targetId = definition.id,
+            }
+            normalizedJunction.inputEdgeIds[#normalizedJunction.inputEdgeIds + 1] = edgeId
+        end
+
+        for outputIndex, outputDefinition in ipairs(definition.outputs or {}) do
+            local outputColor = copyColor(outputDefinition.color)
+            local edgeId = string.format("%s_output_%d", definition.id or "junction", outputIndex)
+            normalized.edges[#normalized.edges + 1] = {
+                id = edgeId,
+                label = outputDefinition.label or ("Output " .. outputIndex),
+                colors = outputDefinition.colors or {},
+                color = outputColor,
+                darkColor = copyColor(outputDefinition.darkColor or darkerColor(outputColor)),
+                adoptInputColor = outputDefinition.adoptInputColor == true,
+                points = outputDefinition.outputPoints or {},
+                sourceType = "junction",
+                sourceId = definition.id,
+                targetType = "exit",
+                targetId = outputDefinition.id or edgeId .. "_exit",
+            }
+            normalizedJunction.outputEdgeIds[#normalizedJunction.outputEdgeIds + 1] = edgeId
+        end
+
+        normalized.junctions[#normalized.junctions + 1] = normalizedJunction
     end
 
     for _, trainDefinition in ipairs(sourceLevel.trains or {}) do
+        local junctionId = trainDefinition.junctionId
+        local inputIndex = trainDefinition.inputIndex or trainDefinition.branchIndex or 1
         normalized.trains[#normalized.trains + 1] = {
             id = trainDefinition.id,
-            junctionId = trainDefinition.junctionId,
-            inputIndex = trainDefinition.inputIndex or trainDefinition.branchIndex or 1,
-            selectedOutputIndex = trainDefinition.selectedOutputIndex,
+            edgeId = string.format("%s_input_%d", junctionId or "junction", inputIndex),
             progress = trainDefinition.progress or 0,
             speedScale = trainDefinition.speedScale or 1,
             color = trainDefinition.color and copyColor(trainDefinition.color) or nil,
@@ -295,37 +384,29 @@ function world:normalizeLevel(sourceLevel)
     return normalized
 end
 
-function world:buildInputTrack(trackDefinition)
-    local color = copyColor(trackDefinition.color)
-    local path = buildPolyline(denormalizePoints(trackDefinition.inputPoints, self.viewport.w, self.viewport.h))
+function world:buildEdge(edgeDefinition)
+    local color = copyColor(edgeDefinition.color)
+    local path = buildPolyline(denormalizePoints(edgeDefinition.points or {}, self.viewport.w, self.viewport.h))
     local signalDistance = math.max(path.length - (self.crossingRadius + 10), 0)
     local stopDistance = math.max(signalDistance - (self.carriageLength + 12), 0)
     local stopX, stopY = pointOnPath(path, stopDistance)
     local signalX, signalY = pointOnPath(path, signalDistance)
 
     return {
-        id = trackDefinition.id,
-        label = trackDefinition.label,
-        colors = trackDefinition.colors or {},
+        id = edgeDefinition.id,
+        label = edgeDefinition.label,
+        colors = edgeDefinition.colors or {},
         color = color,
-        darkColor = copyColor(trackDefinition.darkColor or darkerColor(color)),
+        darkColor = copyColor(edgeDefinition.darkColor or darkerColor(color)),
+        adoptInputColor = edgeDefinition.adoptInputColor == true,
+        sourceType = edgeDefinition.sourceType,
+        sourceId = edgeDefinition.sourceId,
+        targetType = edgeDefinition.targetType,
+        targetId = edgeDefinition.targetId,
         path = path,
         signalPoint = { x = signalX, y = signalY },
         stopDistance = stopDistance,
         stopPoint = { x = stopX, y = stopY },
-    }
-end
-
-function world:buildOutputTrack(trackDefinition)
-    local color = copyColor(trackDefinition.color)
-    return {
-        id = trackDefinition.id,
-        label = trackDefinition.label,
-        colors = trackDefinition.colors or {},
-        color = color,
-        darkColor = copyColor(trackDefinition.darkColor or darkerColor(color)),
-        adoptInputColor = trackDefinition.adoptInputColor == true,
-        path = buildPolyline(denormalizePoints(trackDefinition.outputPoints, self.viewport.w, self.viewport.h)),
     }
 end
 
@@ -334,12 +415,18 @@ function world:buildJunction(definition, existing)
     local inputs = {}
     local outputs = {}
 
-    for _, inputDefinition in ipairs(definition.inputs or {}) do
-        inputs[#inputs + 1] = self:buildInputTrack(inputDefinition)
+    for _, edgeId in ipairs(definition.inputEdgeIds or {}) do
+        local edge = self.edges[edgeId]
+        if edge then
+            inputs[#inputs + 1] = edge
+        end
     end
 
-    for _, outputDefinition in ipairs(definition.outputs or {}) do
-        outputs[#outputs + 1] = self:buildOutputTrack(outputDefinition)
+    for _, edgeId in ipairs(definition.outputEdgeIds or {}) do
+        local edge = self.edges[edgeId]
+        if edge then
+            outputs[#outputs + 1] = edge
+        end
     end
 
     local mergePoint = { x = self.viewport.w * 0.5, y = self.viewport.h * 0.5 }
@@ -371,39 +458,20 @@ function world:buildJunction(definition, existing)
         },
         inputs = inputs,
         outputs = outputs,
-        fullTrackCache = {},
     }
 
     return junction
-end
-
-function world:getCombinedTrack(junction, inputIndex, outputIndex)
-    inputIndex = clamp(inputIndex or 1, 1, math.max(1, #junction.inputs))
-    outputIndex = clamp(outputIndex or 1, 1, math.max(1, #junction.outputs))
-
-    junction.fullTrackCache[inputIndex] = junction.fullTrackCache[inputIndex] or {}
-    local cached = junction.fullTrackCache[inputIndex][outputIndex]
-    if cached then
-        return cached
-    end
-
-    local inputTrack = junction.inputs[inputIndex]
-    local outputTrack = junction.outputs[outputIndex]
-    local fullPath = buildPolyline(combinePointLists(inputTrack.path.points, outputTrack.path.points))
-
-    cached = {
-        fullPath = fullPath,
-        inputTrack = inputTrack,
-        outputTrack = outputTrack,
-    }
-    junction.fullTrackCache[inputIndex][outputIndex] = cached
-    return cached
 end
 
 function world:initializeLevel()
     local previousJunctions = self.junctions
     self.junctions = {}
     self.junctionOrder = {}
+    self.edges = {}
+
+    for _, edgeDefinition in ipairs(self.level.edges or {}) do
+        self.edges[edgeDefinition.id] = self:buildEdge(edgeDefinition)
+    end
 
     for _, junctionDefinition in ipairs(self.level.junctions or {}) do
         local existing = previousJunctions[junctionDefinition.id]
@@ -414,36 +482,28 @@ function world:initializeLevel()
 
     if #self.trains == 0 then
         for _, trainDefinition in ipairs(self.level.trains or {}) do
-            local junction = self.junctions[trainDefinition.junctionId]
-            if junction then
-                local inputIndex = clamp(trainDefinition.inputIndex or 1, 1, math.max(1, #junction.inputs))
-                local selectedOutputIndex = trainDefinition.selectedOutputIndex
-                local baseColor = trainDefinition.color or junction.inputs[inputIndex].color
+            local edge = self.edges[trainDefinition.edgeId]
+            if edge then
+                local baseColor = trainDefinition.color or edge.color
 
                 self.trains[#self.trains + 1] = {
                     id = trainDefinition.id,
-                    junctionId = trainDefinition.junctionId,
-                    inputIndex = inputIndex,
-                    selectedOutputIndex = selectedOutputIndex and clamp(selectedOutputIndex, 1, math.max(1, #junction.outputs)) or nil,
-                    progress = trainDefinition.progress,
+                    edgeId = trainDefinition.edgeId,
+                    occupiedEdgeIds = { trainDefinition.edgeId },
+                    headDistance = trainDefinition.progress,
                     speed = self.trainSpeed * (trainDefinition.speedScale or 1),
                     currentSpeed = 0,
                     color = copyColor(baseColor),
                     darkColor = darkerColor(baseColor),
                     completed = false,
-                    track = self:getCombinedTrack(junction, inputIndex, selectedOutputIndex or junction.activeOutputIndex),
                 }
             end
         end
     else
         for _, train in ipairs(self.trains) do
-            local junction = self.junctions[train.junctionId]
-            if junction then
-                train.inputIndex = clamp(train.inputIndex or 1, 1, math.max(1, #junction.inputs))
-                if train.selectedOutputIndex then
-                    train.selectedOutputIndex = clamp(train.selectedOutputIndex, 1, math.max(1, #junction.outputs))
-                end
-                train.track = self:getCombinedTrack(junction, train.inputIndex, train.selectedOutputIndex or junction.activeOutputIndex)
+            if self.edges[train.edgeId] then
+                train.occupiedEdgeIds = train.occupiedEdgeIds or { train.edgeId }
+                train.headDistance = train.headDistance or train.progress or 0
             end
         end
     end
@@ -451,6 +511,75 @@ function world:initializeLevel()
     self.timeRemaining = self.level.timeLimit
     self.collisionPoint = nil
     self.failureReason = nil
+end
+
+function world:getOccupiedEdges(train)
+    local occupiedEdges = {}
+    for _, edgeId in ipairs(train.occupiedEdgeIds or {}) do
+        local edge = self.edges[edgeId]
+        if edge then
+            occupiedEdges[#occupiedEdges + 1] = edge
+        end
+    end
+    return occupiedEdges
+end
+
+function world:getCurrentEdge(train)
+    local occupiedEdges = self:getOccupiedEdges(train)
+    return occupiedEdges[#occupiedEdges], occupiedEdges
+end
+
+function world:getHeadLocalProgress(train, occupiedEdges)
+    local edges = occupiedEdges or self:getOccupiedEdges(train)
+    local offset = train.headDistance or 0
+
+    for edgeIndex = 1, #edges - 1 do
+        offset = offset - edges[edgeIndex].path.length
+    end
+
+    return offset
+end
+
+function world:trimTrainOccupiedEdges(train, occupiedEdges)
+    local edges = occupiedEdges or self:getOccupiedEdges(train)
+    local tailDistance = (train.headDistance or 0) - (self.carriageCount - 1) * (self.carriageLength + self.carriageGap)
+
+    while #edges > 1 and tailDistance > edges[1].path.length do
+        tailDistance = tailDistance - edges[1].path.length
+        train.headDistance = train.headDistance - edges[1].path.length
+        table.remove(edges, 1)
+        table.remove(train.occupiedEdgeIds, 1)
+    end
+end
+
+function world:getDistanceOnOccupiedEdges(occupiedEdges)
+    local total = 0
+    for _, edge in ipairs(occupiedEdges or {}) do
+        total = total + edge.path.length
+    end
+    return total
+end
+
+function world:pointOnOccupiedEdges(occupiedEdges, distance)
+    local offset = distance
+    local firstEdge = occupiedEdges[1]
+    if not firstEdge then
+        return 0, 0, 0
+    end
+
+    if offset <= 0 then
+        return pointOnPath(firstEdge.path, offset)
+    end
+
+    for _, edge in ipairs(occupiedEdges) do
+        if offset <= edge.path.length then
+            return pointOnPath(edge.path, offset)
+        end
+        offset = offset - edge.path.length
+    end
+
+    local lastEdge = occupiedEdges[#occupiedEdges]
+    return pointOnPath(lastEdge.path, lastEdge.path.length + offset)
 end
 
 function world:resize(viewportW, viewportH)
@@ -575,43 +704,40 @@ function world:updateControlState(junction, dt)
 end
 
 function world:getDesiredLeadDistance(train)
-    local junction = self.junctions[train.junctionId]
-    if not junction or train.completed then
+    local currentEdge = self.edges[train.edgeId]
+    if not currentEdge or train.completed or currentEdge.targetType ~= "junction" then
         return nil
     end
 
-    local inputTrack = junction.inputs[train.inputIndex]
-    if not inputTrack or train.progress >= inputTrack.path.length then
+    local junction = self.junctions[currentEdge.targetId]
+    if not junction then
         return nil
     end
 
-    if train.inputIndex ~= junction.activeInputIndex then
-        return inputTrack.stopDistance
+    local localProgress = self:getHeadLocalProgress(train)
+    if localProgress >= currentEdge.path.length then
+        return nil
+    end
+
+    local activeInput = junction.inputs[junction.activeInputIndex]
+    if not activeInput or activeInput.id ~= currentEdge.id then
+        return currentEdge.stopDistance
     end
 
     return nil
 end
 
-function world:latchTrainOutput(train)
-    if train.selectedOutputIndex then
+function world:advanceTrainToNextEdge(train, junction, overflow)
+    local outputEdge = junction.outputs[clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))]
+    if not outputEdge then
+        train.completed = true
         return
     end
 
-    local junction = self.junctions[train.junctionId]
-    if not junction then
-        return
-    end
-
-    train.selectedOutputIndex = clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))
-end
-
-function world:getTrainTrack(train)
-    local junction = self.junctions[train.junctionId]
-    if not junction then
-        return nil
-    end
-
-    return self:getCombinedTrack(junction, train.inputIndex, train.selectedOutputIndex or junction.activeOutputIndex)
+    train.edgeId = outputEdge.id
+    train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
+    train.headDistance = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) + overflow
+    self:trimTrainOccupiedEdges(train)
 end
 
 function world:updateTrain(train, dt)
@@ -619,23 +745,25 @@ function world:updateTrain(train, dt)
         return
     end
 
-    local junction = self.junctions[train.junctionId]
-    local inputTrack = junction and junction.inputs[train.inputIndex] or nil
-    if not junction or not inputTrack then
+    local currentEdge = self.edges[train.edgeId]
+    if not currentEdge then
         train.completed = true
         return
     end
 
     local desiredStopDistance = self:getDesiredLeadDistance(train)
     local targetSpeed = train.speed
+    local localProgress = self:getHeadLocalProgress(train)
 
     if desiredStopDistance then
         local brakingWindow = 110
-        local remainingDistance = desiredStopDistance - train.progress
+        local remainingDistance = desiredStopDistance - localProgress
 
         if remainingDistance <= 0 then
             targetSpeed = 0
-            train.progress = desiredStopDistance
+            local previousLength = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
+            train.headDistance = previousLength + desiredStopDistance
+            localProgress = desiredStopDistance
         else
             targetSpeed = train.speed * clamp(remainingDistance / brakingWindow, 0, 1)
         end
@@ -647,26 +775,48 @@ function world:updateTrain(train, dt)
         train.currentSpeed = math.max(targetSpeed, train.currentSpeed - self.trainAcceleration * 1.2 * dt)
     end
 
-    local nextProgress = train.progress + train.currentSpeed * dt
+    local nextProgress = localProgress + train.currentSpeed * dt
     if desiredStopDistance and nextProgress > desiredStopDistance then
         nextProgress = desiredStopDistance
         train.currentSpeed = 0
     end
 
-    if not train.selectedOutputIndex and nextProgress >= inputTrack.path.length and train.inputIndex == junction.activeInputIndex then
-        self:latchTrainOutput(train)
+    local previousLength = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
+    train.headDistance = previousLength + nextProgress
+    self:trimTrainOccupiedEdges(train)
+
+    while not train.completed do
+        currentEdge = self.edges[train.edgeId]
+        if not currentEdge then
+            train.completed = true
+            break
+        end
+
+        local localHead = self:getHeadLocalProgress(train)
+        if localHead < currentEdge.path.length then
+            break
+        end
+
+        local overflow = localHead - currentEdge.path.length
+        if currentEdge.targetType == "junction" then
+            local junction = self.junctions[currentEdge.targetId]
+            local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
+            if not junction or not activeInput or activeInput.id ~= currentEdge.id then
+                local edgePrefix = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
+                train.headDistance = edgePrefix + currentEdge.path.length
+                train.currentSpeed = 0
+                break
+            end
+            self:advanceTrainToNextEdge(train, junction, overflow)
+        else
+            break
+        end
     end
 
-    train.progress = nextProgress
-    train.track = self:getTrainTrack(train)
-
-    if not train.track then
-        train.completed = true
-        return
-    end
-
-    local tailDistance = train.progress - (self.carriageCount - 1) * (self.carriageLength + self.carriageGap)
-    if tailDistance > train.track.fullPath.length + self.exitPadding then
+    local occupiedEdges = self:getOccupiedEdges(train)
+    local tailDistance = (train.headDistance or 0) - (self.carriageCount - 1) * (self.carriageLength + self.carriageGap)
+    local occupiedLength = self:getDistanceOnOccupiedEdges(occupiedEdges)
+    if currentEdge and currentEdge.targetType == "exit" and tailDistance > occupiedLength + self.exitPadding then
         train.completed = true
         train.currentSpeed = 0
     end
@@ -675,15 +825,15 @@ end
 function world:getTrainCarriagePositions(train)
     local positions = {}
     local carriageSpacing = self.carriageLength + self.carriageGap
-    local track = train.track or self:getTrainTrack(train)
+    local occupiedEdges = self:getOccupiedEdges(train)
 
-    if train.completed or not track then
+    if train.completed or #occupiedEdges == 0 then
         return positions
     end
 
     for carriageIndex = 1, self.carriageCount do
-        local carriageDistance = train.progress - (carriageIndex - 1) * carriageSpacing
-        local x, y, angle = pointOnPath(track.fullPath, carriageDistance)
+        local carriageDistance = (train.headDistance or 0) - (carriageIndex - 1) * carriageSpacing
+        local x, y, angle = self:pointOnOccupiedEdges(occupiedEdges, carriageDistance)
         positions[#positions + 1] = {
             x = x,
             y = y,
