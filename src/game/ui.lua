@@ -1,5 +1,3 @@
-local levels = require("src.game.levels")
-
 local ui = {}
 
 local function pointInRect(x, y, rect)
@@ -59,31 +57,50 @@ local function getLevelSelectBackRect()
     }
 end
 
-local function getBuiltinEntryRects()
+local function filterMapsBySource(game, source)
+    local maps = {}
+    for _, descriptor in ipairs(game.availableMaps or {}) do
+        if descriptor.source == source then
+            maps[#maps + 1] = descriptor
+        end
+    end
+    return maps
+end
+
+local function getBuiltinEntryRects(game)
     local rects = {}
     local startY = 128
-    for index, level in ipairs(levels) do
+    local builtinMaps = filterMapsBySource(game, "builtin")
+
+    for index, descriptor in ipairs(builtinMaps) do
         rects[#rects + 1] = {
-            kind = "builtin",
-            index = index,
-            level = level,
+            kind = "map",
+            map = descriptor,
             x = 40,
             y = startY + (index - 1) * 94,
             w = 540,
             h = 78,
+            editRect = {
+                x = 450,
+                y = startY + (index - 1) * 94 + 20,
+                w = 104,
+                h = 36,
+            },
         }
     end
+
     return rects
 end
 
-local function getSavedEntryRects(game)
+local function getUserEntryRects(game)
     local rects = {}
     local startY = 128
-    for index, savedMap in ipairs(game.savedMaps or {}) do
+    local userMaps = filterMapsBySource(game, "user")
+
+    for index, descriptor in ipairs(userMaps) do
         rects[#rects + 1] = {
-            kind = "saved",
-            fileName = savedMap.fileName,
-            map = savedMap,
+            kind = "map",
+            map = descriptor,
             x = 700,
             y = startY + (index - 1) * 94,
             w = 540,
@@ -96,6 +113,7 @@ local function getSavedEntryRects(game)
             },
         }
     end
+
     return rects
 end
 
@@ -143,18 +161,21 @@ function ui.getLevelSelectHit(game, x, y)
         return { kind = "back" }
     end
 
-    for _, rect in ipairs(getBuiltinEntryRects()) do
+    for _, rect in ipairs(getBuiltinEntryRects(game)) do
+        if pointInRect(x, y, rect.editRect) then
+            return { kind = "edit_map", map = rect.map }
+        end
         if pointInRect(x, y, rect) then
-            return { kind = "builtin", index = rect.index }
+            return { kind = "open_map", map = rect.map }
         end
     end
 
-    for _, rect in ipairs(getSavedEntryRects(game)) do
+    for _, rect in ipairs(getUserEntryRects(game)) do
         if pointInRect(x, y, rect.editRect) then
-            return { kind = "edit_saved", fileName = rect.fileName }
+            return { kind = "edit_map", map = rect.map }
         end
         if pointInRect(x, y, rect) then
-            return { kind = "saved", fileName = rect.fileName }
+            return { kind = "open_map", map = rect.map }
         end
     end
 
@@ -217,25 +238,39 @@ function ui.drawLevelSelect(game)
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.print("Built-In Maps", 40, 90)
+    graphics.print("Tutorial Maps", 40, 90)
     graphics.print("Saved Maps", 700, 90)
 
-    for _, rect in ipairs(getBuiltinEntryRects()) do
+    local builtinRects = getBuiltinEntryRects(game)
+    if #builtinRects == 0 then
         graphics.setColor(0.09, 0.11, 0.15, 0.98)
-        graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+        graphics.rectangle("fill", 40, 128, 540, 120, 16, 16)
         graphics.setColor(0.26, 0.34, 0.42, 1)
-        graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
-
+        graphics.rectangle("line", 40, 128, 540, 120, 16, 16)
         love.graphics.setFont(game.fonts.body)
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.print(rect.level.title, rect.x + 18, rect.y + 14)
-        love.graphics.setFont(game.fonts.small)
-        graphics.setColor(0.82, 0.86, 0.9, 1)
-        graphics.printf(rect.level.description, rect.x + 18, rect.y + 42, rect.w - 36)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("No built-in tutorial maps were found.", 70, 166, 480, "center")
+    else
+        for _, rect in ipairs(builtinRects) do
+            graphics.setColor(0.09, 0.11, 0.15, 0.98)
+            graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+            graphics.setColor(0.26, 0.34, 0.42, 1)
+            graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
+
+            love.graphics.setFont(game.fonts.body)
+            graphics.setColor(0.97, 0.98, 1, 1)
+            graphics.print(rect.map.name, rect.x + 18, rect.y + 14)
+
+            love.graphics.setFont(game.fonts.small)
+            graphics.setColor(0.82, 0.86, 0.9, 1)
+            graphics.print(rect.map.hasLevel and "Click to play" or "Template map", rect.x + 18, rect.y + 46)
+
+            drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
+        end
     end
 
-    local savedRects = getSavedEntryRects(game)
-    if #savedRects == 0 then
+    local userRects = getUserEntryRects(game)
+    if #userRects == 0 then
         graphics.setColor(0.09, 0.11, 0.15, 0.98)
         graphics.rectangle("fill", 700, 128, 540, 120, 16, 16)
         graphics.setColor(0.26, 0.34, 0.42, 1)
@@ -244,7 +279,7 @@ function ui.drawLevelSelect(game)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf("No saved maps yet. Open the editor from the main menu and save one there.", 730, 166, 480, "center")
     else
-        for _, rect in ipairs(savedRects) do
+        for _, rect in ipairs(userRects) do
             graphics.setColor(0.09, 0.11, 0.15, 0.98)
             graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
             graphics.setColor(0.26, 0.34, 0.42, 1)

@@ -1,5 +1,4 @@
 local input = require("src.game.input")
-local levels = require("src.game.levels")
 local mapEditor = require("src.game.map_editor")
 local mapStorage = require("src.game.map_storage")
 local world = require("src.game.world")
@@ -27,16 +26,15 @@ function Game.new()
     }
 
     self.screen = "menu"
-    self.levelIndex = 1
     self.levelComplete = false
     self.failureReason = nil
     self.world = nil
     self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
-    self.savedMaps = {}
-    self.currentLevelSource = nil
+    self.availableMaps = {}
+    self.currentMapDescriptor = nil
 
     self:updateRenderTransform()
-    self:refreshSavedMaps()
+    self:refreshMaps()
 
     return self
 end
@@ -52,78 +50,71 @@ function Game:toViewportPosition(screenX, screenY)
         (screenY - self.renderOffsetY) / self.renderScale
 end
 
-function Game:refreshSavedMaps()
-    self.savedMaps = mapStorage.listMaps()
+function Game:refreshMaps()
+    self.availableMaps = mapStorage.listMaps()
+end
+
+function Game:getBuiltinShortcutMap(index)
+    local builtinIndex = 0
+    for _, descriptor in ipairs(self.availableMaps or {}) do
+        if descriptor.source == "builtin" then
+            builtinIndex = builtinIndex + 1
+            if builtinIndex == index then
+                return descriptor
+            end
+        end
+    end
+    return nil
 end
 
 function Game:openMenu()
     self.screen = "menu"
-    self:refreshSavedMaps()
+    self:refreshMaps()
 end
 
 function Game:openLevelSelect()
     self.screen = "level_select"
-    self:refreshSavedMaps()
+    self:refreshMaps()
 end
 
 function Game:openEditorBlank()
     self.screen = "editor"
-    self.editor:resetFromLevel(nil)
+    self.editor:resetFromMap(nil, nil)
 end
 
-function Game:openEditorFromLevel(level)
-    self.screen = "editor"
-    self.editor:resetFromLevel(level)
-end
-
-function Game:openEditorSaved(fileName)
-    local savedMap, loadError = mapStorage.loadMap(fileName)
-    if not savedMap or not savedMap.editor then
-        self.editor:showStatus(loadError or "That saved map could not be loaded into the editor.")
+function Game:openEditorMap(mapDescriptor)
+    local mapData, loadError = mapStorage.loadMap(mapDescriptor)
+    if not mapData or not mapData.editor then
+        self.editor:showStatus(loadError or "That map could not be loaded into the editor.")
         self.screen = "editor"
-        return
+        return false
     end
 
     self.screen = "editor"
-    self.editor:loadEditorData(savedMap.editor, savedMap.name)
+    self.editor:resetFromMap(mapData, mapDescriptor)
+    return true
 end
 
-function Game:startLevel(level, levelSource)
+function Game:startMap(mapDescriptor)
+    local mapData, loadError = mapStorage.loadMap(mapDescriptor)
+    if not mapData or not mapData.level then
+        return false, loadError or "That map does not contain playable level data."
+    end
+
     self.levelComplete = false
     self.failureReason = nil
-    self.currentLevelSource = levelSource
-    self.world = world.new(self.viewport.w, self.viewport.h, level)
+    self.currentMapDescriptor = mapDescriptor
+    self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
-end
-
-function Game:startBuiltinLevel(levelIndex)
-    self.levelIndex = levelIndex
-    self:startLevel(levelIndex, { kind = "builtin", index = levelIndex })
-end
-
-function Game:startSavedMap(fileName)
-    local savedMap, loadError = mapStorage.loadMap(fileName)
-    if not savedMap or not savedMap.level then
-        return false, loadError or "The saved map did not contain playable level data."
-    end
-
-    self:startLevel(savedMap.level, { kind = "saved", fileName = fileName, name = savedMap.name })
     return true
 end
 
 function Game:restart()
-    if not self.currentLevelSource then
+    if not self.currentMapDescriptor then
         return
     end
 
-    if self.currentLevelSource.kind == "builtin" then
-        self:startBuiltinLevel(self.currentLevelSource.index)
-        return
-    end
-
-    if self.currentLevelSource.kind == "saved" then
-        self:startSavedMap(self.currentLevelSource.fileName)
-    end
+    self:startMap(self.currentMapDescriptor)
 end
 
 function Game:isRunLocked()
@@ -204,14 +195,17 @@ function Game:keypressed(key)
     if self.screen == "level_select" then
         local requestedLevel = input.getLevelShortcut(key)
         if requestedLevel then
-            self:startBuiltinLevel(requestedLevel)
+            local descriptor = self:getBuiltinShortcutMap(requestedLevel)
+            if descriptor then
+                self:startMap(descriptor)
+            end
         end
         return
     end
 
     if self.screen == "editor" then
         if self.editor:keypressed(key) then
-            self:refreshSavedMaps()
+            self:refreshMaps()
             return
         end
 
@@ -231,13 +225,18 @@ function Game:keypressed(key)
     end
 
     if key == "e" or key == "tab" then
-        self:openEditorFromLevel(self.world:getLevel())
+        if self.currentMapDescriptor then
+            self:openEditorMap(self.currentMapDescriptor)
+        end
         return
     end
 
     local requestedLevel = input.getLevelShortcut(key)
     if requestedLevel then
-        self:startBuiltinLevel(requestedLevel)
+        local descriptor = self:getBuiltinShortcutMap(requestedLevel)
+        if descriptor then
+            self:startMap(descriptor)
+        end
         return
     end
 
@@ -280,24 +279,21 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
-        elseif hit.kind == "builtin" then
-            self:startBuiltinLevel(hit.index)
-        elseif hit.kind == "saved" then
-            local savedMap = mapStorage.loadMap(hit.fileName)
-            if savedMap and savedMap.level then
-                self:startSavedMap(hit.fileName)
+        elseif hit.kind == "open_map" then
+            if hit.map.hasLevel then
+                self:startMap(hit.map)
             else
-                self:openEditorSaved(hit.fileName)
+                self:openEditorMap(hit.map)
             end
-        elseif hit.kind == "edit_saved" then
-            self:openEditorSaved(hit.fileName)
+        elseif hit.kind == "edit_map" then
+            self:openEditorMap(hit.map)
         end
         return
     end
 
     if self.screen == "editor" then
         self.editor:mousepressed(viewportX, viewportY, button)
-        self:refreshSavedMaps()
+        self:refreshMaps()
         return
     end
 
@@ -305,7 +301,7 @@ function Game:mousepressed(x, y, button)
         return
     end
 
-    if button ~= 1 then
+    if button ~= 1 and button ~= 2 then
         return
     end
 
@@ -319,7 +315,7 @@ function Game:mousepressed(x, y, button)
         return
     end
 
-    self.world:handleClick(viewportX, viewportY)
+    self.world:handleClick(viewportX, viewportY, button)
 end
 
 function Game:mousemoved(x, y)
@@ -333,7 +329,7 @@ function Game:mousereleased(x, y, button)
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousereleased(viewportX, viewportY, button)
-        self:refreshSavedMaps()
+        self:refreshMaps()
     end
 end
 

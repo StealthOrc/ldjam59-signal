@@ -1,10 +1,12 @@
 local mapStorage = {}
+local authoredMap = require("src.game.authored_map")
 
-local MAP_DIR = "maps"
+local USER_MAP_DIR = "maps"
+local BUILTIN_MAP_DIR = "src/game/maps"
 
-local function ensureMapDirectory()
-    if not love.filesystem.getInfo(MAP_DIR, "directory") then
-        love.filesystem.createDirectory(MAP_DIR)
+local function ensureUserMapDirectory()
+    if not love.filesystem.getInfo(USER_MAP_DIR, "directory") then
+        love.filesystem.createDirectory(USER_MAP_DIR)
     end
 end
 
@@ -118,33 +120,84 @@ local function loadMapFile(path)
     end
 
     if type(data) ~= "table" then
-        return nil, "saved map did not return a table"
+        return nil, "map file did not return a table"
     end
 
     return data
 end
 
+local function buildPath(source, fileName)
+    if source == "builtin" then
+        return BUILTIN_MAP_DIR .. "/" .. fileName
+    end
+
+    ensureUserMapDirectory()
+    return USER_MAP_DIR .. "/" .. fileName
+end
+
+local function buildDescriptor(source, fileName, data)
+    return {
+        id = source .. ":" .. fileName,
+        source = source,
+        name = data.name or fileName:gsub("%.lua$", ""),
+        fileName = fileName,
+        path = buildPath(source, fileName),
+        savedAt = data.savedAt,
+        hasEditor = data.editor ~= nil,
+        hasLevel = data.level ~= nil,
+        isTemplate = source == "builtin" and data.template == true,
+    }
+end
+
+local function listSourceMaps(source, directory)
+    local maps = {}
+    if not love.filesystem.getInfo(directory, "directory") then
+        return maps
+    end
+
+    local fileNames = love.filesystem.getDirectoryItems(directory)
+    table.sort(fileNames)
+
+    for _, fileName in ipairs(fileNames) do
+        if fileName:sub(-4) == ".lua" then
+            local data = mapStorage.loadMap(fileName, source)
+            if data then
+                maps[#maps + 1] = buildDescriptor(source, fileName, data)
+            end
+        end
+    end
+
+    return maps
+end
+
 function mapStorage.saveMap(name, payload)
-    ensureMapDirectory()
+    ensureUserMapDirectory()
 
     local fileName = sanitizeFileName(name)
-    local path = MAP_DIR .. "/" .. fileName
+    local path = USER_MAP_DIR .. "/" .. fileName
     local body = "return " .. serializeValue(payload) .. "\n"
     local ok, writeError = love.filesystem.write(path, body)
     if not ok then
         return nil, writeError
     end
 
-    return {
-        name = payload.name or name,
-        fileName = fileName,
-        path = path,
-    }
+    return buildDescriptor("user", fileName, payload)
 end
 
-function mapStorage.loadMap(fileName)
-    ensureMapDirectory()
-    local path = MAP_DIR .. "/" .. fileName
+function mapStorage.loadMap(fileNameOrDescriptor, source)
+    local fileName = fileNameOrDescriptor
+    local resolvedSource = source or "user"
+
+    if type(fileNameOrDescriptor) == "table" then
+        fileName = fileNameOrDescriptor.fileName
+        resolvedSource = fileNameOrDescriptor.source or resolvedSource
+    end
+
+    if not fileName then
+        return nil, "map file name missing"
+    end
+
+    local path = buildPath(resolvedSource, fileName)
     local data, loadError = loadMapFile(path)
     if not data then
         return nil, loadError
@@ -152,30 +205,32 @@ function mapStorage.loadMap(fileName)
 
     data.fileName = fileName
     data.path = path
+    data.source = resolvedSource
+    data.isTemplate = resolvedSource == "builtin" and data.template == true
+    if not data.level and data.editor then
+        local derivedLevel = authoredMap.buildPlayableLevel(data.name or fileName:gsub("%.lua$", ""), data.editor)
+        if derivedLevel then
+            data.level = derivedLevel
+        end
+    end
     return data
 end
 
 function mapStorage.listMaps()
-    ensureMapDirectory()
-
     local maps = {}
-    for _, fileName in ipairs(love.filesystem.getDirectoryItems(MAP_DIR)) do
-        if fileName:sub(-4) == ".lua" then
-            local data = mapStorage.loadMap(fileName)
-            if data then
-                maps[#maps + 1] = {
-                    name = data.name or fileName:gsub("%.lua$", ""),
-                    fileName = fileName,
-                    savedAt = data.savedAt,
-                    hasEditor = data.editor ~= nil,
-                    hasLevel = data.level ~= nil,
-                    level = data.level,
-                }
-            end
-        end
+
+    for _, descriptor in ipairs(listSourceMaps("builtin", BUILTIN_MAP_DIR)) do
+        maps[#maps + 1] = descriptor
+    end
+
+    for _, descriptor in ipairs(listSourceMaps("user", USER_MAP_DIR)) do
+        maps[#maps + 1] = descriptor
     end
 
     table.sort(maps, function(a, b)
+        if a.source ~= b.source then
+            return a.source == "builtin"
+        end
         return string.lower(a.name) < string.lower(b.name)
     end)
 
@@ -183,8 +238,12 @@ function mapStorage.listMaps()
 end
 
 function mapStorage.getSaveDirectory()
-    ensureMapDirectory()
-    return love.filesystem.getSaveDirectory() .. "/" .. MAP_DIR
+    ensureUserMapDirectory()
+    return love.filesystem.getSaveDirectory() .. "/" .. USER_MAP_DIR
+end
+
+function mapStorage.getBuiltinDirectory()
+    return BUILTIN_MAP_DIR
 end
 
 return mapStorage
