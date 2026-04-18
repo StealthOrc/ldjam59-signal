@@ -489,9 +489,12 @@ function world:initializeLevel()
                 self.trains[#self.trains + 1] = {
                     id = trainDefinition.id,
                     edgeId = trainDefinition.edgeId,
+                    startEdgeId = trainDefinition.edgeId,
                     occupiedEdgeIds = { trainDefinition.edgeId },
                     headDistance = trainDefinition.progress,
+                    startProgress = trainDefinition.progress,
                     speed = self.trainSpeed * (trainDefinition.speedScale or 1),
+                    speedScale = trainDefinition.speedScale or 1,
                     currentSpeed = 0,
                     color = copyColor(baseColor),
                     darkColor = darkerColor(baseColor),
@@ -502,8 +505,11 @@ function world:initializeLevel()
     else
         for _, train in ipairs(self.trains) do
             if self.edges[train.edgeId] then
+                train.startEdgeId = train.startEdgeId or train.edgeId
                 train.occupiedEdgeIds = train.occupiedEdgeIds or { train.edgeId }
                 train.headDistance = train.headDistance or train.progress or 0
+                train.startProgress = train.startProgress or train.headDistance or 0
+                train.speedScale = train.speedScale or (train.speed / self.trainSpeed)
             end
         end
     end
