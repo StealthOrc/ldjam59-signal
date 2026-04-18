@@ -81,6 +81,7 @@ function car.new(tuning)
         fuel = tuning.fuelCapacity,
         speed = 0,
         slip = 0,
+        driftActive = false,
         maxNorthDistance = 0,
         collisionRadius = 18,
         length = 58,
@@ -119,6 +120,7 @@ function car.reset(self, tuning)
     self.fuel = tuning.fuelCapacity
     self.speed = 0
     self.slip = 0
+    self.driftActive = false
     self.maxNorthDistance = 0
     self.boostPadCooldown = 0
     self.boostPadTimer = 0
@@ -235,6 +237,19 @@ local function updateGearbox(self, throttle, brake, forwardSpeedKmh, dt, tuning)
     syncGearMetrics(self, tuning)
 end
 
+local function shouldEnterDrift(self, intent, forwardSpeedKmh, tuning)
+    if forwardSpeedKmh < tuning.driftMinSpeedKmh then
+        return false
+    end
+
+    if not intent.handbrake then
+        return false
+    end
+
+    local steerAmount = math.abs(intent.steer)
+    return steerAmount >= tuning.driftHandbrakeSteerThreshold
+end
+
 function car.update(self, intent, dt, tuning)
     updateSkidMarks(self, dt)
     self.boostPadCooldown = math.max(0, (self.boostPadCooldown or 0) - dt)
@@ -311,6 +326,10 @@ function car.update(self, intent, dt, tuning)
     forwardSpeed = self.vx * newForwardX + self.vy * newForwardY
     local lateralSpeed = self.vx * rightX + self.vy * rightY
 
+    if not self.driftActive and shouldEnterDrift(self, intent, self.forwardSpeedKmh, tuning) then
+        self.driftActive = true
+    end
+
     if self.boostPadTimer > 0 then
         forwardSpeed = math.min(
             forwardSpeed + tuning.boostPadAcceleration * dt,
@@ -319,8 +338,9 @@ function car.update(self, intent, dt, tuning)
     end
 
     local speedFactor = clamp(math.abs(forwardSpeed) / tuning.gripSpeedWindow, 0, 1)
-    local rearGrip = tuning.rearGripLowSpeed
-        + (tuning.rearGripHighSpeed - tuning.rearGripLowSpeed) * speedFactor
+    local rearGripLow = self.driftActive and tuning.rearGripLowSpeed or tuning.plantedRearGripLowSpeed
+    local rearGripHigh = self.driftActive and tuning.rearGripHighSpeed or tuning.plantedRearGripHighSpeed
+    local rearGrip = rearGripLow + (rearGripHigh - rearGripLow) * speedFactor
 
     if intent.handbrake then
         rearGrip = rearGrip * tuning.handbrakeGripMultiplier
@@ -331,6 +351,15 @@ function car.update(self, intent, dt, tuning)
 
     if math.abs(forwardSpeed) < tuning.turnSpeedFloor then
         self.angularVelocity = self.angularVelocity * math.max(0, 1 - tuning.angularDamping * dt)
+    end
+
+    if self.driftActive then
+        local steerRecovered = math.abs(intent.steer) <= tuning.driftRecoverSteerThreshold
+        local slipRecovered = math.abs(lateralSpeed) <= tuning.driftRecoverSlipThreshold
+        local yawRecovered = math.abs(self.angularVelocity) <= tuning.driftRecoverAngularVelocity
+        if not intent.handbrake and steerRecovered and slipRecovered and yawRecovered then
+            self.driftActive = false
+        end
     end
 
     local forwardSpeedCap = tuning.maxForwardSpeed
