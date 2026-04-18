@@ -3,6 +3,8 @@ local authoredMap = require("src.game.authored_map")
 
 local USER_MAP_DIR = "maps"
 local BUILTIN_MAP_DIR = "src/game/maps"
+local BUILTIN_TUTORIAL_DIR = BUILTIN_MAP_DIR .. "/tutorial"
+local BUILTIN_CAMPAIGN_DIR = BUILTIN_MAP_DIR .. "/campaign"
 
 local function ensureUserMapDirectory()
     if not love.filesystem.getInfo(USER_MAP_DIR, "directory") then
@@ -126,18 +128,35 @@ local function loadMapFile(path)
     return data
 end
 
-local function buildPath(source, fileName)
+local function getBuiltinDirectory(mapKind)
+    if mapKind == "tutorial" then
+        return BUILTIN_TUTORIAL_DIR
+    end
+
+    return BUILTIN_CAMPAIGN_DIR
+end
+
+local function buildPath(source, fileName, mapKind, directory)
     if source == "builtin" then
-        return BUILTIN_MAP_DIR .. "/" .. fileName
+        local builtinDirectory = directory or getBuiltinDirectory(mapKind)
+        return builtinDirectory .. "/" .. fileName
     end
 
     ensureUserMapDirectory()
     return USER_MAP_DIR .. "/" .. fileName
 end
 
-local function inferMapKind(source, data)
+local function inferMapKind(source, data, directory)
     if source == "user" then
         return "user"
+    end
+
+    if directory == BUILTIN_TUTORIAL_DIR then
+        return "tutorial"
+    end
+
+    if directory == BUILTIN_CAMPAIGN_DIR then
+        return "campaign"
     end
 
     local description = string.lower(((data.level and data.level.description) or data.description or ""))
@@ -157,16 +176,19 @@ local function buildDisplayName(name, fileName)
     return cleanedName
 end
 
-local function buildDescriptor(source, fileName, data)
+local function buildDescriptor(source, fileName, data, options)
     local name = data.name or fileName:gsub("%.lua$", "")
+    local descriptorOptions = options or {}
+    local mapKind = descriptorOptions.mapKind or inferMapKind(source, data, descriptorOptions.directory)
     return {
         id = source .. ":" .. fileName,
         source = source,
         name = name,
         displayName = buildDisplayName(name, fileName),
-        mapKind = inferMapKind(source, data),
+        mapKind = mapKind,
         fileName = fileName,
-        path = buildPath(source, fileName),
+        path = buildPath(source, fileName, mapKind, descriptorOptions.directory),
+        builtinDirectory = descriptorOptions.directory,
         savedAt = data.savedAt,
         hasEditor = data.editor ~= nil,
         hasLevel = data.level ~= nil,
@@ -177,7 +199,7 @@ local function buildDescriptor(source, fileName, data)
     }
 end
 
-local function listSourceMaps(source, directory)
+local function listSourceMaps(source, directory, mapKind)
     local maps = {}
     if not love.filesystem.getInfo(directory, "directory") then
         return maps
@@ -188,9 +210,12 @@ local function listSourceMaps(source, directory)
 
     for _, fileName in ipairs(fileNames) do
         if fileName:sub(-4) == ".lua" then
-            local data = mapStorage.loadMap(fileName, source)
+            local data = mapStorage.loadMap(fileName, source, mapKind, directory)
             if data then
-                maps[#maps + 1] = buildDescriptor(source, fileName, data)
+                maps[#maps + 1] = buildDescriptor(source, fileName, data, {
+                    mapKind = mapKind,
+                    directory = directory,
+                })
             end
         end
     end
@@ -212,20 +237,24 @@ function mapStorage.saveMap(name, payload)
     return buildDescriptor("user", fileName, payload)
 end
 
-function mapStorage.loadMap(fileNameOrDescriptor, source)
+function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)
     local fileName = fileNameOrDescriptor
     local resolvedSource = source or "user"
+    local resolvedMapKind = mapKind
+    local resolvedDirectory = directory
 
     if type(fileNameOrDescriptor) == "table" then
         fileName = fileNameOrDescriptor.fileName
         resolvedSource = fileNameOrDescriptor.source or resolvedSource
+        resolvedMapKind = fileNameOrDescriptor.mapKind or resolvedMapKind
+        resolvedDirectory = fileNameOrDescriptor.builtinDirectory or resolvedDirectory
     end
 
     if not fileName then
         return nil, "map file name missing"
     end
 
-    local path = buildPath(resolvedSource, fileName)
+    local path = buildPath(resolvedSource, fileName, resolvedMapKind, resolvedDirectory)
     local data, loadError = loadMapFile(path)
     if not data then
         return nil, loadError
@@ -234,6 +263,8 @@ function mapStorage.loadMap(fileNameOrDescriptor, source)
     data.fileName = fileName
     data.path = path
     data.source = resolvedSource
+    data.mapKind = inferMapKind(resolvedSource, data, resolvedDirectory)
+    data.builtinDirectory = resolvedDirectory
     data.isTemplate = resolvedSource == "builtin" and data.template == true
     data.validationErrors = {}
     data.validationErrorText = nil
@@ -251,20 +282,17 @@ end
 function mapStorage.listMaps()
     local maps = {}
 
-    for _, descriptor in ipairs(listSourceMaps("builtin", BUILTIN_MAP_DIR)) do
+    for _, descriptor in ipairs(listSourceMaps("builtin", BUILTIN_TUTORIAL_DIR, "tutorial")) do
+        maps[#maps + 1] = descriptor
+    end
+
+    for _, descriptor in ipairs(listSourceMaps("builtin", BUILTIN_CAMPAIGN_DIR, "campaign")) do
         maps[#maps + 1] = descriptor
     end
 
     for _, descriptor in ipairs(listSourceMaps("user", USER_MAP_DIR)) do
         maps[#maps + 1] = descriptor
     end
-
-    table.sort(maps, function(a, b)
-        if a.source ~= b.source then
-            return a.source == "builtin"
-        end
-        return string.lower(a.name) < string.lower(b.name)
-    end)
 
     return maps
 end
