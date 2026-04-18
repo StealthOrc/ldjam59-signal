@@ -3,6 +3,7 @@ local car = require("src.game.car")
 local world = require("src.game.world")
 local camera = require("src.game.camera")
 local ui = require("src.game.ui")
+local SpriteFont = require("src.game.sprite_font")
 
 local Game = {}
 Game.__index = Game
@@ -76,6 +77,10 @@ function Game.new()
     self.bestDistance = 0
     self.runDistance = 0
     self.state = "title"
+    self.uiFont = SpriteFont.load({
+        imagePath = "assets/fonts/awesome_9_v3/awesome_9.png",
+        metricsPath = "assets/fonts/awesome_9_v3/awesome_9.txt",
+    })
 
     self:resetRun()
     self.state = "title"
