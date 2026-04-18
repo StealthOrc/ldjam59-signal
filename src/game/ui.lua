@@ -624,7 +624,6 @@ local function drawLevelSelectChrome(game)
 
     graphics.setColor(0.18, 0.26, 0.34, 0.5)
     graphics.setLineWidth(2)
-    graphics.line(128, 520, 1152, 520)
     graphics.setLineWidth(1)
 
     drawMetalPanel({ x = 2, y = 2, w = game.viewport.w - 4, h = LEVEL_SELECT.chromeH }, 0.98)
