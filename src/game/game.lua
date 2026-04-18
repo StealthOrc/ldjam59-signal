@@ -43,6 +43,17 @@ local function buildTuning()
         fuelBurnThrottle = 10.5,
         fuelBurnRolling = 1.15,
         coastFuelThreshold = 18,
+        signalTowerRadiusMeters = 24,
+        signalTowerFuelPerSecond = 18,
+        signalTowerFirstNorthOffsetMeters = 68,
+        signalTowerReachSpeedKmh = 100,
+        signalTowerReachCadenceSeconds = 3.2,
+        signalTowerLaterCadenceSeconds = 4.4,
+        signalTowerScriptedCount = 5,
+        signalTowerScriptedLaneRatios = { 0.38, 0.58, 0.42, 0.62, 0.46 },
+        signalTowerLaneRatioMin = 0.34,
+        signalTowerLaneRatioMax = 0.64,
+        signalTowerPoleHeightMeters = 8,
         finishSpeed = 16,
         stopSpeed = 5,
         skidThreshold = 44,
@@ -73,12 +84,23 @@ function Game.new()
     }
 
     self.car = car.new(self.tuning)
+    self.metersPerUnit = self.tuning.carLengthMeters / self.car.length
+    self.tuning.signalTowerRadius = self:metersToUnits(self.tuning.signalTowerRadiusMeters)
+    self.tuning.signalTowerFirstNorthOffset = self:metersToUnits(self.tuning.signalTowerFirstNorthOffsetMeters)
+    self.tuning.signalTowerReachSpacing = self:metersToUnits(
+        (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerReachCadenceSeconds
+    )
+    self.tuning.signalTowerLaterSpacing = self:metersToUnits(
+        (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerLaterCadenceSeconds
+    )
+    self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
     self.world = world.new(self.tuning)
     self.camera = camera.new()
-    self.metersPerUnit = self.tuning.carLengthMeters / self.car.length
     self.bestDistance = 0
     self.runDistance = 0
     self.state = "title"
+    self.activeSignalTower = nil
+    self.signalStrength = 0
     self.uiFont = SpriteFont.load({
         imagePath = "assets/fonts/awesome_9_v3/awesome_9.png",
         metricsPath = "assets/fonts/awesome_9_v3/awesome_9.txt",
@@ -94,6 +116,10 @@ function Game:unitsToMeters(units)
     return units * self.metersPerUnit
 end
 
+function Game:metersToUnits(meters)
+    return meters / self.metersPerUnit
+end
+
 function Game:speedUnitsToKmh(unitsPerSecond)
     return self:unitsToMeters(unitsPerSecond) * 3.6
 end
@@ -101,8 +127,11 @@ end
 function Game:resetRun()
     car.reset(self.car, self.tuning)
     self.runDistance = 0
+    self.activeSignalTower = nil
+    self.signalStrength = 0
+    self.world:reset(self.tuning)
     self.camera:snap(self.car, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport))
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
 end
 
 function Game:beginRun()
@@ -119,7 +148,18 @@ function Game:update(dt)
     car.update(self.car, intent, dt, self.tuning)
     self.world:resolveBarriers(self.car, self.tuning)
     self.camera:update(self.car, dt, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport))
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
+
+    local signalTower, signalStrength = self.world:getSignalAt(self.car.x, self.car.y)
+    self.activeSignalTower = signalTower
+    self.signalStrength = signalStrength or 0
+
+    if signalTower then
+        self.car.fuel = math.min(self.tuning.fuelCapacity, self.car.fuel + signalTower.fuelPerSecond * dt)
+        if self.state == "coasting" and self.car.fuel > 0 then
+            self.state = "running"
+        end
+    end
 
     self.runDistance = self.car.maxNorthDistance
     self.bestDistance = math.max(self.bestDistance, self.runDistance)
@@ -154,7 +194,7 @@ function Game:resize(w, h)
     self.viewport.w = w
     self.viewport.h = h
     self.camera:snap(self.car, self.viewport, self.tuning)
-    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport))
+    self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
 end
 
 function Game:keypressed(key)

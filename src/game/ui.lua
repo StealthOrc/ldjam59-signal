@@ -81,6 +81,10 @@ local function drawFuelBar(game)
 
     graphics.setColor(0.96, 0.97, 0.98, 0.7)
     graphics.rectangle("line", x, y + 20, width, height, 8, 8)
+
+    if game.activeSignalTower then
+        drawRun(font, string.format("Signal +%.0f fuel/s", game.activeSignalTower.fuelPerSecond), x + 112, y, 1, { 0.52, 0.95, 0.85, 1 })
+    end
 end
 
 local function drawStats(game)
