@@ -15,6 +15,27 @@ local function stopSource(source)
     end
 end
 
+local function clamp(value, minValue, maxValue)
+    if value < minValue then
+        return minValue
+    end
+    if value > maxValue then
+        return maxValue
+    end
+    return value
+end
+
+local function lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+local function shuffleInPlace(list)
+    for index = #list, 2, -1 do
+        local swapIndex = love.math.random(index)
+        list[index], list[swapIndex] = list[swapIndex], list[index]
+    end
+end
+
 local function buildTuning()
     return {
         maxSteerAngle = math.rad(34),
@@ -54,6 +75,10 @@ local function buildTuning()
         lowFuelBeepInterval = 0.6,
         lowFuelBeepVolume = 0.55,
         emptyFuelAlarmVolume = 0.7,
+        gearAudioVolume = 0.48,
+        gearShiftVolume = 0.5,
+        gearAudioThrottleFloor = 0.16,
+        gearAudioMinSpeedKmh = 1,
         signalTowerRadiusMeters = 24,
         signalTowerFuelPerSecond = 18,
         signalTowerFirstNorthOffsetMeters = 68,
@@ -68,6 +93,9 @@ local function buildTuning()
         coinDistanceMeters = 100,
         boostPadCost = 2,
         accelerationUpgradeCost = 3,
+        sixthGearCost = 6,
+        closeRatiosCost = 7,
+        sportTransmissionCost = 8,
         boostPadSpacingMeters = 145,
         boostPadFirstNorthOffsetMeters = 110,
         boostPadWidthMeters = 10,
@@ -80,6 +108,26 @@ local function buildTuning()
         boostPadLaneRatioMax = 0.72,
         shopHoldBaseInterval = 0.28,
         shopHoldMinInterval = 0.035,
+        baseGearCount = 5,
+        maxGearCount = 6,
+        baseShiftDuration = 0.2,
+        sportShiftDuration = 0.12,
+        shiftDriveMultiplier = 0.26,
+        shiftFlashDuration = 0.32,
+        postShiftLockDuration = 0.42,
+        upshiftThrottleThreshold = 0.3,
+        throttleHoldGearThreshold = 0.55,
+        downshiftHysteresisKmh = 8,
+        throttleDownshiftSpanFactor = 0.32,
+        upshiftBufferKmh = 0,
+        sportUpshiftBufferKmh = 5,
+        neutralReturnKmh = 2.5,
+        stockTopWeight = 1.85,
+        closeRatioTopWeight = 1.35,
+        baseLowGearDriveMultiplier = 1.44,
+        baseHighGearDriveMultiplier = 0.78,
+        closeRatioHighGearDriveMultiplier = 0.92,
+        sportDriveBonus = 0.06,
         finishSpeed = 16,
         stopSpeed = 5,
         skidThreshold = 44,
@@ -100,6 +148,41 @@ local function buildTuning()
     }
 end
 
+local function buildGearBands(maxSpeedKmh, gearCount, tuning, useCloseRatios, useSportTransmission)
+    local topWeight = useCloseRatios and tuning.closeRatioTopWeight or tuning.stockTopWeight
+    local highGearDrive = useCloseRatios and tuning.closeRatioHighGearDriveMultiplier or tuning.baseHighGearDriveMultiplier
+    local sportDriveBonus = useSportTransmission and tuning.sportDriveBonus or 0
+    local weights = {}
+    local weightSum = 0
+
+    for gearIndex = 1, gearCount do
+        local ratio = gearCount == 1 and 1 or (gearIndex - 1) / (gearCount - 1)
+        local weight = lerp(1, topWeight, ratio)
+        weights[gearIndex] = weight
+        weightSum = weightSum + weight
+    end
+
+    local bands = {}
+    local cursor = 0
+    for gearIndex = 1, gearCount do
+        local width = maxSpeedKmh * (weights[gearIndex] / weightSum)
+        local minKmh = cursor
+        local maxKmh = gearIndex == gearCount and maxSpeedKmh or (cursor + width)
+        local ratio = gearCount == 1 and 1 or (gearIndex - 1) / (gearCount - 1)
+        local driveMultiplier = lerp(tuning.baseLowGearDriveMultiplier, highGearDrive, ratio) + sportDriveBonus
+
+        bands[gearIndex] = {
+            minKmh = minKmh,
+            maxKmh = maxKmh,
+            driveMultiplier = driveMultiplier,
+        }
+
+        cursor = cursor + width
+    end
+
+    return bands
+end
+
 function Game.new()
     local self = setmetatable({}, Game)
 
@@ -111,6 +194,7 @@ function Game.new()
 
     self.car = car.new(self.tuning)
     self.metersPerUnit = self.tuning.carLengthMeters / self.car.length
+    self.tuning.speedUnitsToKmhFactor = self.metersPerUnit * 3.6
     self.tuning.signalTowerRadius = self:metersToUnits(self.tuning.signalTowerRadiusMeters)
     self.tuning.signalTowerFirstNorthOffset = self:metersToUnits(self.tuning.signalTowerFirstNorthOffsetMeters)
     self.tuning.signalTowerReachSpacing = self:metersToUnits(
@@ -125,6 +209,7 @@ function Game.new()
     self.tuning.boostPadFirstNorthOffset = self:metersToUnits(self.tuning.boostPadFirstNorthOffsetMeters)
     self.tuning.boostPadWidth = self:metersToUnits(self.tuning.boostPadWidthMeters)
     self.tuning.boostPadHeight = self:metersToUnits(self.tuning.boostPadHeightMeters)
+
     self.world = world.new(self.tuning)
     self.camera = camera.new()
     self.progression = Progression.load()
@@ -142,6 +227,27 @@ function Game.new()
             title = "Twin Turbo",
             description = "Doubles your acceleration so the car pulls much harder out of turns.",
             cost = self.tuning.accelerationUpgradeCost,
+        },
+        {
+            id = "sixth_gear",
+            kind = "unlock",
+            title = "6th Gear",
+            description = "Adds a sixth forward gear for a longer, calmer top end.",
+            cost = self.tuning.sixthGearCost,
+        },
+        {
+            id = "close_ratios",
+            kind = "unlock",
+            title = "Close Ratios",
+            description = "Tightens the gear spread so the car stays in stronger pull more often.",
+            cost = self.tuning.closeRatiosCost,
+        },
+        {
+            id = "sport_transmission",
+            kind = "unlock",
+            title = "Sport Transmission",
+            description = "Shifts faster and lets the car hold each gear a little longer.",
+            cost = self.tuning.sportTransmissionCost,
         },
         {
             id = "top_speed_dump",
@@ -181,12 +287,38 @@ function Game.new()
     self.emptyFuelAlarmEnd = love.audio.newSource("assets/sfx/car/beeeeep_end.wav", "static")
     self.emptyFuelAlarm:setLooping(true)
 
+    self.gearAudioPairs = {
+        {
+            accel = love.audio.newSource("assets/sfx/car/accel1.wav", "static"),
+            shift = love.audio.newSource("assets/sfx/car/shift1.wav", "static"),
+        },
+        {
+            accel = love.audio.newSource("assets/sfx/car/accel2.wav", "static"),
+            shift = love.audio.newSource("assets/sfx/car/shift2.wav", "static"),
+        },
+        {
+            accel = love.audio.newSource("assets/sfx/car/accel3.wav", "static"),
+            shift = love.audio.newSource("assets/sfx/car/shift3.wav", "static"),
+        },
+    }
+    self.gearAudioOrder = {}
+    self.gearAudioOrderIndex = 1
+    self.activeGearAudio = nil
+    self.queueNextGearAccel = false
+    self.lastThrottleAudioActive = false
+
     for _, beep in ipairs(self.lowFuelBeeps) do
         beep:setVolume(self.tuning.lowFuelBeepVolume)
     end
     self.emptyFuelAlarm:setVolume(self.tuning.emptyFuelAlarmVolume)
     self.emptyFuelAlarmEnd:setVolume(self.tuning.emptyFuelAlarmVolume)
 
+    for _, pair in ipairs(self.gearAudioPairs) do
+        pair.accel:setVolume(self.tuning.gearAudioVolume)
+        pair.shift:setVolume(self.tuning.gearShiftVolume)
+    end
+
+    self:refreshGearAudioOrder()
     self:refreshTuningFromProgression()
     self:resetRun()
     self.state = "title"
@@ -214,9 +346,136 @@ function Game:getMaxSpeedBonusKmh()
     return self.progression.max_speed_bonus_kmh or 0
 end
 
+function Game:refreshGearAudioOrder()
+    self.gearAudioOrder = { 1, 2, 3 }
+    shuffleInPlace(self.gearAudioOrder)
+    self.gearAudioOrderIndex = 1
+end
+
+function Game:pickNextGearAudioPairIndex()
+    if self.gearAudioOrderIndex > #self.gearAudioOrder then
+        self:refreshGearAudioOrder()
+    end
+
+    local pairIndex = self.gearAudioOrder[self.gearAudioOrderIndex]
+    self.gearAudioOrderIndex = self.gearAudioOrderIndex + 1
+    return pairIndex
+end
+
+function Game:stopGearAudio()
+    if self.activeGearAudio and self.activeGearAudio.source then
+        stopSource(self.activeGearAudio.source)
+    end
+
+    self.activeGearAudio = nil
+    self.queueNextGearAccel = false
+    self.lastThrottleAudioActive = false
+end
+
+function Game:playGearAccel(pairIndex)
+    local pair = self.gearAudioPairs[pairIndex]
+    if not pair then
+        return
+    end
+
+    if self.activeGearAudio and self.activeGearAudio.source then
+        stopSource(self.activeGearAudio.source)
+    end
+
+    pair.accel:stop()
+    pair.accel:play()
+    self.activeGearAudio = {
+        phase = "accel",
+        pairIndex = pairIndex,
+        source = pair.accel,
+    }
+end
+
+function Game:playGearShift(pairIndex, queueNextAccel)
+    local pair = self.gearAudioPairs[pairIndex]
+    if not pair then
+        return
+    end
+
+    if self.activeGearAudio and self.activeGearAudio.source then
+        stopSource(self.activeGearAudio.source)
+    end
+
+    pair.shift:stop()
+    pair.shift:play()
+    self.activeGearAudio = {
+        phase = "shift",
+        pairIndex = pairIndex,
+        source = pair.shift,
+    }
+    self.queueNextGearAccel = queueNextAccel == true
+end
+
+function Game:resolveCurrentGearAudioToShift(queueNextAccel)
+    if self.activeGearAudio and self.activeGearAudio.phase == "accel" then
+        self:playGearShift(self.activeGearAudio.pairIndex, queueNextAccel)
+        return
+    end
+
+    if not self.activeGearAudio then
+        self:playGearShift(self:pickNextGearAudioPairIndex(), queueNextAccel)
+        return
+    end
+
+    self.queueNextGearAccel = queueNextAccel == true
+end
+
+function Game:canRunGearAudio(intent)
+    return self.state == "running"
+        and self.car.fuel > 0
+        and intent.throttle >= self.tuning.gearAudioThrottleFloor
+        and self.car.forwardSpeedKmh >= self.tuning.gearAudioMinSpeedKmh
+end
+
+function Game:updateGearAudio(intent)
+    local throttleAudioActive = self:canRunGearAudio(intent)
+
+    if not throttleAudioActive then
+        self:stopGearAudio()
+        return
+    end
+
+    if self.activeGearAudio and not self.activeGearAudio.source:isPlaying() then
+        if self.activeGearAudio.phase == "accel" then
+            self:playGearShift(self.activeGearAudio.pairIndex, true)
+            self.lastThrottleAudioActive = throttleAudioActive
+            return
+        end
+
+        self.activeGearAudio = nil
+    end
+
+    if self.car.shiftStartedThisFrame then
+        if self.activeGearAudio and self.activeGearAudio.phase == "accel" then
+            self:playGearShift(self.activeGearAudio.pairIndex, true)
+        elseif not self.activeGearAudio then
+            self:playGearShift(self:pickNextGearAudioPairIndex(), true)
+        else
+            self.queueNextGearAccel = true
+        end
+    elseif self.car.isShifting and not self.activeGearAudio then
+        self:playGearShift(self:pickNextGearAudioPairIndex(), true)
+    elseif not self.car.isShifting and not self.activeGearAudio then
+        if self.queueNextGearAccel or self.car.shiftFinishedThisFrame or not self.lastThrottleAudioActive then
+            self.queueNextGearAccel = false
+            self:playGearAccel(self:pickNextGearAudioPairIndex())
+        end
+    end
+
+    self.lastThrottleAudioActive = throttleAudioActive
+end
+
 function Game:refreshTuningFromProgression()
     local accelerationMultiplier = self:hasUpgrade("double_acceleration") and 2 or 1
     local topSpeedBonus = self:getMaxSpeedBonusKmh()
+    local gearCount = self:hasUpgrade("sixth_gear") and self.tuning.maxGearCount or self.tuning.baseGearCount
+    local useCloseRatios = self:hasUpgrade("close_ratios")
+    local useSportTransmission = self:hasUpgrade("sport_transmission")
 
     self.tuning.engineForce = self.tuning.baseEngineForce * accelerationMultiplier
     self.tuning.reverseForce = self.tuning.baseReverseForce * accelerationMultiplier
@@ -227,6 +486,16 @@ function Game:refreshTuningFromProgression()
         (self.tuning.maxForwardSpeedKmh * self.tuning.boostPadSpeedMultiplier) / 3.6
     )
     self.tuning.boostPadAcceleration = self.tuning.boostPadTargetSpeed / self.tuning.boostPadAccelerationSeconds
+    self.tuning.gearCount = gearCount
+    self.tuning.shiftDuration = useSportTransmission and self.tuning.sportShiftDuration or self.tuning.baseShiftDuration
+    self.tuning.upshiftBufferKmh = useSportTransmission and self.tuning.sportUpshiftBufferKmh or 0
+    self.tuning.gearBands = buildGearBands(
+        self.tuning.maxForwardSpeedKmh,
+        gearCount,
+        self.tuning,
+        useCloseRatios,
+        useSportTransmission
+    )
 end
 
 function Game:getCoinRewardForDistance(distanceUnits)
@@ -256,12 +525,14 @@ function Game:finishRun()
     for _, beep in ipairs(self.lowFuelBeeps) do
         stopSource(beep)
     end
+    self:stopGearAudio()
 end
 
 function Game:openShop()
     self:stopShopHold()
     self.selectedShopIndex = 1
     self.state = "shop"
+    self:stopGearAudio()
 end
 
 function Game:isDumpShopItem(itemOrId)
@@ -480,6 +751,7 @@ function Game:resetRun()
     self.lowFuelBeepWaitingForGap = false
     self.emptyFuelAlarmActive = false
     self:stopWarningAudio()
+    self:stopGearAudio()
     self.world:reset(self.tuning, self.progression)
     self.camera:snap(self.car, self.viewport, self.tuning)
     self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
@@ -523,6 +795,7 @@ function Game:update(dt)
     self.bestDistance = math.max(self.bestDistance, self.runDistance)
     self:updateEmptyFuelAlarm(self.car.fuel <= 0)
     self:updateLowFuelAudio(dt)
+    self:updateGearAudio(intent)
 
     if self.state == "running" and self.car.fuel <= 0 then
         self.state = "coasting"

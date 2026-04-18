@@ -30,6 +30,37 @@ local function wrapAngle(angle)
     return angle
 end
 
+local function getGearBand(tuning, gear)
+    local bands = tuning.gearBands or {}
+    local safeGear = clamp(gear or 1, 1, math.max(#bands, 1))
+    return bands[safeGear] or {
+        minKmh = 0,
+        maxKmh = tuning.maxForwardSpeedKmh or 120,
+        driveMultiplier = 1,
+    }
+end
+
+local function syncGearMetrics(self, tuning)
+    local gearBand = getGearBand(tuning, self.currentGear)
+    local span = math.max(gearBand.maxKmh - gearBand.minKmh, 0.01)
+
+    self.currentGearMinKmh = gearBand.minKmh
+    self.currentGearMaxKmh = gearBand.maxKmh
+    self.currentGearDriveMultiplier = gearBand.driveMultiplier
+    self.gearProgress = clamp((self.forwardSpeedKmh - gearBand.minKmh) / span, 0, 1)
+end
+
+local function beginShift(self, targetGear, tuning)
+    if targetGear == self.currentGear then
+        return
+    end
+
+    self.isShifting = true
+    self.targetGear = clamp(targetGear, 1, self.gearCount)
+    self.shiftTimer = tuning.shiftDuration
+    self.shiftStartedThisFrame = true
+end
+
 function car.getBasis(heading)
     local forwardX = math.sin(heading)
     local forwardY = -math.cos(heading)
@@ -56,6 +87,21 @@ function car.new(tuning)
         width = 34,
         boostPadCooldown = 0,
         boostPadTimer = 0,
+        gearCount = tuning.gearCount or tuning.baseGearCount or 5,
+        currentGear = 1,
+        targetGear = 1,
+        isShifting = false,
+        shiftTimer = 0,
+        shiftLockTimer = 0,
+        shiftStartedThisFrame = false,
+        shiftFinishedThisFrame = false,
+        shiftFlashTimer = 0,
+        gearProgress = 0,
+        currentGearMinKmh = 0,
+        currentGearMaxKmh = 0,
+        currentGearDriveMultiplier = 1,
+        forwardSpeedKmh = 0,
+        throttleDemand = 0,
         skidMarks = {},
         skidTimer = 0,
     }
@@ -75,8 +121,24 @@ function car.reset(self, tuning)
     self.maxNorthDistance = 0
     self.boostPadCooldown = 0
     self.boostPadTimer = 0
+    self.gearCount = tuning.gearCount or tuning.baseGearCount or 5
+    self.currentGear = 1
+    self.targetGear = 1
+    self.isShifting = false
+    self.shiftTimer = 0
+    self.shiftLockTimer = 0
+    self.shiftStartedThisFrame = false
+    self.shiftFinishedThisFrame = false
+    self.shiftFlashTimer = 0
+    self.gearProgress = 0
+    self.currentGearMinKmh = 0
+    self.currentGearMaxKmh = 0
+    self.currentGearDriveMultiplier = 1
+    self.forwardSpeedKmh = 0
+    self.throttleDemand = 0
     self.skidMarks = {}
     self.skidTimer = 0
+    syncGearMetrics(self, tuning)
 end
 
 local function updateSkidMarks(self, dt)
@@ -112,6 +174,65 @@ local function addSkidMarks(self, tuning, forwardX, forwardY, rightX, rightY)
     })
 end
 
+local function updateGearbox(self, throttle, brake, forwardSpeedKmh, dt, tuning)
+    self.shiftStartedThisFrame = false
+    self.shiftFinishedThisFrame = false
+    self.shiftFlashTimer = math.max(0, (self.shiftFlashTimer or 0) - dt)
+    self.shiftLockTimer = math.max(0, (self.shiftLockTimer or 0) - dt)
+    self.gearCount = tuning.gearCount or self.gearCount
+    self.currentGear = clamp(self.currentGear, 1, self.gearCount)
+    self.targetGear = clamp(self.targetGear, 1, self.gearCount)
+    self.forwardSpeedKmh = math.max(0, forwardSpeedKmh)
+    self.throttleDemand = throttle
+
+    if self.isShifting then
+        self.shiftTimer = math.max(0, self.shiftTimer - dt)
+        if self.shiftTimer <= 0 then
+            self.isShifting = false
+            self.currentGear = self.targetGear
+            self.shiftFinishedThisFrame = true
+            self.shiftFlashTimer = tuning.shiftFlashDuration
+            self.shiftLockTimer = tuning.postShiftLockDuration
+        end
+        syncGearMetrics(self, tuning)
+        return
+    end
+
+    if self.forwardSpeedKmh <= tuning.neutralReturnKmh and throttle <= 0 and brake <= 0 then
+        self.currentGear = 1
+        self.targetGear = 1
+        syncGearMetrics(self, tuning)
+        return
+    end
+
+    syncGearMetrics(self, tuning)
+
+    if self.shiftLockTimer <= 0
+        and throttle >= tuning.upshiftThrottleThreshold
+        and self.currentGear < self.gearCount
+        and self.forwardSpeedKmh >= self.currentGearMaxKmh + tuning.upshiftBufferKmh then
+        beginShift(self, self.currentGear + 1, tuning)
+        syncGearMetrics(self, tuning)
+        return
+    end
+
+    local currentGearSpan = math.max(self.currentGearMaxKmh - self.currentGearMinKmh, 0)
+    local downshiftMargin = tuning.downshiftHysteresisKmh
+    if throttle >= tuning.throttleHoldGearThreshold then
+        downshiftMargin = math.max(downshiftMargin, currentGearSpan * tuning.throttleDownshiftSpanFactor)
+    end
+
+    if self.currentGear > 1
+        and self.shiftLockTimer <= 0
+        and self.forwardSpeedKmh <= math.max(0, self.currentGearMinKmh - downshiftMargin) then
+        beginShift(self, self.currentGear - 1, tuning)
+        syncGearMetrics(self, tuning)
+        return
+    end
+
+    syncGearMetrics(self, tuning)
+end
+
 function car.update(self, intent, dt, tuning)
     updateSkidMarks(self, dt)
     self.boostPadCooldown = math.max(0, (self.boostPadCooldown or 0) - dt)
@@ -125,10 +246,18 @@ function car.update(self, intent, dt, tuning)
 
     local forwardX, forwardY = car.getBasis(self.heading)
     local forwardSpeed = self.vx * forwardX + self.vy * forwardY
+    local forwardSpeedKmh = math.max(0, forwardSpeed * tuning.speedUnitsToKmhFactor)
+
+    updateGearbox(self, throttle, brake, forwardSpeedKmh, dt, tuning)
+
+    local driveMultiplier = self.currentGearDriveMultiplier
+    if self.isShifting then
+        driveMultiplier = driveMultiplier * tuning.shiftDriveMultiplier
+    end
 
     local acceleration = 0
     if throttle > 0 then
-        acceleration = acceleration + throttle * tuning.engineForce
+        acceleration = acceleration + throttle * tuning.engineForce * driveMultiplier
     end
 
     if brake > 0 then
@@ -215,6 +344,8 @@ function car.update(self, intent, dt, tuning)
     self.y = self.y + self.vy * dt
 
     self.speed = length(self.vx, self.vy)
+    self.forwardSpeedKmh = math.max(0, (self.vx * newForwardX + self.vy * newForwardY) * tuning.speedUnitsToKmhFactor)
+    syncGearMetrics(self, tuning)
     self.slip = math.abs(lateralSpeed)
     self.maxNorthDistance = math.max(self.maxNorthDistance, -self.y)
 

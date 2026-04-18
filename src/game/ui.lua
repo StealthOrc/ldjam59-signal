@@ -99,14 +99,17 @@ local function drawStats(game)
     local distanceMeters = game:unitsToMeters(game.runDistance)
     local bestMeters = game:unitsToMeters(game.bestDistance)
     local speedKmh = game:speedUnitsToKmh(game.car.speed)
+    local gearLabel = game.car.isShifting and string.format("G%d -> %d", game.car.currentGear, game.car.targetGear)
+        or string.format("G%d", game.car.currentGear)
 
     graphics.setColor(0, 0, 0, 0.35)
-    graphics.rectangle("fill", width - 250, 16, 226, 114, 12, 12)
+    graphics.rectangle("fill", width - 262, 16, 238, 138, 12, 12)
 
-    drawRun(font, string.format("Distance  %.0f m", distanceMeters), width - 236, 30, 1, { 0.92, 0.93, 0.95, 1 })
-    drawRun(font, string.format("Best      %.0f m", bestMeters), width - 236, 54, 1, { 0.92, 0.93, 0.95, 1 })
-    drawRun(font, string.format("Speed     %.0f km/h", speedKmh), width - 236, 78, 1, { 0.92, 0.93, 0.95, 1 })
-    drawRun(font, string.format("Coins     %d", game.progression.coins), width - 236, 102, 1, { 0.98, 0.88, 0.42, 1 })
+    drawRun(font, string.format("Distance  %.0f m", distanceMeters), width - 246, 28, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Best      %.0f m", bestMeters), width - 246, 50, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Speed     %.0f km/h", speedKmh), width - 246, 72, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Gear      %s", gearLabel), width - 246, 94, 1, { 0.88, 0.91, 0.99, 1 })
+    drawRun(font, string.format("Coins     %d", game.progression.coins), width - 246, 116, 1, { 0.98, 0.88, 0.42, 1 })
 end
 
 local function drawCenterOverlay(title, subtitle, footer, viewport)
@@ -123,22 +126,49 @@ local function drawCenterOverlay(title, subtitle, footer, viewport)
     drawAligned(font, footer, centerX - 220, centerY + 58, 440, "center", 1, { 0.96, 0.67, 0.22, 1 })
 end
 
+local function drawShiftPulse(game)
+    local graphics = love.graphics
+    local font = game.uiFont
+    local alpha = game.car.shiftFlashTimer / math.max(game.tuning.shiftFlashDuration, 0.01)
+
+    if alpha <= 0 then
+        return
+    end
+
+    graphics.setColor(0, 0, 0, 0.18 + alpha * 0.22)
+    graphics.rectangle("fill", game.viewport.w * 0.5 - 92, 22, 184, 34, 10, 10)
+    drawAligned(
+        font,
+        string.format("SHIFT %d", game.car.currentGear),
+        game.viewport.w * 0.5 - 82,
+        31,
+        164,
+        "center",
+        1,
+        { 0.98, 0.8, 0.3, 0.45 + alpha * 0.55 }
+    )
+end
+
 local function drawShop(game)
     local graphics = love.graphics
     local font = game.uiFont
     local centerX = game.viewport.w * 0.5
     local centerY = game.viewport.h * 0.5
+    local cardHeight = 56
+    local cardSpacing = 64
 
     graphics.setColor(0, 0, 0, 0.5)
-    graphics.rectangle("fill", centerX - 340, centerY - 212, 680, 424, 18, 18)
+    graphics.rectangle("fill", centerX - 360, centerY - 286, 720, 572, 18, 18)
 
-    drawAligned(font, "Workshop", centerX - 290, centerY - 174, 580, "center", 2, { 0.95, 0.97, 0.99, 1 })
-    drawRun(font, string.format("Coins on hand  %d", game.progression.coins), centerX - 288, centerY - 128, 1, { 0.98, 0.88, 0.42, 1 })
-    drawRun(font, string.format("Last run reward  +%d", game.lastRunCoinsEarned), centerX - 288, centerY - 104, 1, { 0.72, 0.95, 0.76, 1 })
+    drawAligned(font, "Workshop", centerX - 312, centerY - 248, 624, "center", 2, { 0.95, 0.97, 0.99, 1 })
+    drawRun(font, string.format("Coins on hand  %d", game.progression.coins), centerX - 312, centerY - 204, 1, { 0.98, 0.88, 0.42, 1 })
+    drawRun(font, string.format("Last run reward  +%d", game.lastRunCoinsEarned), centerX - 312, centerY - 182, 1, { 0.72, 0.95, 0.76, 1 })
+    drawRun(font, string.format("Top speed  %d km/h", game.tuning.maxForwardSpeedKmh), centerX + 84, centerY - 204, 1, { 0.88, 0.91, 0.99, 1 })
+    drawRun(font, string.format("Gearbox  %d-speed", game.tuning.gearCount), centerX + 84, centerY - 182, 1, { 0.88, 0.91, 0.99, 1 })
 
-    local cardTop = centerY - 54
+    local cardTop = centerY - 138
     for index, item in ipairs(game.shopItems) do
-        local y = cardTop + (index - 1) * 88
+        local y = cardTop + (index - 1) * cardSpacing
         local selected = index == game.selectedShopIndex
         local unlocked = item.kind == "unlock" and game:hasUpgrade(item.id)
         local affordable = game.progression.coins >= item.cost
@@ -147,30 +177,25 @@ local function drawShop(game)
         local statusColor
 
         graphics.setColor(cardColor)
-        graphics.rectangle("fill", centerX - 288, y, 576, 72, 14, 14)
+        graphics.rectangle("fill", centerX - 312, y, 624, cardHeight, 12, 12)
 
         if selected then
             graphics.setColor(0.87, 0.69, 0.24, 0.95)
-            graphics.rectangle("line", centerX - 288, y, 576, 72, 14, 14)
+            graphics.rectangle("line", centerX - 312, y, 624, cardHeight, 12, 12)
         end
 
-        drawRun(font, item.title, centerX - 264, y + 12, 1, { 0.95, 0.97, 0.99, 1 })
+        drawRun(font, item.title, centerX - 288, y + 10, 1, { 0.95, 0.97, 0.99, 1 })
         if item.kind == "dump" then
             drawRun(
                 font,
-                string.format(
-                    "%s Current max %d km/h, bonus +%d km/h.",
-                    item.description,
-                    game.tuning.maxForwardSpeedKmh,
-                    game:getMaxSpeedBonusKmh()
-                ),
-                centerX - 264,
-                y + 36,
+                string.format("%s Bonus +%d km/h.", item.description, game:getMaxSpeedBonusKmh()),
+                centerX - 288,
+                y + 30,
                 1,
                 { 0.82, 0.86, 0.9, 1 }
             )
         else
-            drawRun(font, item.description, centerX - 264, y + 36, 1, { 0.82, 0.86, 0.9, 1 })
+            drawRun(font, item.description, centerX - 288, y + 30, 1, { 0.82, 0.86, 0.9, 1 })
         end
 
         if unlocked then
@@ -193,12 +218,12 @@ local function drawShop(game)
             statusColor = { 0.9, 0.44, 0.38, 1 }
         end
 
-        drawRun(font, statusText, centerX + 66, y + 12, 1, statusColor)
+        drawRun(font, statusText, centerX + 118, y + 10, 1, statusColor)
     end
 
-    drawRun(font, "Up / Down or D-pad selects", centerX - 288, centerY + 128, 1, { 0.85, 0.87, 0.91, 0.95 })
-    drawRun(font, "Space / A buys, hold on Long Gears to dump faster", centerX - 20, centerY + 128, 1, { 0.85, 0.87, 0.91, 0.95 })
-    drawRun(font, "Enter / Start begins next run", centerX - 288, centerY + 152, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Up / Down or D-pad selects", centerX - 312, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Space / A buys, hold on Long Gears to dump faster", centerX - 10, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Enter / Start begins next run", centerX - 312, centerY + 244, 1, { 0.85, 0.87, 0.91, 0.95 })
 end
 
 function ui.draw(game)
@@ -207,6 +232,7 @@ function ui.draw(game)
 
     drawFuelBar(game)
     drawStats(game)
+    drawShiftPulse(game)
 
     drawRun(font, "WASD to drive, Space to handbrake, Left stick + RT/LT + X on controller", 28, game.viewport.h - 34, 1, { 0.85, 0.87, 0.91, 0.85 })
 
