@@ -631,10 +631,10 @@ function world:drawControlOverlay(junction)
 
         love.graphics.setColor(0.05, 0.06, 0.08, 1)
         love.graphics.printf(
-            string.format("%d", control.pumpCount),
-            centerX - 20,
+            string.format("%d%%", math.floor(ratio * 100 + 0.5)),
+            centerX - 24,
             centerY - 9,
-            40,
+            48,
             "center"
         )
     end
