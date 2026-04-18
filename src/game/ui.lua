@@ -87,14 +87,16 @@ local function drawStats(game)
     local graphics = love.graphics
     local font = game.uiFont
     local width = game.viewport.w
-    local speedKph = game.car.speed * 0.22
+    local distanceMeters = game:unitsToMeters(game.runDistance)
+    local bestMeters = game:unitsToMeters(game.bestDistance)
+    local speedKmh = game:speedUnitsToKmh(game.car.speed)
 
     graphics.setColor(0, 0, 0, 0.35)
     graphics.rectangle("fill", width - 250, 16, 226, 102, 12, 12)
 
-    drawRun(font, string.format("Distance  %.0f m", game.runDistance), width - 236, 30, 1, { 0.92, 0.93, 0.95, 1 })
-    drawRun(font, string.format("Best      %.0f m", game.bestDistance), width - 236, 54, 1, { 0.92, 0.93, 0.95, 1 })
-    drawRun(font, string.format("Speed     %.0f", speedKph), width - 236, 78, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Distance  %.0f m", distanceMeters), width - 236, 30, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Best      %.0f m", bestMeters), width - 236, 54, 1, { 0.92, 0.93, 0.95, 1 })
+    drawRun(font, string.format("Speed     %.0f km/h", speedKmh), width - 236, 78, 1, { 0.92, 0.93, 0.95, 1 })
 end
 
 local function drawCenterOverlay(title, subtitle, footer, viewport)
@@ -134,7 +136,11 @@ function ui.draw(game)
     elseif game.state == "finished" then
         drawCenterOverlay(
             "Out of motion",
-            string.format("You coasted %.0f meters north. Best this session: %.0f meters.", game.runDistance, game.bestDistance),
+            string.format(
+                "You coasted %.0f meters north. Best this session: %.0f meters.",
+                game:unitsToMeters(game.runDistance),
+                game:unitsToMeters(game.bestDistance)
+            ),
             "Press any key or controller button to run again",
             { w = game.viewport.w, h = game.viewport.h, font = font }
         )

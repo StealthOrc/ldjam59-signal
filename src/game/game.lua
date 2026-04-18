@@ -11,6 +11,7 @@ Game.__index = Game
 local function buildTuning()
     return {
         maxSteerAngle = math.rad(34),
+        carLengthMeters = 4,
         steerSpeed = math.rad(180),
         wheelBase = 52,
         engineForce = 420,
@@ -74,6 +75,7 @@ function Game.new()
     self.car = car.new(self.tuning)
     self.world = world.new(self.tuning)
     self.camera = camera.new()
+    self.metersPerUnit = self.tuning.carLengthMeters / self.car.length
     self.bestDistance = 0
     self.runDistance = 0
     self.state = "title"
@@ -86,6 +88,14 @@ function Game.new()
     self.state = "title"
 
     return self
+end
+
+function Game:unitsToMeters(units)
+    return units * self.metersPerUnit
+end
+
+function Game:speedUnitsToKmh(unitsPerSecond)
+    return self:unitsToMeters(unitsPerSecond) * 3.6
 end
 
 function Game:resetRun()
