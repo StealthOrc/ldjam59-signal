@@ -138,8 +138,8 @@ local function buildTuning()
         skidLife = 6.2,
         skidRadius = 5,
         cameraBaseZoom = 1,
-        cameraMinZoom = 0.72,
-        cameraMaxZoomOut = 0.28,
+        cameraMinZoom = 0.58,
+        cameraMaxZoomOut = 0.42,
         cameraSpeedZoomFactor = 0.00045,
         cameraZoomLerp = 2.8,
         cameraAnchorStartRatio = 7 / 12,
@@ -205,6 +205,8 @@ function Game.new()
     self.tuning.signalTowerLaterSpacing = self:metersToUnits(
         (self.tuning.signalTowerReachSpeedKmh / 3.6) * self.tuning.signalTowerLaterCadenceSeconds
     )
+    self.tuning.signalTowerSpacingStep = (self.tuning.signalTowerLaterSpacing - self.tuning.signalTowerReachSpacing)
+        / math.max(1, self.tuning.signalTowerScriptedCount - 1)
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
     self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
     self.tuning.boostPadSpacing = self:metersToUnits(self.tuning.boostPadSpacingMeters)

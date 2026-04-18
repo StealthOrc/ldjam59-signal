@@ -68,9 +68,10 @@ function world:spawnTower(index, tuning)
 
     self.towers[#self.towers + 1] = tower
 
-    local spacing = (index < tuning.signalTowerScriptedCount)
-        and tuning.signalTowerReachSpacing
-        or tuning.signalTowerLaterSpacing
+    local spacing = math.min(
+        tuning.signalTowerLaterSpacing,
+        tuning.signalTowerReachSpacing + math.max(0, index - 1) * tuning.signalTowerSpacingStep
+    )
     self.nextTowerIndex = index + 1
     self.nextTowerY = self.nextTowerY - spacing
 end
