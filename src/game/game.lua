@@ -365,6 +365,13 @@ function Game:mousereleased(x, y, button)
     end
 end
 
+function Game:wheelmoved(screenX, screenY)
+    if self.screen == "editor" then
+        return self.editor:wheelmoved(screenX, screenY)
+    end
+    return false
+end
+
 function Game:keyreleased(_)
 end
 

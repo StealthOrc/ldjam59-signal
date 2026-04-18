@@ -1,5 +1,13 @@
 local world = {}
 world.__index = world
+local COLOR_OPTIONS = {
+    { id = "blue", color = { 0.33, 0.8, 0.98 } },
+    { id = "yellow", color = { 0.98, 0.82, 0.34 } },
+    { id = "mint", color = { 0.4, 0.92, 0.76 } },
+    { id = "rose", color = { 0.98, 0.48, 0.62 } },
+    { id = "orange", color = { 0.98, 0.7, 0.28 } },
+    { id = "violet", color = { 0.82, 0.56, 0.98 } },
+}
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -53,6 +61,51 @@ local function darkerColor(color)
         color[2] * 0.42,
         color[3] * 0.42,
     }
+end
+
+local function nearestColorId(color)
+    if not color then
+        return COLOR_OPTIONS[1].id
+    end
+
+    local bestId = COLOR_OPTIONS[1].id
+    local bestDistance = math.huge
+    for _, option in ipairs(COLOR_OPTIONS) do
+        local dx = (color[1] or 0) - option.color[1]
+        local dy = (color[2] or 0) - option.color[2]
+        local dz = (color[3] or 0) - option.color[3]
+        local distance = dx * dx + dy * dy + dz * dz
+        if distance < bestDistance then
+            bestDistance = distance
+            bestId = option.id
+        end
+    end
+    return bestId
+end
+
+local function getColorById(colorId)
+    for _, option in ipairs(COLOR_OPTIONS) do
+        if option.id == colorId then
+            return copyColor(option.color)
+        end
+    end
+    return copyColor(COLOR_OPTIONS[1].color)
+end
+
+local function containsColorId(colors, colorId)
+    for _, candidate in ipairs(colors or {}) do
+        if candidate == colorId then
+            return true
+        end
+    end
+    return false
+end
+
+local function formatColorLabel(colorId)
+    if not colorId then
+        return "Unknown"
+    end
+    return colorId:sub(1, 1):upper() .. colorId:sub(2)
 end
 
 local function denormalizePoints(points, viewportW, viewportH)
@@ -189,6 +242,8 @@ function world.new(viewportW, viewportH, levelSource)
     self.collisionPoint = nil
     self.failureReason = nil
     self.timeRemaining = nil
+    self.elapsedTime = 0
+    self.failureTrain = nil
 
     self.level = self:normalizeLevel(levelSource or {})
 
@@ -253,12 +308,35 @@ function world:normalizeLevel(sourceLevel)
         end
 
         for _, trainDefinition in ipairs(sourceLevel.trains or {}) do
+            local speedScale = trainDefinition.speedScale or 1
+            local progress = trainDefinition.progress or 0
+            local spawnTime = trainDefinition.spawnTime
+            local startProgress = progress
+
+            if spawnTime == nil then
+                if progress < 0 then
+                    spawnTime = math.abs(progress) / math.max(1, self.trainSpeed * speedScale)
+                    startProgress = 0
+                else
+                    spawnTime = 0
+                end
+            end
+
+            local trainColor = trainDefinition.trainColor
+                or trainDefinition.goalColor
+                or nearestColorId(trainDefinition.color)
             normalized.trains[#normalized.trains + 1] = {
                 id = trainDefinition.id,
                 edgeId = trainDefinition.edgeId,
-                progress = trainDefinition.progress or 0,
+                lineColor = trainDefinition.lineColor,
+                progress = startProgress,
+                spawnTime = spawnTime,
                 speedScale = trainDefinition.speedScale or 1,
-                color = trainDefinition.color and copyColor(trainDefinition.color) or nil,
+                wagonCount = trainDefinition.wagonCount or self.carriageCount,
+                deadline = trainDefinition.deadline,
+                goalColor = trainDefinition.goalColor or trainColor,
+                trainColor = trainColor,
+                color = trainDefinition.color and copyColor(trainDefinition.color) or getColorById(trainColor),
             }
         end
 
@@ -372,12 +450,33 @@ function world:normalizeLevel(sourceLevel)
     for _, trainDefinition in ipairs(sourceLevel.trains or {}) do
         local junctionId = trainDefinition.junctionId
         local inputIndex = trainDefinition.inputIndex or trainDefinition.branchIndex or 1
+        local speedScale = trainDefinition.speedScale or 1
+        local progress = trainDefinition.progress or 0
+        local spawnTime = trainDefinition.spawnTime
+        local startProgress = progress
+        if spawnTime == nil then
+            if progress < 0 then
+                spawnTime = math.abs(progress) / math.max(1, self.trainSpeed * speedScale)
+                startProgress = 0
+            else
+                spawnTime = 0
+            end
+        end
+        local trainColor = trainDefinition.trainColor
+            or trainDefinition.goalColor
+            or nearestColorId(trainDefinition.color)
         normalized.trains[#normalized.trains + 1] = {
             id = trainDefinition.id,
             edgeId = string.format("%s_input_%d", junctionId or "junction", inputIndex),
-            progress = trainDefinition.progress or 0,
-            speedScale = trainDefinition.speedScale or 1,
-            color = trainDefinition.color and copyColor(trainDefinition.color) or nil,
+            lineColor = trainDefinition.lineColor,
+            progress = startProgress,
+            spawnTime = spawnTime,
+            speedScale = speedScale,
+            wagonCount = trainDefinition.wagonCount or self.carriageCount,
+            deadline = trainDefinition.deadline,
+            goalColor = trainDefinition.goalColor or trainColor,
+            trainColor = trainColor,
+            color = trainDefinition.color and copyColor(trainDefinition.color) or getColorById(trainColor),
         }
     end
 
@@ -464,53 +563,55 @@ function world:buildJunction(definition, existing)
 end
 
 function world:initializeLevel()
-    local previousJunctions = self.junctions
     self.junctions = {}
     self.junctionOrder = {}
     self.edges = {}
+    self.trains = {}
 
     for _, edgeDefinition in ipairs(self.level.edges or {}) do
         self.edges[edgeDefinition.id] = self:buildEdge(edgeDefinition)
     end
 
     for _, junctionDefinition in ipairs(self.level.junctions or {}) do
-        local existing = previousJunctions[junctionDefinition.id]
-        local junction = self:buildJunction(junctionDefinition, existing)
+        local junction = self:buildJunction(junctionDefinition, nil)
         self.junctions[junction.id] = junction
         self.junctionOrder[#self.junctionOrder + 1] = junction
     end
 
-    if #self.trains == 0 then
-        for _, trainDefinition in ipairs(self.level.trains or {}) do
-            local edge = self.edges[trainDefinition.edgeId]
-            if edge then
-                local baseColor = trainDefinition.color or edge.color
-
-                self.trains[#self.trains + 1] = {
-                    id = trainDefinition.id,
-                    edgeId = trainDefinition.edgeId,
-                    occupiedEdgeIds = { trainDefinition.edgeId },
-                    headDistance = trainDefinition.progress,
-                    speed = self.trainSpeed * (trainDefinition.speedScale or 1),
-                    currentSpeed = 0,
-                    color = copyColor(baseColor),
-                    darkColor = darkerColor(baseColor),
-                    completed = false,
-                }
-            end
-        end
-    else
-        for _, train in ipairs(self.trains) do
-            if self.edges[train.edgeId] then
-                train.occupiedEdgeIds = train.occupiedEdgeIds or { train.edgeId }
-                train.headDistance = train.headDistance or train.progress or 0
-            end
+    for _, trainDefinition in ipairs(self.level.trains or {}) do
+        local edge = self.edges[trainDefinition.edgeId]
+        if edge then
+            local baseColor = trainDefinition.color or edge.color
+            local spawned = (trainDefinition.spawnTime or 0) <= 0
+            self.trains[#self.trains + 1] = {
+                id = trainDefinition.id,
+                edgeId = trainDefinition.edgeId,
+                startEdgeId = trainDefinition.edgeId,
+                lineColor = trainDefinition.lineColor,
+                occupiedEdgeIds = spawned and { trainDefinition.edgeId } or {},
+                headDistance = spawned and (trainDefinition.progress or 0) or 0,
+                spawnProgress = trainDefinition.progress or 0,
+                speed = self.trainSpeed * (trainDefinition.speedScale or 1),
+                currentSpeed = 0,
+                color = copyColor(baseColor),
+                darkColor = darkerColor(baseColor),
+                goalColor = trainDefinition.goalColor or trainDefinition.trainColor or nearestColorId(baseColor),
+                trainColor = trainDefinition.trainColor or trainDefinition.goalColor or nearestColorId(baseColor),
+                wagonCount = trainDefinition.wagonCount or self.carriageCount,
+                spawnTime = trainDefinition.spawnTime or 0,
+                deadline = trainDefinition.deadline,
+                spawned = spawned,
+                completed = false,
+                completedAt = nil,
+            }
         end
     end
 
+    self.elapsedTime = 0
     self.timeRemaining = self.level.timeLimit
     self.collisionPoint = nil
     self.failureReason = nil
+    self.failureTrain = nil
 end
 
 function world:getOccupiedEdges(train)
@@ -522,6 +623,39 @@ function world:getOccupiedEdges(train)
         end
     end
     return occupiedEdges
+end
+
+function world:spawnTrain(train)
+    if train.spawned or train.completed or not self.edges[train.startEdgeId] then
+        return
+    end
+
+    train.spawned = true
+    train.edgeId = train.startEdgeId
+    train.occupiedEdgeIds = { train.startEdgeId }
+    train.headDistance = train.spawnProgress or 0
+    train.currentSpeed = 0
+end
+
+function world:completeTrain(train)
+    train.completed = true
+    train.currentSpeed = 0
+    train.completedAt = self.elapsedTime
+end
+
+function world:doesOutputAcceptTrain(train, junction, outputEdge)
+    if containsColorId(outputEdge.colors, train.goalColor) then
+        return true
+    end
+
+    if outputEdge.adoptInputColor then
+        local activeInput = junction.inputs[junction.activeInputIndex]
+        if activeInput and containsColorId(activeInput.colors, train.goalColor) then
+            return true
+        end
+    end
+
+    return containsColorId({ nearestColorId(outputEdge.color) }, train.goalColor)
 end
 
 function world:getCurrentEdge(train)
@@ -542,7 +676,7 @@ end
 
 function world:trimTrainOccupiedEdges(train, occupiedEdges)
     local edges = occupiedEdges or self:getOccupiedEdges(train)
-    local tailDistance = (train.headDistance or 0) - (self.carriageCount - 1) * (self.carriageLength + self.carriageGap)
+    local tailDistance = (train.headDistance or 0) - ((train.wagonCount or self.carriageCount) - 1) * (self.carriageLength + self.carriageGap)
 
     while #edges > 1 and tailDistance > edges[1].path.length do
         tailDistance = tailDistance - edges[1].path.length
@@ -730,17 +864,24 @@ end
 function world:advanceTrainToNextEdge(train, junction, overflow)
     local outputEdge = junction.outputs[clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))]
     if not outputEdge then
-        train.completed = true
-        return
+        self:completeTrain(train)
+        return false
+    end
+
+    if not self:doesOutputAcceptTrain(train, junction, outputEdge) then
+        self.failureReason = "wrong_destination"
+        self.failureTrain = train
+        return false
     end
 
     train.edgeId = outputEdge.id
     train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
     self:trimTrainOccupiedEdges(train)
+    return true
 end
 
 function world:updateTrain(train, dt)
-    if train.completed then
+    if train.completed or not train.spawned then
         return
     end
 
@@ -806,18 +947,19 @@ function world:updateTrain(train, dt)
                 train.currentSpeed = 0
                 break
             end
-            self:advanceTrainToNextEdge(train, junction, overflow)
+            if not self:advanceTrainToNextEdge(train, junction, overflow) then
+                break
+            end
         else
             break
         end
     end
 
     local occupiedEdges = self:getOccupiedEdges(train)
-    local tailDistance = (train.headDistance or 0) - (self.carriageCount - 1) * (self.carriageLength + self.carriageGap)
+    local tailDistance = (train.headDistance or 0) - ((train.wagonCount or self.carriageCount) - 1) * (self.carriageLength + self.carriageGap)
     local occupiedLength = self:getDistanceOnOccupiedEdges(occupiedEdges)
     if currentEdge and currentEdge.targetType == "exit" and tailDistance > occupiedLength + self.exitPadding then
-        train.completed = true
-        train.currentSpeed = 0
+        self:completeTrain(train)
     end
 end
 
@@ -826,11 +968,11 @@ function world:getTrainCarriagePositions(train)
     local carriageSpacing = self.carriageLength + self.carriageGap
     local occupiedEdges = self:getOccupiedEdges(train)
 
-    if train.completed or #occupiedEdges == 0 then
+    if train.completed or not train.spawned or #occupiedEdges == 0 then
         return positions
     end
 
-    for carriageIndex = 1, self.carriageCount do
+    for carriageIndex = 1, (train.wagonCount or self.carriageCount) do
         local carriageDistance = (train.headDistance or 0) - (carriageIndex - 1) * carriageSpacing
         local x, y, angle = self:pointOnOccupiedEdges(occupiedEdges, carriageDistance)
         positions[#positions + 1] = {
@@ -873,13 +1015,25 @@ function world:updateCollisionState()
     end
 end
 
+function world:updateDeadlineState()
+    for _, train in ipairs(self.trains) do
+        if not train.completed and train.deadline and self.elapsedTime > train.deadline then
+            self.failureReason = "missed_deadline"
+            self.failureTrain = train
+            return
+        end
+    end
+end
+
 function world:update(dt)
     if self.failureReason or self:isLevelComplete() then
         return
     end
 
-    if self.timeRemaining then
-        self.timeRemaining = math.max(0, self.timeRemaining - dt)
+    local previousElapsed = self.elapsedTime
+    self.elapsedTime = self.elapsedTime + dt
+    if self.level.timeLimit then
+        self.timeRemaining = math.max(0, self.level.timeLimit - self.elapsedTime)
     end
 
     for _, junction in ipairs(self.junctionOrder) do
@@ -887,10 +1041,25 @@ function world:update(dt)
     end
 
     for _, train in ipairs(self.trains) do
-        self:updateTrain(train, dt)
+        local trainDt = dt
+        if not train.spawned and not train.completed then
+            if self.elapsedTime >= (train.spawnTime or 0) then
+                self:spawnTrain(train)
+                trainDt = self.elapsedTime - math.max(previousElapsed, train.spawnTime or 0)
+            else
+                trainDt = nil
+            end
+        end
+
+        if trainDt and trainDt > 0 then
+            self:updateTrain(train, trainDt)
+        end
     end
 
     self:updateCollisionState()
+    if not self.failureReason then
+        self:updateDeadlineState()
+    end
 
     if not self.failureReason and self.timeRemaining and self.timeRemaining <= 0 and not self:isLevelComplete() then
         self.failureReason = "timeout"
@@ -899,6 +1068,10 @@ end
 
 function world:getFailureReason()
     return self.failureReason
+end
+
+function world:getFailureTrain()
+    return self.failureTrain
 end
 
 function world:isLevelComplete()
@@ -918,6 +1091,37 @@ function world:countCompletedTrains()
         end
     end
     return completedCount
+end
+
+function world:getNextQueuedTrain()
+    local bestTrain = nil
+    for _, train in ipairs(self.trains) do
+        if not train.spawned and not train.completed then
+            if not bestTrain or (train.spawnTime or 0) < (bestTrain.spawnTime or 0) then
+                bestTrain = train
+            end
+        end
+    end
+    return bestTrain
+end
+
+function world:getNearestPendingDeadline()
+    local bestTrain = nil
+    for _, train in ipairs(self.trains) do
+        if not train.completed and train.deadline then
+            if not bestTrain or train.deadline < bestTrain.deadline then
+                bestTrain = train
+            end
+        end
+    end
+    return bestTrain
+end
+
+function world:getTrainSummary(train)
+    if not train then
+        return nil
+    end
+    return string.format("%s train", formatColorLabel(train.goalColor or train.trainColor))
 end
 
 function world:getActiveRouteSummary()

@@ -11,6 +11,7 @@ local function drawButton(rect, label, fillColor, strokeColor, font)
     local graphics = love.graphics
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+    graphics.setLineWidth(1.5)
     graphics.setColor(strokeColor[1], strokeColor[2], strokeColor[3], strokeColor[4] or 1)
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
     love.graphics.setFont(font)
@@ -434,6 +435,18 @@ function ui.drawPlay(game)
         graphics.print(string.format("Time left: %.1fs", game.world.timeRemaining), 220, 172)
     end
 
+    local nextTrain = game.world:getNextQueuedTrain()
+    if nextTrain then
+        graphics.setColor(0.72, 0.78, 0.84, 1)
+        graphics.print(string.format("Next spawn: %s at %.1fs", game.world:getTrainSummary(nextTrain), nextTrain.spawnTime or 0), 42, 194)
+    end
+
+    local nextDeadline = game.world:getNearestPendingDeadline()
+    if nextDeadline then
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.print(string.format("Nearest deadline: %s by %.1fs", game.world:getTrainSummary(nextDeadline), nextDeadline.deadline), 360, 194)
+    end
+
     drawButton(
         { x = 1114, y = 28, w = 134, h = 38 },
         "Main Menu",
@@ -454,6 +467,24 @@ function ui.drawPlay(game)
             "Two trains overlapped because the routes were switched unsafely.",
             "Click, press Enter, Space, or R to retry this map",
             { 0.97, 0.36, 0.3 }
+        )
+    elseif game.failureReason == "wrong_destination" then
+        local failedTrain = game.world:getFailureTrain()
+        drawCenteredOverlay(
+            game,
+            "Wrong Destination",
+            string.format("%s left through the wrong output.", game.world:getTrainSummary(failedTrain) or "A train"),
+            "Retry the map and route this train to its matching color exit.",
+            { 0.97, 0.36, 0.3 }
+        )
+    elseif game.failureReason == "missed_deadline" then
+        local failedTrain = game.world:getFailureTrain()
+        drawCenteredOverlay(
+            game,
+            "Missed Deadline",
+            string.format("%s did not clear its goal in time.", game.world:getTrainSummary(failedTrain) or "A train"),
+            "Retry the map and route this train earlier.",
+            { 0.99, 0.78, 0.32 }
         )
     elseif game.failureReason == "timeout" then
         drawCenteredOverlay(
