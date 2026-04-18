@@ -596,35 +596,37 @@ function world:drawControlOverlay(junction)
         local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
         local startAngle = math.pi * 1.16
         local endAngle = math.pi * 1.84
-        local outerRadius = innerRadius + 10
-        local cutoutRadius = innerRadius + 2
+        local outerRadius = innerRadius + 12
+        local cutoutRadius = innerRadius + 1
         local railRadius = (outerRadius + cutoutRadius) * 0.5
         local capRadius = (outerRadius - cutoutRadius) * 0.5
         local fillEndAngle = startAngle + (endAngle - startAngle) * ratio
-        local startCapX = centerX + math.cos(startAngle) * railRadius
-        local startCapY = centerY + math.sin(startAngle) * railRadius
-        local endCapX = centerX + math.cos(endAngle) * railRadius
-        local endCapY = centerY + math.sin(endAngle) * railRadius
+        local function drawPumpBand(segmentStart, segmentEnd, color)
+            local segmentStartCapX = centerX + math.cos(segmentStart) * railRadius
+            local segmentStartCapY = centerY + math.sin(segmentStart) * railRadius
+            local segmentEndCapX = centerX + math.cos(segmentEnd) * railRadius
+            local segmentEndCapY = centerY + math.sin(segmentEnd) * railRadius
 
-        graphics.setColor(0.86, 0.16, 0.82, 0.22)
-        graphics.arc("fill", centerX, centerY, outerRadius, startAngle, endAngle)
-        graphics.setColor(0.06, 0.08, 0.1, 1)
-        graphics.arc("fill", centerX, centerY, cutoutRadius, startAngle, endAngle)
-        graphics.setColor(0.86, 0.16, 0.82, 0.22)
-        graphics.circle("fill", startCapX, startCapY, capRadius)
-        graphics.circle("fill", endCapX, endCapY, capRadius)
+            graphics.stencil(function()
+                graphics.arc("fill", centerX, centerY, outerRadius, segmentStart, segmentEnd)
+                graphics.circle("fill", segmentStartCapX, segmentStartCapY, capRadius)
+                graphics.circle("fill", segmentEndCapX, segmentEndCapY, capRadius)
+            end, "replace", 1)
+
+            graphics.stencil(function()
+                graphics.arc("fill", centerX, centerY, cutoutRadius, segmentStart, segmentEnd)
+            end, "replace", 0, true)
+
+            graphics.setStencilTest("greater", 0)
+            graphics.setColor(color[1], color[2], color[3], color[4])
+            graphics.circle("fill", centerX, centerY, outerRadius + capRadius)
+            graphics.setStencilTest()
+        end
+
+        drawPumpBand(startAngle, endAngle, { 0.86, 0.16, 0.82, 0.22 })
 
         if ratio > 0 then
-            local fillCapX = centerX + math.cos(fillEndAngle) * railRadius
-            local fillCapY = centerY + math.sin(fillEndAngle) * railRadius
-
-            graphics.setColor(0.95, 0.12, 0.88, 1)
-            graphics.arc("fill", centerX, centerY, outerRadius, startAngle, fillEndAngle)
-            graphics.setColor(0.06, 0.08, 0.1, 1)
-            graphics.arc("fill", centerX, centerY, cutoutRadius, startAngle, fillEndAngle)
-            graphics.setColor(0.95, 0.12, 0.88, 1)
-            graphics.circle("fill", startCapX, startCapY, capRadius)
-            graphics.circle("fill", fillCapX, fillCapY, capRadius)
+            drawPumpBand(startAngle, fillEndAngle, { 0.95, 0.12, 0.88, 1 })
         end
 
         love.graphics.setColor(0.05, 0.06, 0.08, 1)
