@@ -88,7 +88,14 @@ local function drawFuelBar(game)
     graphics.rectangle("line", x, y + 20, width, height, 8, 8)
 
     if game.activeSignalTower then
-        drawRun(font, string.format("Signal +%.0f fuel/s", game.activeSignalTower.fuelPerSecond), x + 112, y, 1, { 0.52, 0.95, 0.85, 1 })
+        drawRun(
+            font,
+            string.format("Signal +%.0f fuel/s", game.activeSignalTower.fuelPerSecond + game:getSignalFuelBonusPerSecond()),
+            x + 112,
+            y,
+            1,
+            { 0.52, 0.95, 0.85, 1 }
+        )
     end
 end
 
@@ -139,8 +146,10 @@ local function drawShop(game)
     local font = game.uiFont
     local centerX = game.viewport.w * 0.5
     local centerY = game.viewport.h * 0.5
-    local cardHeight = 56
-    local cardSpacing = 64
+    local columnWidth = 208
+    local columnGap = 16
+    local cardHeight = 78
+    local cardSpacing = 88
 
     graphics.setColor(0, 0, 0, 0.5)
     graphics.rectangle("fill", centerX - 360, centerY - 286, 720, 572, 18, 18)
@@ -148,66 +157,82 @@ local function drawShop(game)
     drawAligned(font, "Workshop", centerX - 312, centerY - 248, 624, "center", 2, { 0.95, 0.97, 0.99, 1 })
     drawRun(font, string.format("Coins on hand  %d", game.progression.coins), centerX - 312, centerY - 204, 1, { 0.98, 0.88, 0.42, 1 })
     drawRun(font, string.format("Last run reward  +%d", game.lastRunCoinsEarned), centerX - 312, centerY - 182, 1, { 0.72, 0.95, 0.76, 1 })
-    drawRun(font, string.format("Top speed  %d km/h", game.tuning.maxForwardSpeedKmh), centerX + 84, centerY - 204, 1, { 0.88, 0.91, 0.99, 1 })
-    drawRun(font, string.format("Gearbox  %d-speed", game.tuning.gearCount), centerX + 84, centerY - 182, 1, { 0.88, 0.91, 0.99, 1 })
+    drawRun(font, string.format("Top speed  %d km/h", game.tuning.maxForwardSpeedKmh), centerX + 32, centerY - 204, 1, { 0.88, 0.91, 0.99, 1 })
+    drawRun(font, string.format("Signal refill  %.0f fuel/s", game.tuning.signalTowerFuelPerSecond + game:getSignalFuelBonusPerSecond()), centerX + 32, centerY - 182, 1, { 0.52, 0.95, 0.85, 1 })
 
+    local columnsLeft = centerX - ((columnWidth * 3 + columnGap * 2) * 0.5)
     local cardTop = centerY - 138
-    for index, item in ipairs(game.shopItems) do
-        local y = cardTop + (index - 1) * cardSpacing
-        local selected = index == game.selectedShopIndex
-        local unlocked = item.kind == "unlock" and game:hasUpgrade(item.id)
-        local affordable = game.progression.coins >= item.cost
-        local cardColor = selected and { 0.14, 0.18, 0.24, 0.96 } or { 0.09, 0.11, 0.14, 0.9 }
-        local statusText
-        local statusColor
 
-        graphics.setColor(cardColor)
-        graphics.rectangle("fill", centerX - 312, y, 624, cardHeight, 12, 12)
+    for categoryIndex, category in ipairs(game.shopCategoryOrder) do
+        local columnX = columnsLeft + (categoryIndex - 1) * (columnWidth + columnGap)
+        local categoryItems = game:getShopItemsForCategory(category)
 
-        if selected then
-            graphics.setColor(0.87, 0.69, 0.24, 0.95)
-            graphics.rectangle("line", centerX - 312, y, 624, cardHeight, 12, 12)
-        end
+        drawAligned(font, category, columnX, centerY - 148, columnWidth, "center", 1, { 0.95, 0.97, 0.99, 1 })
 
-        drawRun(font, item.title, centerX - 288, y + 10, 1, { 0.95, 0.97, 0.99, 1 })
-        if item.kind == "dump" then
-            drawRun(
-                font,
-                string.format("%s Bonus +%d km/h.", item.description, game:getMaxSpeedBonusKmh()),
-                centerX - 288,
-                y + 30,
-                1,
-                { 0.82, 0.86, 0.9, 1 }
-            )
-        else
-            drawRun(font, item.description, centerX - 288, y + 30, 1, { 0.82, 0.86, 0.9, 1 })
-        end
+        for rowIndex, entry in ipairs(categoryItems) do
+            local item = entry.item
+            local itemIndex = entry.index
+            local y = cardTop + (rowIndex - 1) * cardSpacing
+            local selected = itemIndex == game.selectedShopIndex
+            local unlocked = item.kind == "unlock" and game:hasUpgrade(item.id)
+            local affordable = game.progression.coins >= item.cost
+            local cardColor = selected and { 0.14, 0.18, 0.24, 0.96 } or { 0.09, 0.11, 0.14, 0.9 }
+            local statusText
+            local statusColor
+            local detailText = item.description
 
-        if unlocked then
-            statusText = "Purchased"
-            statusColor = { 0.6, 0.95, 0.68, 1 }
-        elseif item.kind == "dump" then
-            if affordable then
-                local holdText = game.shopHoldActive and " Holding..." or ""
-                statusText = string.format("Spend  1 coin = +1 km/h%s", holdText)
+            graphics.setColor(cardColor)
+            graphics.rectangle("fill", columnX, y, columnWidth, cardHeight, 12, 12)
+
+            if selected then
+                graphics.setColor(0.87, 0.69, 0.24, 0.95)
+                graphics.rectangle("line", columnX, y, columnWidth, cardHeight, 12, 12)
+            end
+
+            drawRun(font, item.title, columnX + 12, y + 10, 1, { 0.95, 0.97, 0.99, 1 })
+
+            if item.id == "top_speed_dump" then
+                detailText = string.format("%s Bonus +%d km/h.", item.description, game:getMaxSpeedBonusKmh())
+            elseif item.id == "signal_fuel_dump" then
+                detailText = string.format(
+                    "%s Bonus +%d fuel/s.",
+                    item.description,
+                    game:getSignalFuelBonusPerSecond()
+                )
+            end
+
+            drawWrapped(font, detailText, columnX + 12, y + 30, columnWidth - 24, "left", 1, { 0.82, 0.86, 0.9, 1 }, 2)
+
+            if unlocked then
+                statusText = "Purchased"
+                statusColor = { 0.6, 0.95, 0.68, 1 }
+            elseif item.kind == "dump" then
+                if affordable then
+                    local holdText = game.shopHoldActive and game.shopHoldItemId == item.id and " Holding..." or ""
+                    if item.id == "top_speed_dump" then
+                        statusText = string.format("Spend 1 coin = +1 km/h%s", holdText)
+                    else
+                        statusText = string.format("Spend 1 coin = +1 fuel/s%s", holdText)
+                    end
+                    statusColor = { 0.98, 0.88, 0.42, 1 }
+                else
+                    statusText = "Need 1 coin"
+                    statusColor = { 0.9, 0.44, 0.38, 1 }
+                end
+            elseif affordable then
+                statusText = string.format("Buy %d coins", item.cost)
                 statusColor = { 0.98, 0.88, 0.42, 1 }
             else
-                statusText = "Need  1 coin"
+                statusText = string.format("Need %d coins", item.cost)
                 statusColor = { 0.9, 0.44, 0.38, 1 }
             end
-        elseif affordable then
-            statusText = string.format("Buy  %d coins", item.cost)
-            statusColor = { 0.98, 0.88, 0.42, 1 }
-        else
-            statusText = string.format("Need  %d coins", item.cost)
-            statusColor = { 0.9, 0.44, 0.38, 1 }
-        end
 
-        drawRun(font, statusText, centerX + 118, y + 10, 1, statusColor)
+            drawRun(font, statusText, columnX + 12, y + 58, 1, statusColor)
+        end
     end
 
-    drawRun(font, "Up / Down or D-pad selects", centerX - 312, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
-    drawRun(font, "Space / A buys, hold on Long Gears to dump faster", centerX - 10, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Left / Right changes category, Up / Down changes item", centerX - 312, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
+    drawRun(font, "Space / A buys, hold on dump upgrades to spend faster", centerX - 12, centerY + 222, 1, { 0.85, 0.87, 0.91, 0.95 })
     drawRun(font, "Enter / Start begins next run", centerX - 312, centerY + 244, 1, { 0.85, 0.87, 0.91, 0.95 })
 end
 

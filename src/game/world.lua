@@ -122,10 +122,12 @@ function world:spawnTower(index, tuning)
         x = side * tuning.corridorHalfWidth * laneRatio,
         y = self.nextTowerY,
         radius = tuning.signalTowerRadius,
+        touchRadius = tuning.signalTowerTouchRadius,
         fuelPerSecond = tuning.signalTowerFuelPerSecond,
         poleHeight = tuning.signalTowerPoleHeight,
         phase = pseudoRandom(index + 90),
         isBoostSignal = self.boostSignalsEnabled and index % tuning.boostSignalEveryNthTower == 0,
+        fuelBoostCollected = false,
     }
 
     self.towers[#self.towers + 1] = tower
@@ -269,6 +271,23 @@ function world:resolveBoostSignals(carBody, tuning)
     end
 
     return tower
+end
+
+function world:resolveTowerFuelBoost(carBody, tuning)
+    for _, tower in ipairs(self.towers) do
+        if not tower.fuelBoostCollected then
+            local dx = carBody.x - tower.x
+            local dy = carBody.y - tower.y
+            local triggerRadius = (tower.touchRadius or tuning.signalTowerTouchRadius or 0) + carBody.collisionRadius
+
+            if dx * dx + dy * dy <= triggerRadius * triggerRadius then
+                tower.fuelBoostCollected = true
+                return tower
+            end
+        end
+    end
+
+    return nil
 end
 
 function world:draw()

@@ -92,13 +92,13 @@ local function buildTuning()
         signalTowerLaneRatioMin = 0.34,
         signalTowerLaneRatioMax = 0.64,
         signalTowerPoleHeightMeters = 8,
+        signalTowerTouchRadiusMeters = 2.2,
+        signalTowerTouchFuelAmount = 15,
         boostSignalEveryNthTower = 3,
         coinDistanceMeters = 100,
         boostPadCost = 2,
-        accelerationUpgradeCost = 3,
-        sixthGearCost = 6,
-        closeRatiosCost = 7,
-        sportTransmissionCost = 8,
+        accelerationUpgradeCost = 12,
+        towerFuelBoostCost = 6,
         boostPadSpeedMultiplier = 1.2,
         boostPadDuration = 3,
         boostPadCooldown = 0.55,
@@ -106,9 +106,7 @@ local function buildTuning()
         shopHoldBaseInterval = 0.28,
         shopHoldMinInterval = 0.035,
         baseGearCount = 5,
-        maxGearCount = 6,
         baseShiftDuration = 0.2,
-        sportShiftDuration = 0.12,
         shiftDriveMultiplier = 0.26,
         shiftFlashDuration = 0.32,
         postShiftLockDuration = 0.42,
@@ -117,14 +115,10 @@ local function buildTuning()
         downshiftHysteresisKmh = 8,
         throttleDownshiftSpanFactor = 0.32,
         upshiftBufferKmh = 0,
-        sportUpshiftBufferKmh = 5,
         neutralReturnKmh = 2.5,
         stockTopWeight = 1.6,
-        closeRatioTopWeight = 1.35,
         baseLowGearDriveMultiplier = 1.44,
         baseHighGearDriveMultiplier = 1.04,
-        closeRatioHighGearDriveMultiplier = 0.92,
-        sportDriveBonus = 0.06,
         finishSpeed = 16,
         stopSpeed = 5,
         skidThreshold = 44,
@@ -196,6 +190,7 @@ function Game.new()
     self.tuning.signalTowerFirstNorthOffset = self:metersToUnits(self.tuning.signalTowerFirstNorthOffsetMeters)
     self.tuning.signalTowerFirstGap = self:metersToUnits(self.tuning.signalTowerFirstGapMeters)
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
+    self.tuning.signalTowerTouchRadius = self:metersToUnits(self.tuning.signalTowerTouchRadiusMeters)
     self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
 
     self.world = world.new(self.tuning)
@@ -205,6 +200,7 @@ function Game.new()
         {
             id = "boost_pads",
             kind = "unlock",
+            category = "Signals",
             title = "Boost Signals",
             description = "Some radio towers turn into boost signals that snap the car upright before boosting it.",
             cost = self.tuning.boostPadCost,
@@ -212,39 +208,37 @@ function Game.new()
         {
             id = "double_acceleration",
             kind = "unlock",
+            category = "Speed",
             title = "Twin Turbo",
             description = "Doubles your acceleration so the car pulls much harder out of turns.",
             cost = self.tuning.accelerationUpgradeCost,
         },
         {
-            id = "sixth_gear",
-            kind = "unlock",
-            title = "6th Gear",
-            description = "Adds a sixth forward gear for a longer, calmer top end.",
-            cost = self.tuning.sixthGearCost,
-        },
-        {
-            id = "close_ratios",
-            kind = "unlock",
-            title = "Close Ratios",
-            description = "Tightens the gear spread so the car stays in stronger pull more often.",
-            cost = self.tuning.closeRatiosCost,
-        },
-        {
-            id = "sport_transmission",
-            kind = "unlock",
-            title = "Sport Transmission",
-            description = "Shifts faster and lets the car hold each gear a little longer.",
-            cost = self.tuning.sportTransmissionCost,
-        },
-        {
             id = "top_speed_dump",
             kind = "dump",
-            title = "Long Gears",
+            category = "Speed",
+            title = "Above and Beyond",
             description = "Spend coins for permanent top speed. One coin buys one extra km/h.",
             cost = 1,
         },
+        {
+            id = "signal_fuel_dump",
+            kind = "dump",
+            category = "Fuel",
+            title = "Fuel Efficiency",
+            description = "Spend coins for permanent signal refuel. One coin adds +1 fuel/s from towers.",
+            cost = 1,
+        },
+        {
+            id = "tower_fuel_boost",
+            kind = "unlock",
+            category = "Fuel",
+            title = "Fuel Boost",
+            description = "Touching the center of a tower gives a one-time +15 fuel burst.",
+            cost = self.tuning.towerFuelBoostCost,
+        },
     }
+    self.shopCategoryOrder = { "Signals", "Speed", "Fuel" }
     self.selectedShopIndex = 1
     self.shopHoldActive = false
     self.shopHoldItemId = nil
@@ -334,6 +328,10 @@ end
 
 function Game:getMaxSpeedBonusKmh()
     return self.progression.max_speed_bonus_kmh or 0
+end
+
+function Game:getSignalFuelBonusPerSecond()
+    return self.progression.signal_fuel_bonus_per_second or 0
 end
 
 function Game:refreshGearAudioOrder()
@@ -483,9 +481,7 @@ end
 function Game:refreshTuningFromProgression()
     local accelerationMultiplier = self:hasUpgrade("double_acceleration") and 2 or 1
     local topSpeedBonus = self:getMaxSpeedBonusKmh()
-    local gearCount = self:hasUpgrade("sixth_gear") and self.tuning.maxGearCount or self.tuning.baseGearCount
-    local useCloseRatios = self:hasUpgrade("close_ratios")
-    local useSportTransmission = self:hasUpgrade("sport_transmission")
+    local gearCount = self.tuning.baseGearCount
 
     self.tuning.engineForce = self.tuning.baseEngineForce * accelerationMultiplier
     self.tuning.reverseForce = self.tuning.baseReverseForce * accelerationMultiplier
@@ -497,14 +493,14 @@ function Game:refreshTuningFromProgression()
     )
     self.tuning.boostPadAcceleration = self.tuning.boostPadTargetSpeed / self.tuning.boostPadAccelerationSeconds
     self.tuning.gearCount = gearCount
-    self.tuning.shiftDuration = useSportTransmission and self.tuning.sportShiftDuration or self.tuning.baseShiftDuration
-    self.tuning.upshiftBufferKmh = useSportTransmission and self.tuning.sportUpshiftBufferKmh or 0
+    self.tuning.shiftDuration = self.tuning.baseShiftDuration
+    self.tuning.upshiftBufferKmh = 0
     self.tuning.gearBands = buildGearBands(
         self.tuning.maxForwardSpeedKmh,
         gearCount,
         self.tuning,
-        useCloseRatios,
-        useSportTransmission
+        false,
+        false
     )
 end
 
@@ -568,10 +564,71 @@ function Game:getSelectedShopItem()
     return self.shopItems[self.selectedShopIndex]
 end
 
-function Game:moveShopSelection(direction)
+function Game:getShopItemsForCategory(category)
+    local items = {}
+    for index, item in ipairs(self.shopItems) do
+        if item.category == category then
+            items[#items + 1] = {
+                index = index,
+                item = item,
+            }
+        end
+    end
+    return items
+end
+
+function Game:getShopSelectionPosition()
+    local selectedItem = self:getSelectedShopItem()
+    if not selectedItem then
+        return 1, 1
+    end
+
+    local categoryIndex = 1
+    for index, category in ipairs(self.shopCategoryOrder) do
+        if category == selectedItem.category then
+            categoryIndex = index
+            break
+        end
+    end
+
+    local rowIndex = 1
+    local categoryItems = self:getShopItemsForCategory(selectedItem.category)
+    for index, entry in ipairs(categoryItems) do
+        if entry.index == self.selectedShopIndex then
+            rowIndex = index
+            break
+        end
+    end
+
+    return categoryIndex, rowIndex
+end
+
+function Game:moveShopSelectionVertical(direction)
     self:stopShopHold()
-    local itemCount = #self.shopItems
-    self.selectedShopIndex = ((self.selectedShopIndex - 1 + direction) % itemCount) + 1
+    local categoryIndex, rowIndex = self:getShopSelectionPosition()
+    local categoryItems = self:getShopItemsForCategory(self.shopCategoryOrder[categoryIndex])
+    if #categoryItems == 0 then
+        return
+    end
+
+    local nextRow = ((rowIndex - 1 + direction) % #categoryItems) + 1
+    self.selectedShopIndex = categoryItems[nextRow].index
+end
+
+function Game:moveShopSelectionHorizontal(direction)
+    self:stopShopHold()
+    local categoryIndex, rowIndex = self:getShopSelectionPosition()
+    local categoryCount = #self.shopCategoryOrder
+
+    for offset = 1, categoryCount do
+        local nextCategoryIndex = ((categoryIndex - 1 + direction * offset) % categoryCount) + 1
+        local nextItems = self:getShopItemsForCategory(self.shopCategoryOrder[nextCategoryIndex])
+        if #nextItems > 0 then
+            local clampedRow = math.min(rowIndex, #nextItems)
+            self.selectedShopIndex = nextItems[clampedRow].index
+            return
+        end
+    end
 end
 
 function Game:getShopHoldInterval()
@@ -647,7 +704,13 @@ function Game:buyUpgrade(upgradeId)
     if item.kind == "unlock" then
         self.progression.upgrades[upgradeId] = true
     elseif item.kind == "dump" then
-        self.progression.max_speed_bonus_kmh = self:getMaxSpeedBonusKmh() + cost
+        if upgradeId == "top_speed_dump" then
+            self.progression.max_speed_bonus_kmh = self:getMaxSpeedBonusKmh() + cost
+        elseif upgradeId == "signal_fuel_dump" then
+            self.progression.signal_fuel_bonus_per_second = self:getSignalFuelBonusPerSecond() + cost
+        else
+            return false
+        end
     else
         return false
     end
@@ -799,9 +862,23 @@ function Game:update(dt)
     self.signalStrength = signalStrength or 0
 
     if signalTower then
-        self.car.fuel = math.min(self.tuning.fuelCapacity, self.car.fuel + signalTower.fuelPerSecond * dt)
+        local signalFuelPerSecond = signalTower.fuelPerSecond + self:getSignalFuelBonusPerSecond()
+        self.car.fuel = math.min(self.tuning.fuelCapacity, self.car.fuel + signalFuelPerSecond * dt)
         if self.state == "coasting" and self.car.fuel > 0 then
             self.state = "running"
+        end
+    end
+
+    if self:hasUpgrade("tower_fuel_boost") then
+        local touchedTower = self.world:resolveTowerFuelBoost(self.car, self.tuning)
+        if touchedTower then
+            self.car.fuel = math.min(
+                self.tuning.fuelCapacity,
+                self.car.fuel + self.tuning.signalTowerTouchFuelAmount
+            )
+            if self.state == "coasting" and self.car.fuel > 0 then
+                self.state = "running"
+            end
         end
     end
 
@@ -870,12 +947,22 @@ function Game:keypressed(key)
 
     if self.state == "shop" then
         if key == "up" or key == "w" then
-            self:moveShopSelection(-1)
+            self:moveShopSelectionVertical(-1)
             return
         end
 
         if key == "down" or key == "s" then
-            self:moveShopSelection(1)
+            self:moveShopSelectionVertical(1)
+            return
+        end
+
+        if key == "left" or key == "a" then
+            self:moveShopSelectionHorizontal(-1)
+            return
+        end
+
+        if key == "right" or key == "d" then
+            self:moveShopSelectionHorizontal(1)
             return
         end
 
@@ -915,12 +1002,22 @@ function Game:gamepadpressed(_, button)
 
     if self.state == "shop" then
         if button == "dpup" then
-            self:moveShopSelection(-1)
+            self:moveShopSelectionVertical(-1)
             return
         end
 
         if button == "dpdown" then
-            self:moveShopSelection(1)
+            self:moveShopSelectionVertical(1)
+            return
+        end
+
+        if button == "dpleft" then
+            self:moveShopSelectionHorizontal(-1)
+            return
+        end
+
+        if button == "dpright" then
+            self:moveShopSelectionHorizontal(1)
             return
         end
 
