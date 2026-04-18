@@ -28,6 +28,10 @@ function love.keyreleased(key)
     game:keyreleased(key)
 end
 
+function love.mousepressed(x, y, button)
+    game:mousepressed(x, y, button)
+end
+
 function love.gamepadpressed(joystick, button)
     game:gamepadpressed(joystick, button)
 end

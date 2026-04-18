@@ -269,7 +269,7 @@ function car.update(self, intent, dt, tuning)
     local steerInput = intent.steer
     local steerSpeed = tuning.steerSpeed
     if intent.usingMouse then
-        steerSpeed = tuning.mouseSteerSpeed
+        steerSpeed = tuning.steerSpeed
     elseif not intent.usingController then
         steerInput = steerInput * tuning.keyboardSteerLimit
         steerSpeed = tuning.keyboardSteerSpeed
@@ -328,46 +328,41 @@ function car.update(self, intent, dt, tuning)
 
     self.fuel = clamp(self.fuel, 0, tuning.fuelCapacity)
 
-    forwardX, forwardY = car.getBasis(self.heading)
-    forwardSpeed = self.vx * forwardX + self.vy * forwardY
-
-    local desiredYaw = 0
-    if math.abs(forwardSpeed) > tuning.turnSpeedFloor then
-        desiredYaw = (forwardSpeed / tuning.wheelBase) * math.tan(self.steerAngle)
-    end
-
-    local yawBlend = math.min(tuning.yawResponse * dt, 1)
-    self.angularVelocity = self.angularVelocity + (desiredYaw - self.angularVelocity) * yawBlend
-    self.heading = wrapAngle(self.heading + self.angularVelocity * dt)
-
-    local newForwardX, newForwardY, rightX, rightY = car.getBasis(self.heading)
-    forwardSpeed = self.vx * newForwardX + self.vy * newForwardY
-    local lateralSpeed = self.vx * rightX + self.vy * rightY
-
     if not self.driftActive and shouldEnterDrift(self, intent, self.forwardSpeedKmh, tuning) then
         self.driftActive = true
     end
 
+    local currentSpeed = length(self.vx, self.vy)
+    local speedRatio = clamp(currentSpeed / math.max(tuning.maxForwardSpeed, 0.01), 0, 1)
+    local turnRate = tuning.arcadeTurnRateLowSpeed
+        + (tuning.arcadeTurnRateHighSpeed - tuning.arcadeTurnRateLowSpeed) * speedRatio
+    if self.driftActive then
+        turnRate = turnRate * tuning.arcadeDriftTurnMultiplier
+    end
+
+    self.angularVelocity = (self.steerAngle / math.max(tuning.maxSteerAngle, 0.0001)) * turnRate
+    if currentSpeed < tuning.turnSpeedFloor then
+        self.angularVelocity = self.angularVelocity * (currentSpeed / math.max(tuning.turnSpeedFloor, 0.01))
+    end
+    self.heading = wrapAngle(self.heading + self.angularVelocity * dt)
+
+    local newForwardX, newForwardY, rightX, rightY = car.getBasis(self.heading)
+    local alignedSpeed = currentSpeed
+    local lateralSpeed = self.vx * rightX + self.vy * rightY
+
     if self.boostPadTimer > 0 then
-        forwardSpeed = math.min(
-            forwardSpeed + tuning.boostPadAcceleration * dt,
+        alignedSpeed = math.min(
+            alignedSpeed + tuning.boostPadAcceleration * dt,
             tuning.boostPadTargetSpeed
         )
     end
 
-    local speedFactor = clamp(math.abs(forwardSpeed) / tuning.gripSpeedWindow, 0, 1)
-    local rearGripLow = self.driftActive and tuning.rearGripLowSpeed or tuning.plantedRearGripLowSpeed
-    local rearGripHigh = self.driftActive and tuning.rearGripHighSpeed or tuning.plantedRearGripHighSpeed
-    local rearGrip = rearGripLow + (rearGripHigh - rearGripLow) * speedFactor
-
+    local alignRate = self.driftActive and tuning.arcadeDriftVelocityAlign or tuning.arcadeVelocityAlign
     if intent.handbrake then
-        rearGrip = rearGrip * tuning.handbrakeGripMultiplier
+        alignRate = alignRate * tuning.handbrakeGripMultiplier
     end
 
-    local lateralBlend = math.min(rearGrip * dt, 0.96)
-    lateralSpeed = lateralSpeed * (1 - lateralBlend)
-
-    if math.abs(forwardSpeed) < tuning.turnSpeedFloor then
+    if math.abs(alignedSpeed) < tuning.turnSpeedFloor then
         self.angularVelocity = self.angularVelocity * math.max(0, 1 - tuning.angularDamping * dt)
     end
 
@@ -385,9 +380,15 @@ function car.update(self, intent, dt, tuning)
         forwardSpeedCap = tuning.boostPadTargetSpeed
     end
 
-    forwardSpeed = clamp(forwardSpeed, -tuning.maxReverseSpeed, forwardSpeedCap)
-    self.vx = newForwardX * forwardSpeed + rightX * lateralSpeed
-    self.vy = newForwardY * forwardSpeed + rightY * lateralSpeed
+    alignedSpeed = clamp(alignedSpeed, -tuning.maxReverseSpeed, forwardSpeedCap)
+
+    local targetVx = newForwardX * alignedSpeed
+    local targetVy = newForwardY * alignedSpeed
+    local alignBlend = math.min(alignRate * dt, 1)
+    self.vx = self.vx + (targetVx - self.vx) * alignBlend
+    self.vy = self.vy + (targetVy - self.vy) * alignBlend
+
+    lateralSpeed = self.vx * rightX + self.vy * rightY
 
     self.x = self.x + self.vx * dt
     self.y = self.y + self.vy * dt

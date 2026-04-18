@@ -1,9 +1,9 @@
 function love.conf(t)
-    t.identity = "northbound-drift-run"
+    t.identity = "out-of-signal"
     t.version = "11.5"
     t.console = true
 
-    t.window.title = "Northbound Drift Run"
+    t.window.title = "Out of Signal"
     t.window.width = 1280
     t.window.height = 720
     t.window.resizable = true
