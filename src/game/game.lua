@@ -8,6 +8,12 @@ local SpriteFont = require("src.game.sprite_font")
 local Game = {}
 Game.__index = Game
 
+local function stopSource(source)
+    if source and source:isPlaying() then
+        source:stop()
+    end
+end
+
 local function buildTuning()
     return {
         maxSteerAngle = math.rad(34),
@@ -40,9 +46,14 @@ local function buildTuning()
         wallHeadingKick = math.rad(3.5),
         wallSlipKick = 110,
         fuelCapacity = 100,
+        lowFuelWarningThreshold = 0.2,
         fuelBurnThrottle = 10.5,
         fuelBurnRolling = 1.15,
         coastFuelThreshold = 18,
+        lowFuelBeepInterval = 0.6,
+        lowFuelBeepVolume = 0.55,
+        emptyFuelAlarmVolume = 0.7,
+        emptyFuelAlarmHoldTailSeconds = 0.22,
         signalTowerRadiusMeters = 24,
         signalTowerFuelPerSecond = 18,
         signalTowerFirstNorthOffsetMeters = 68,
@@ -101,10 +112,25 @@ function Game.new()
     self.state = "title"
     self.activeSignalTower = nil
     self.signalStrength = 0
+    self.lowFuelBeepTimer = 0
+    self.lowFuelBeepIndex = 1
+    self.lowFuelBeepWaitingForGap = false
     self.uiFont = SpriteFont.load({
         imagePath = "assets/fonts/awesome_9_v3/awesome_9.png",
         metricsPath = "assets/fonts/awesome_9_v3/awesome_9.txt",
     })
+    self.lowFuelBeeps = {
+        love.audio.newSource("assets/sfx/car/bip1.wav", "static"),
+        love.audio.newSource("assets/sfx/car/bip2.wav", "static"),
+        love.audio.newSource("assets/sfx/car/bip3.wav", "static"),
+    }
+    self.emptyFuelAlarm = love.audio.newSource("assets/sfx/car/beeeeep.wav", "static")
+    self.emptyFuelAlarm:setLooping(false)
+
+    for _, beep in ipairs(self.lowFuelBeeps) do
+        beep:setVolume(self.tuning.lowFuelBeepVolume)
+    end
+    self.emptyFuelAlarm:setVolume(self.tuning.emptyFuelAlarmVolume)
 
     self:resetRun()
     self.state = "title"
@@ -124,11 +150,103 @@ function Game:speedUnitsToKmh(unitsPerSecond)
     return self:unitsToMeters(unitsPerSecond) * 3.6
 end
 
+function Game:getFuelRatio()
+    return self.car.fuel / self.tuning.fuelCapacity
+end
+
+function Game:isLowFuel()
+    return self:getFuelRatio() <= self.tuning.lowFuelWarningThreshold
+end
+
+function Game:playNextLowFuelBeep()
+    local source = self.lowFuelBeeps[self.lowFuelBeepIndex]
+    source:stop()
+    source:play()
+    self.lowFuelBeepIndex = (self.lowFuelBeepIndex % #self.lowFuelBeeps) + 1
+    self.lowFuelBeepWaitingForGap = true
+end
+
+function Game:getCurrentLowFuelBeep()
+    for _, beep in ipairs(self.lowFuelBeeps) do
+        if beep:isPlaying() then
+            return beep
+        end
+    end
+    return nil
+end
+
+function Game:updateLowFuelAudio(dt)
+    if self.car.fuel <= 0 or self.emptyFuelAlarm:isPlaying() then
+        return
+    end
+
+    if self:isLowFuel() and self.car.fuel > 0 then
+        local activeBeep = self:getCurrentLowFuelBeep()
+        if activeBeep then
+            return
+        end
+
+        if self.lowFuelBeepWaitingForGap then
+            self.lowFuelBeepTimer = self.lowFuelBeepTimer - dt
+            if self.lowFuelBeepTimer > 0 then
+                return
+            end
+            self.lowFuelBeepWaitingForGap = false
+        end
+
+        if self.lowFuelBeepTimer <= 0 then
+            self:playNextLowFuelBeep()
+            self.lowFuelBeepTimer = self.tuning.lowFuelBeepInterval
+        end
+    else
+        self.lowFuelBeepTimer = 0
+        self.lowFuelBeepWaitingForGap = false
+    end
+end
+
+function Game:updateEmptyFuelAlarm()
+    if self.state == "finished" then
+        stopSource(self.emptyFuelAlarm)
+        return
+    end
+
+    if self.car.fuel > 0 then
+        stopSource(self.emptyFuelAlarm)
+        return
+    end
+
+    if not self.emptyFuelAlarm:isPlaying() then
+        self.emptyFuelAlarm:play()
+    end
+
+    local duration = self.emptyFuelAlarm:getDuration("seconds")
+    local holdTail = math.min(self.tuning.emptyFuelAlarmHoldTailSeconds, duration * 0.5)
+
+    if duration > 0 and holdTail > 0 then
+        local playbackPosition = self.emptyFuelAlarm:tell("seconds")
+        local holdStart = duration - holdTail
+        if playbackPosition >= holdStart then
+            self.emptyFuelAlarm:seek(holdStart, "seconds")
+        end
+    end
+end
+
+function Game:stopWarningAudio()
+    stopSource(self.emptyFuelAlarm)
+    for _, beep in ipairs(self.lowFuelBeeps) do
+        stopSource(beep)
+    end
+end
+
 function Game:resetRun()
     car.reset(self.car, self.tuning)
     self.runDistance = 0
     self.activeSignalTower = nil
     self.signalStrength = 0
+    self.lowFuelBeepTimer = 0
+    self.lowFuelBeepIndex = 1
+    self.lowFuelBeepWaitingForGap = false
+    self:stopWarningAudio()
     self.world:reset(self.tuning)
     self.camera:snap(self.car, self.viewport, self.tuning)
     self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning)
@@ -164,12 +282,16 @@ function Game:update(dt)
     self.runDistance = self.car.maxNorthDistance
     self.bestDistance = math.max(self.bestDistance, self.runDistance)
 
+    self:updateEmptyFuelAlarm()
+    self:updateLowFuelAudio(dt)
+
     if self.state == "running" and self.car.fuel <= 0 then
         self.state = "coasting"
     end
 
     if self.state == "coasting" and self.car.speed <= self.tuning.finishSpeed then
         self.state = "finished"
+        self:stopWarningAudio()
     end
 end
 

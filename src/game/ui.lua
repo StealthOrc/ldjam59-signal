@@ -67,6 +67,11 @@ local function drawFuelBar(game)
     local width = 260
     local height = 20
     local ratio = game.car.fuel / game.tuning.fuelCapacity
+    local fuelColor = { 0.94, 0.65, 0.18 }
+
+    if game:isLowFuel() then
+        fuelColor = { 0.89, 0.16, 0.14 }
+    end
 
     graphics.setColor(0, 0, 0, 0.35)
     graphics.rectangle("fill", x - 10, y - 10, width + 20, 64, 12, 12)
@@ -76,7 +81,7 @@ local function drawFuelBar(game)
     graphics.setColor(0.16, 0.17, 0.2)
     graphics.rectangle("fill", x, y + 20, width, height, 8, 8)
 
-    graphics.setColor(0.94, 0.65, 0.18)
+    graphics.setColor(fuelColor)
     graphics.rectangle("fill", x, y + 20, width * ratio, height, 8, 8)
 
     graphics.setColor(0.96, 0.97, 0.98, 0.7)
