@@ -1,4 +1,56 @@
 local ui = {}
+local uiControls = require("src.game.ui_controls")
+
+local LEVEL_SELECT = {
+    chromeH = 74,
+    titleBarY = 100,
+    titleBarH = 74,
+    carouselCenterY = 354,
+    cardBaseW = 292,
+    cardBaseH = 286,
+    sideLift = 46,
+    filterW = 536,
+    filterH = 42,
+    bottomBarY = 626,
+    bottomBarH = 92,
+}
+
+local PREVIEW_COLORS = {
+    background = { 0.06, 0.09, 0.12, 1 },
+    frame = { 0.24, 0.32, 0.4, 1 },
+    railBed = { 0.16, 0.2, 0.24, 1 },
+    mutedTrack = { 0.26, 0.3, 0.36, 0.96 },
+    label = { 0.84, 0.88, 0.92, 1 },
+    control = {
+        direct = { 0.34, 0.84, 0.98, 1 },
+        delayed = { 0.99, 0.78, 0.32, 1 },
+        pump = { 0.93, 0.22, 0.84, 1 },
+        spring = { 0.4, 0.96, 0.74, 1 },
+        relay = { 0.56, 0.72, 0.98, 1 },
+        trip = { 0.98, 0.6, 0.28, 1 },
+        crossbar = { 0.92, 0.38, 0.68, 1 },
+    },
+}
+
+local CONTROL_SHORT_LABELS = {
+    direct = "Direct",
+    delayed = "Timer",
+    pump = "Charge",
+    spring = "Spring",
+    relay = "Relay",
+    trip = "Trip",
+    crossbar = "Cross",
+}
+
+local PANEL_COLORS = {
+    background = { 0.05, 0.07, 0.09, 1 },
+    panelFill = { 0.09, 0.11, 0.15, 0.98 },
+    panelLine = { 0.25, 0.34, 0.42, 1 },
+    panelInnerLine = { 0.44, 0.62, 0.78, 0.38 },
+    titleText = { 0.97, 0.98, 1, 1 },
+    bodyText = { 0.84, 0.88, 0.92, 1 },
+    mutedText = { 0.68, 0.74, 0.8, 1 },
+}
 
 local PLAY_OVERLAY = {
     margin = 24,
@@ -26,16 +78,21 @@ local function pointInRect(x, y, rect)
         and y <= rect.y + rect.h
 end
 
+local function lerp(a, b, t)
+    return a + ((b - a) * t)
+end
+
 local function drawButton(rect, label, fillColor, strokeColor, font)
     local graphics = love.graphics
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
-    graphics.setLineWidth(1.5)
     graphics.setColor(strokeColor[1], strokeColor[2], strokeColor[3], strokeColor[4] or 1)
+    graphics.setLineWidth(2)
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
     love.graphics.setFont(font)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(label, rect.x, rect.y + rect.h * 0.5 - 9, rect.w, "center")
+    graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5 + 0.5), rect.w, "center")
+    graphics.setLineWidth(1)
 end
 
 local function getWrappedLineCount(font, text, width)
@@ -56,68 +113,18 @@ local function formatScore(value)
     return formatted
 end
 
-local function getMenuButtons(game)
-    local centerX = game.viewport.w * 0.5 - 160
-    return {
-        {
-            id = "play",
-            x = centerX,
-            y = 280,
-            w = 320,
-            h = 56,
-            label = "Level Select",
-        },
-        {
-            id = "editor",
-            x = centerX,
-            y = 352,
-            w = 320,
-            h = 56,
-            label = "Map Editor",
-        },
-        {
-            id = "quit",
-            x = centerX,
-            y = 424,
-            w = 320,
-            h = 56,
-            label = "Quit",
-        },
-    }
-end
+local function drawMetalPanel(rect, innerAlpha)
+    local graphics = love.graphics
+    local alpha = innerAlpha or 0.98
 
-local function getLevelSelectBackRect()
-    return {
-        x = 32,
-        y = 28,
-        w = 116,
-        h = 38,
-    }
-end
-
-local function getLevelIssueOverlayRects(game)
-    local panel = {
-        x = game.viewport.w * 0.5 - 280,
-        y = game.viewport.h * 0.5 - 170,
-        w = 560,
-        h = 340,
-    }
-
-    return {
-        panel = panel,
-        edit = {
-            x = panel.x + 42,
-            y = panel.y + panel.h - 68,
-            w = 220,
-            h = 40,
-        },
-        cancel = {
-            x = panel.x + panel.w - 262,
-            y = panel.y + panel.h - 68,
-            w = 220,
-            h = 40,
-        },
-    }
+    graphics.setColor(PANEL_COLORS.panelFill[1], PANEL_COLORS.panelFill[2], PANEL_COLORS.panelFill[3], alpha)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 20, 20)
+    graphics.setLineWidth(3)
+    graphics.setColor(PANEL_COLORS.panelLine[1], PANEL_COLORS.panelLine[2], PANEL_COLORS.panelLine[3], 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 20, 20)
+    graphics.setColor(PANEL_COLORS.panelInnerLine[1], PANEL_COLORS.panelInnerLine[2], PANEL_COLORS.panelInnerLine[3], PANEL_COLORS.panelInnerLine[4])
+    graphics.rectangle("line", rect.x + 4, rect.y + 4, rect.w - 8, rect.h - 8, 17, 17)
+    graphics.setLineWidth(1)
 end
 
 local function getPlayInfoOverlayRect(game)
@@ -150,6 +157,22 @@ local function getJunctionHelpText(junction)
         return string.format("Click the junction %d times before the charge drains.", control.target or 0)
     end
 
+    if control.type == "spring" then
+        return string.format("Click the junction to flip the route for %.1fs before it springs back.", control.holdTime or 0)
+    end
+
+    if control.type == "relay" then
+        return "Click the junction to rotate the active input and output together."
+    end
+
+    if control.type == "trip" then
+        return string.format("Click the junction to divert the next %d train(s), then reset automatically.", control.passCount or 1)
+    end
+
+    if control.type == "crossbar" then
+        return "Click the junction to rotate linked crossing routes together."
+    end
+
     return "Click the junction to switch the active input immediately."
 end
 
@@ -165,6 +188,28 @@ local function getJunctionStateText(junction)
 
     if control.type == "pump" then
         return string.format("State: charge %d / %d", control.pumpCount or 0, control.target or 0)
+    end
+
+    if control.type == "spring" then
+        if control.armed then
+            return string.format("State: held, %.1fs left", control.remainingHold or 0)
+        end
+        return string.format("State: idle, %.1fs hold", control.holdTime or 0)
+    end
+
+    if control.type == "relay" then
+        return string.format("State: synced output %d / %d", junction.activeOutputIndex or 1, math.max(1, #junction.outputs))
+    end
+
+    if control.type == "trip" then
+        if control.remainingTrips and control.remainingTrips > 0 then
+            return string.format("State: %d trip(s) remaining", control.remainingTrips)
+        end
+        return string.format("State: idle, next %d trip(s)", control.passCount or 1)
+    end
+
+    if control.type == "crossbar" then
+        return string.format("State: crossed output %d / %d", junction.activeOutputIndex or 1, math.max(1, #junction.outputs))
     end
 
     return "State: instant switch"
@@ -321,66 +366,6 @@ local function drawPlayInfoOverlay(game)
     end
 end
 
-local function filterMapsBySource(game, source)
-    local maps = {}
-    for _, descriptor in ipairs(game.availableMaps or {}) do
-        if descriptor.source == source then
-            maps[#maps + 1] = descriptor
-        end
-    end
-    return maps
-end
-
-local function getBuiltinEntryRects(game)
-    local rects = {}
-    local startY = 128
-    local builtinMaps = filterMapsBySource(game, "builtin")
-
-    for index, descriptor in ipairs(builtinMaps) do
-        rects[#rects + 1] = {
-            kind = "map",
-            map = descriptor,
-            x = 40,
-            y = startY + (index - 1) * 94,
-            w = 540,
-            h = 78,
-            editRect = {
-                x = 450,
-                y = startY + (index - 1) * 94 + 20,
-                w = 104,
-                h = 36,
-            },
-        }
-    end
-
-    return rects
-end
-
-local function getUserEntryRects(game)
-    local rects = {}
-    local startY = 128
-    local userMaps = filterMapsBySource(game, "user")
-
-    for index, descriptor in ipairs(userMaps) do
-        rects[#rects + 1] = {
-            kind = "map",
-            map = descriptor,
-            x = 700,
-            y = startY + (index - 1) * 94,
-            w = 540,
-            h = 78,
-            editRect = {
-                x = 1110,
-                y = startY + (index - 1) * 94 + 20,
-                w = 104,
-                h = 36,
-            },
-        }
-    end
-
-    return rects
-end
-
 local function drawCenteredOverlay(game, title, body, footer, accentColor)
     local graphics = love.graphics
     local accent = accentColor or { 0.48, 0.92, 0.62 }
@@ -409,37 +394,615 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
     graphics.printf(footer, 0, game.viewport.h * 0.5 + 72, game.viewport.w, "center")
 end
 
-local function drawPlayOverlayPanel(game, title, lines, accentColor)
-    local graphics = love.graphics
-    local panelX = 24
-    local panelY = 76
-    local panelW = 460
-    local panelH = 212
-    local lineHeight = 24
-    local textX = panelX + 20
-    local textY = panelY + 54
-    local textW = panelW - 40
-    local accent = accentColor or { 0.48, 0.92, 0.62 }
+local function getMapKind(descriptor)
+    if descriptor.mapKind then
+        return descriptor.mapKind
+    end
+    if descriptor.source == "user" then
+        return "user"
+    end
+    return "campaign"
+end
 
-    graphics.setColor(0, 0, 0, 0.58)
-    graphics.rectangle("fill", panelX, panelY, panelW, panelH, 18, 18)
-    graphics.setColor(accent[1], accent[2], accent[3], 1)
-    graphics.setLineWidth(2)
-    graphics.rectangle("line", panelX, panelY, panelW, panelH, 18, 18)
+local function getMapKindLabel(descriptor)
+    local kind = getMapKind(descriptor)
+    if kind == "tutorial" then
+        return "Tutorial"
+    end
+    if kind == "campaign" then
+        return "Campaign"
+    end
+    return "User"
+end
 
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print(title, textX, panelY + 18)
+local function getMapDisplayName(descriptor)
+    return descriptor.displayName or descriptor.name or "Untitled Map"
+end
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    for lineIndex, line in ipairs(lines) do
-        graphics.printf(line, textX, textY + (lineIndex - 1) * lineHeight, textW)
+local function getLevelSelectFilterSegments()
+    return {
+        { id = "all", label = "All" },
+        { id = "tutorial", label = "Tutorial" },
+        { id = "campaign", label = "Campaign" },
+        { id = "user", label = "User" },
+    }
+end
+
+local function getLevelSelectMaps(game)
+    local maps = {}
+    local filterId = game.levelSelectFilter or "all"
+
+    for _, mapKind in ipairs({ "tutorial", "campaign", "user" }) do
+        if filterId == "all" or filterId == mapKind then
+            for _, descriptor in ipairs(game.availableMaps or {}) do
+                if getMapKind(descriptor) == mapKind then
+                    maps[#maps + 1] = descriptor
+                end
+            end
+        end
+    end
+
+    return maps
+end
+
+local function getSelectedMapIndex(game, maps)
+    local fallbackIndex = #maps > 0 and 1 or nil
+
+    for index, descriptor in ipairs(maps or {}) do
+        if descriptor.id == game.levelSelectSelectedId then
+            return index
+        end
+    end
+
+    if fallbackIndex then
+        game.levelSelectSelectedId = maps[fallbackIndex].id
+    else
+        game.levelSelectSelectedId = nil
+    end
+
+    return fallbackIndex
+end
+
+local function appendUniqueControl(controls, seen, controlType)
+    if controlType and not seen[controlType] then
+        seen[controlType] = true
+        controls[#controls + 1] = controlType
     end
 end
 
+local function getMapControlTypes(descriptor)
+    local controls = {}
+    local seen = {}
+    local level = descriptor.previewLevel
+
+    for _, junction in ipairs(level and level.junctions or {}) do
+        appendUniqueControl(controls, seen, junction.control and junction.control.type or "direct")
+    end
+
+    return controls
+end
+
+local function getPreviewPoint(point, rect)
+    local normalizedX = math.max(0, math.min(1, point.x or 0))
+    local normalizedY = math.max(0, math.min(1, point.y or 0))
+    return rect.x + normalizedX * rect.w, rect.y + normalizedY * rect.h
+end
+
+local function buildPreviewTracks(level)
+    local tracks = {}
+    local junctions = {}
+
+    if not level then
+        return tracks, junctions
+    end
+
+    if level.edges and level.junctions then
+        local edgeLookup = {}
+        for _, edge in ipairs(level.edges or {}) do
+            edgeLookup[edge.id] = edge
+            tracks[#tracks + 1] = {
+                points = edge.points or {},
+                color = edge.color,
+                muted = false,
+            }
+        end
+
+        for _, junction in ipairs(level.junctions or {}) do
+            local point = nil
+            local inputEdge = edgeLookup[(junction.inputEdgeIds or {})[1]]
+            local outputEdge = edgeLookup[(junction.outputEdgeIds or {})[1]]
+
+            if inputEdge and #(inputEdge.points or {}) > 0 then
+                point = inputEdge.points[#inputEdge.points]
+            elseif outputEdge and #(outputEdge.points or {}) > 0 then
+                point = outputEdge.points[1]
+            end
+
+            if point then
+                junctions[#junctions + 1] = {
+                    x = point.x,
+                    y = point.y,
+                    controlType = junction.control and junction.control.type or "direct",
+                    outputCount = #(junction.outputEdgeIds or {}),
+                }
+            end
+        end
+
+        return tracks, junctions
+    end
+
+    for _, junction in ipairs(level.junctions or {}) do
+        for _, input in ipairs(junction.inputs or {}) do
+            tracks[#tracks + 1] = {
+                points = input.inputPoints or {},
+                color = input.color,
+                muted = false,
+            }
+        end
+
+        for _, output in ipairs(junction.outputs or {}) do
+            tracks[#tracks + 1] = {
+                points = output.outputPoints or {},
+                color = output.color,
+                muted = output.adoptInputColor == true,
+            }
+        end
+
+        local point = nil
+        if #(junction.inputs or {}) > 0 and #((junction.inputs or {})[1].inputPoints or {}) > 0 then
+            local points = (junction.inputs or {})[1].inputPoints
+            point = points[#points]
+        elseif #(junction.outputs or {}) > 0 and #((junction.outputs or {})[1].outputPoints or {}) > 0 then
+            point = ((junction.outputs or {})[1].outputPoints)[1]
+        end
+
+        if point then
+            junctions[#junctions + 1] = {
+                x = point.x,
+                y = point.y,
+                controlType = junction.control and junction.control.type or "direct",
+                outputCount = #(junction.outputs or {}),
+            }
+        end
+    end
+
+    return tracks, junctions
+end
+
+local function drawMapPreview(descriptor, rect)
+    local graphics = love.graphics
+    local tracks, junctions = buildPreviewTracks(descriptor.previewLevel)
+
+    graphics.setColor(PREVIEW_COLORS.background[1], PREVIEW_COLORS.background[2], PREVIEW_COLORS.background[3], PREVIEW_COLORS.background[4])
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
+    graphics.setColor(PREVIEW_COLORS.frame[1], PREVIEW_COLORS.frame[2], PREVIEW_COLORS.frame[3], PREVIEW_COLORS.frame[4])
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
+
+    if #tracks == 0 then
+        graphics.setColor(PREVIEW_COLORS.label[1], PREVIEW_COLORS.label[2], PREVIEW_COLORS.label[3], PREVIEW_COLORS.label[4])
+        graphics.printf("No Preview", rect.x, rect.y + rect.h * 0.5 - 8, rect.w, "center")
+        return
+    end
+
+    for _, track in ipairs(tracks) do
+        local points = {}
+        for _, point in ipairs(track.points or {}) do
+            local x, y = getPreviewPoint(point, rect)
+            points[#points + 1] = x
+            points[#points + 1] = y
+        end
+
+        if #points >= 4 then
+            graphics.setLineStyle("smooth")
+            graphics.setLineJoin("bevel")
+            graphics.setLineWidth(10)
+            graphics.setColor(PREVIEW_COLORS.railBed[1], PREVIEW_COLORS.railBed[2], PREVIEW_COLORS.railBed[3], PREVIEW_COLORS.railBed[4])
+            graphics.line(points)
+
+            local color = track.color or PREVIEW_COLORS.mutedTrack
+            local alpha = track.muted and 0.78 or 0.96
+            graphics.setLineWidth(5)
+            graphics.setColor(color[1], color[2], color[3], alpha)
+            graphics.line(points)
+        end
+    end
+
+    for _, junction in ipairs(junctions) do
+        local x, y = getPreviewPoint(junction, rect)
+        local color = PREVIEW_COLORS.control[junction.controlType] or PREVIEW_COLORS.control.direct
+
+        graphics.setColor(0.04, 0.06, 0.08, 1)
+        graphics.circle("fill", x, y, 10)
+        graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+        graphics.circle("fill", x, y, 7)
+
+        if junction.outputCount > 1 and junction.controlType ~= "relay" and junction.controlType ~= "crossbar" then
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+            graphics.circle("line", x, y + 12, 5)
+        end
+    end
+end
+
+local function getBadgeWidths(game, descriptor, maxWidth)
+    local controls = getMapControlTypes(descriptor)
+    local font = game.fonts.small
+    local widths = {}
+    local totalWidth = 0
+
+    for index, controlType in ipairs(controls) do
+        local label = CONTROL_SHORT_LABELS[controlType] or controlType
+        local badgeWidth = font:getWidth(label) + 22
+        local nextWidth = totalWidth + badgeWidth
+        if index > 1 then
+            nextWidth = nextWidth + 6
+        end
+        if nextWidth > maxWidth then
+            break
+        end
+        widths[#widths + 1] = {
+            controlType = controlType,
+            label = label,
+            width = badgeWidth,
+        }
+        totalWidth = nextWidth
+    end
+
+    return widths, totalWidth
+end
+
+local function getLevelSelectBackRect()
+    return {
+        x = 24,
+        y = math.floor((LEVEL_SELECT.chromeH - 40) * 0.5 + 0.5),
+        w = 120,
+        h = 40,
+    }
+end
+
+local function getSettledSelectedCardRect(game)
+    local width = LEVEL_SELECT.cardBaseW
+    local height = LEVEL_SELECT.cardBaseH
+    return {
+        x = math.floor(game.viewport.w * 0.5 - width * 0.5 + 0.5),
+        y = math.floor(LEVEL_SELECT.carouselCenterY - height * 0.5 + 0.5),
+        w = width,
+        h = height,
+    }
+end
+
+local function getLevelSelectFilterRect(game)
+    local panelTop = LEVEL_SELECT.bottomBarY
+    local selectedCardRect = getSettledSelectedCardRect(game)
+    local selectedBottom = selectedCardRect.y + selectedCardRect.h
+    local centerY = math.floor((selectedBottom + panelTop) * 0.5 + 0.5)
+
+    return {
+        x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.filterW * 0.5 + 0.5),
+        y = centerY - math.floor(LEVEL_SELECT.filterH * 0.5 + 0.5),
+        w = LEVEL_SELECT.filterW,
+        h = LEVEL_SELECT.filterH,
+    }
+end
+
+local function getLevelSelectActionRects(game)
+    local startWidth = 170
+    local editWidth = 148
+    local gap = 18
+    local totalWidth = startWidth + editWidth + gap
+    local startX = math.floor(game.viewport.w * 0.5 - totalWidth * 0.5 + 0.5)
+    local buttonY = LEVEL_SELECT.bottomBarY + math.floor((LEVEL_SELECT.bottomBarH - 42) * 0.5 + 0.5)
+
+    return {
+        start = {
+            x = startX,
+            y = buttonY,
+            w = startWidth,
+            h = 42,
+        },
+        edit = {
+            x = startX + startWidth + gap,
+            y = buttonY,
+            w = editWidth,
+            h = 42,
+        },
+    }
+end
+
+local function getLevelIssueOverlayRects(game)
+    local panel = {
+        x = game.viewport.w * 0.5 - 280,
+        y = game.viewport.h * 0.5 - 170,
+        w = 560,
+        h = 340,
+    }
+
+    return {
+        panel = panel,
+        edit = {
+            x = panel.x + 42,
+            y = panel.y + panel.h - 68,
+            w = 220,
+            h = 40,
+        },
+        cancel = {
+            x = panel.x + panel.w - 262,
+            y = panel.y + panel.h - 68,
+            w = 220,
+            h = 40,
+        },
+    }
+end
+
+local function getCardScale(distance)
+    local absDistance = math.abs(distance)
+    if absDistance <= 1 then
+        return lerp(1, 0.84, absDistance)
+    end
+    if absDistance <= 2 then
+        return lerp(0.84, 0.68, absDistance - 1)
+    end
+    return lerp(0.68, 0.54, math.min(1, absDistance - 2))
+end
+
+local function getCarouselOffset(distance)
+    local direction = distance < 0 and -1 or 1
+    local absDistance = math.abs(distance)
+    local magnitude
+
+    if absDistance <= 1 then
+        magnitude = lerp(0, 304, absDistance)
+    elseif absDistance <= 2 then
+        magnitude = lerp(304, 560, absDistance - 1)
+    else
+        magnitude = lerp(560, 720, math.min(1, absDistance - 2))
+    end
+
+    return magnitude * direction
+end
+
+local function getCarouselLift(distance)
+    local absDistance = math.abs(distance)
+
+    if absDistance <= 1 then
+        return lerp(0, 42, absDistance)
+    elseif absDistance <= 2 then
+        return lerp(42, 76, absDistance - 1)
+    end
+
+    return lerp(76, 104, math.min(1, absDistance - 2))
+end
+
+local function getWrappedDistance(index, visualIndex, count)
+    local distance = index - visualIndex
+    local halfCount = count * 0.5
+
+    while distance > halfCount do
+        distance = distance - count
+    end
+
+    while distance < -halfCount do
+        distance = distance + count
+    end
+
+    return distance
+end
+
+local function buildLevelSelectCardRects(game)
+    local maps = getLevelSelectMaps(game)
+    local selectedIndex = getSelectedMapIndex(game, maps)
+    local rects = {}
+
+    if not selectedIndex then
+        return rects, maps, nil
+    end
+
+    local visualIndex = game.levelSelectVisualIndex or selectedIndex
+    local centerX = game.viewport.w * 0.5
+    for index, descriptor in ipairs(maps) do
+        local distance = getWrappedDistance(index, visualIndex, #maps)
+        if math.abs(distance) <= 2.4 then
+            local scale = getCardScale(distance)
+            local width = math.floor(LEVEL_SELECT.cardBaseW * scale + 0.5)
+            local height = math.floor(LEVEL_SELECT.cardBaseH * scale + 0.5)
+            local centerOffset = getCarouselOffset(distance)
+            local x = math.floor(centerX + centerOffset - width * 0.5 + 0.5)
+            local y = math.floor(LEVEL_SELECT.carouselCenterY - height * 0.5 + getCarouselLift(distance) + 0.5)
+            rects[#rects + 1] = {
+                map = descriptor,
+                index = index,
+                selected = math.abs(distance) < 0.35,
+                distance = distance,
+                scale = scale,
+                x = x,
+                y = y,
+                w = width,
+                h = height,
+            }
+
+            local badgeGap = 12
+            local badgeH = 22
+            local badgeWidths, badgeTotalWidth = getBadgeWidths(game, descriptor, width - 36)
+            local badgeBottomPadding = 18
+            local badgeY = y + height - badgeH - badgeBottomPadding
+            local previewTop = y + 18
+            local previewBottom = badgeY - badgeGap
+            rects[#rects].previewRect = {
+                x = x + 18,
+                y = previewTop,
+                w = width - 36,
+                h = math.max(56, previewBottom - previewTop),
+            }
+            rects[#rects].badgeRow = {
+                x = x + math.floor((width - badgeTotalWidth) * 0.5 + 0.5),
+                y = badgeY,
+                widths = badgeWidths,
+                totalWidth = badgeTotalWidth,
+            }
+        end
+    end
+
+    table.sort(rects, function(a, b)
+        local aDistance = math.abs(a.distance)
+        local bDistance = math.abs(b.distance)
+        if aDistance ~= bDistance then
+            return aDistance > bDistance
+        end
+        return a.distance < b.distance
+    end)
+
+    return rects, maps, selectedIndex
+end
+
+local function drawControlBadges(game, descriptor, x, y, maxWidth, badgeRow)
+    local graphics = love.graphics
+    love.graphics.setFont(game.fonts.small)
+
+    local widths = {}
+    local totalWidth = 0
+
+    if badgeRow and badgeRow.widths then
+        widths = badgeRow.widths
+        totalWidth = badgeRow.totalWidth or 0
+    else
+        widths, totalWidth = getBadgeWidths(game, descriptor, maxWidth)
+    end
+
+    local badgeX = x + math.floor((maxWidth - totalWidth) * 0.5 + 0.5)
+    for _, badge in ipairs(widths) do
+        local color = PREVIEW_COLORS.control[badge.controlType] or PREVIEW_COLORS.control.direct
+        graphics.setColor(color[1], color[2], color[3], 0.96)
+        graphics.rectangle("fill", badgeX, y, badge.width, 22, 11, 11)
+        graphics.setColor(0.06, 0.08, 0.1, 0.4)
+        graphics.rectangle("line", badgeX, y, badge.width, 22, 11, 11)
+        graphics.setColor(0.08, 0.1, 0.14, 1)
+        graphics.printf(badge.label, badgeX, y + 3, badge.width, "center")
+        badgeX = badgeX + badge.width + 6
+    end
+end
+
+local function drawLevelSelectChrome(game)
+    local graphics = love.graphics
+    graphics.setColor(0.08, 0.12, 0.18, 0.82)
+    graphics.circle("fill", 164, 188, 168)
+    graphics.circle("fill", 1082, 274, 214)
+    graphics.circle("fill", 1014, 628, 178)
+
+    graphics.setColor(0.18, 0.26, 0.34, 0.5)
+    graphics.setLineWidth(2)
+    graphics.setLineWidth(1)
+
+    drawMetalPanel({ x = 2, y = 2, w = game.viewport.w - 4, h = LEVEL_SELECT.chromeH }, 0.98)
+    drawMetalPanel({ x = 2, y = LEVEL_SELECT.bottomBarY, w = game.viewport.w - 4, h = LEVEL_SELECT.bottomBarH }, 0.98)
+end
+
+local function drawLevelSelectTitleBar(game, selectedMap)
+    local graphics = love.graphics
+    local barRect = {
+        x = 118,
+        y = LEVEL_SELECT.titleBarY,
+        w = 1044,
+        h = LEVEL_SELECT.titleBarH,
+    }
+
+    graphics.setColor(PANEL_COLORS.panelFill[1], PANEL_COLORS.panelFill[2], PANEL_COLORS.panelFill[3], PANEL_COLORS.panelFill[4])
+    graphics.rectangle("fill", barRect.x, barRect.y, barRect.w, barRect.h, 12, 12)
+    graphics.setLineWidth(2)
+    graphics.setColor(PANEL_COLORS.panelLine[1], PANEL_COLORS.panelLine[2], PANEL_COLORS.panelLine[3], PANEL_COLORS.panelLine[4])
+    graphics.rectangle("line", barRect.x, barRect.y, barRect.w, barRect.h, 12, 12)
+    graphics.setColor(PANEL_COLORS.panelInnerLine[1], PANEL_COLORS.panelInnerLine[2], PANEL_COLORS.panelInnerLine[3], PANEL_COLORS.panelInnerLine[4])
+    graphics.rectangle("line", barRect.x + 4, barRect.y + 4, barRect.w - 8, barRect.h - 8, 10, 10)
+    graphics.setLineWidth(1)
+
+    if not selectedMap then
+        return
+    end
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
+    graphics.printf(getMapDisplayName(selectedMap), barRect.x + 30, barRect.y + 8, barRect.w - 60, "center")
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(getMapKindLabel(selectedMap), barRect.x + 30, barRect.y + 48, barRect.w - 60, "center")
+end
+
+local function drawLevelCard(game, rect)
+    local graphics = love.graphics
+    local descriptor = rect.map
+    local selected = rect.selected
+    local cardFill = selected and { 0.09, 0.11, 0.15, 0.98 } or { 0.08, 0.1, 0.13, 0.94 }
+    local trim = selected and { 0.45, 0.7, 0.92, 1 } or { 0.24, 0.34, 0.44, 0.95 }
+
+    graphics.setColor(0.09, 0.1, 0.11, 0.26)
+    graphics.rectangle("fill", rect.x + 6, rect.y + rect.h - 8, rect.w, 16, 10, 10)
+
+    graphics.setColor(cardFill[1], cardFill[2], cardFill[3], cardFill[4])
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 18, 18)
+    graphics.setColor(trim[1], trim[2], trim[3], trim[4])
+    graphics.setLineWidth(selected and 4 or 3)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 18, 18)
+    graphics.rectangle("line", rect.x + 4, rect.y + 4, rect.w - 8, rect.h - 8, 14, 14)
+
+    if selected then
+        graphics.setColor(0.2, 0.72, 0.96, 0.18)
+        graphics.rectangle("line", rect.x - 6, rect.y - 6, rect.w + 12, rect.h + 12, 22, 22)
+    end
+
+    drawMapPreview(descriptor, rect.previewRect)
+
+    local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
+    drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
+end
+
+local function drawLevelSelectEmptyState(game, filterId)
+    local graphics = love.graphics
+    local panel = {
+        x = game.viewport.w * 0.5 - 210,
+        y = 250,
+        w = 420,
+        h = 150,
+    }
+
+    drawMetalPanel(panel, 0.96)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
+    graphics.printf("No maps in this section yet.", panel.x + 24, panel.y + 38, panel.w - 48, "center")
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    if filterId == "user" then
+        graphics.printf("Open the editor and save a map to have it show up here.", panel.x + 34, panel.y + 78, panel.w - 68, "center")
+    else
+        graphics.printf("Switch filters or pick All to browse the full level list.", panel.x + 34, panel.y + 78, panel.w - 68, "center")
+    end
+end
+
+function ui.getLevelSelectMapDescriptors(game)
+    return getLevelSelectMaps(game)
+end
+
+function ui.getLevelSelectScrollUnit()
+    return 1
+end
+
+function ui.clampLevelSelectScroll(_, _)
+    return 0
+end
+
+function ui.scrollLevelSelectToMap(_, _, currentScroll)
+    return currentScroll or 0
+end
+
 function ui.getMenuActionAt(game, x, y)
-    for _, rect in ipairs(getMenuButtons(game)) do
+    local centerX = game.viewport.w * 0.5 - 160
+    local buttons = {
+        { id = "play", x = centerX, y = 280, w = 320, h = 56 },
+        { id = "editor", x = centerX, y = 352, w = 320, h = 56 },
+        { id = "quit", x = centerX, y = 424, w = 320, h = 56 },
+    }
+
+    for _, rect in ipairs(buttons) do
         if pointInRect(x, y, rect) then
             return rect.id
         end
@@ -463,33 +1026,66 @@ function ui.getLevelSelectHit(game, x, y)
         return { kind = "issue_blocked" }
     end
 
-    local backRect = getLevelSelectBackRect()
-    if pointInRect(x, y, backRect) then
+    if pointInRect(x, y, getLevelSelectBackRect()) then
         return { kind = "back" }
     end
 
-    for _, rect in ipairs(getBuiltinEntryRects(game)) do
-        if pointInRect(x, y, rect.editRect) then
-            return { kind = "edit_map", map = rect.map }
-        end
-        if pointInRect(x, y, rect) then
-            return { kind = "open_map", map = rect.map }
+    local cardRects = buildLevelSelectCardRects(game)
+    local filterRect = getLevelSelectFilterRect(game)
+    local filterSegments = getLevelSelectFilterSegments()
+    if pointInRect(x, y, filterRect) then
+        for index, segment in ipairs(filterSegments) do
+            if pointInRect(x, y, uiControls.segmentRect(filterRect, index, #filterSegments)) then
+                return { kind = "set_filter", filter = segment.id }
+            end
         end
     end
 
-    for _, rect in ipairs(getUserEntryRects(game)) do
-        if pointInRect(x, y, rect.editRect) then
-            return { kind = "edit_map", map = rect.map }
-        end
+    local maps = getLevelSelectMaps(game)
+    local selectedIndex = getSelectedMapIndex(game, maps)
+    local selectedMap = selectedIndex and maps[selectedIndex] or nil
+    local actionRects = getLevelSelectActionRects(game)
+
+    if selectedMap and pointInRect(x, y, actionRects.start) then
+        return { kind = "open_map", map = selectedMap }
+    end
+    if selectedMap and pointInRect(x, y, actionRects.edit) then
+        return { kind = "edit_map", map = selectedMap }
+    end
+
+    for _, rect in ipairs(cardRects) do
         if pointInRect(x, y, rect) then
-            return { kind = "open_map", map = rect.map }
+            if rect.selected then
+                return { kind = "open_map", map = rect.map }
+            end
+            return { kind = "select_map", map = rect.map }
         end
     end
 
     return nil
 end
 
-function ui.getPlayBackHit(game, x, y)
+function ui.getLevelSelectFilterHoverId(game, x, y)
+    if game.levelSelectIssue then
+        return nil
+    end
+
+    local filterRect = getLevelSelectFilterRect(game)
+    if not pointInRect(x, y, filterRect) then
+        return nil
+    end
+
+    local filterSegments = getLevelSelectFilterSegments()
+    for index, segment in ipairs(filterSegments) do
+        if pointInRect(x, y, uiControls.segmentRect(filterRect, index, #filterSegments)) then
+            return segment.id
+        end
+    end
+
+    return nil
+end
+
+function ui.getPlayBackHit(_, x, y)
     return pointInRect(x, y, {
         x = 1114,
         y = 28,
@@ -524,6 +1120,33 @@ end
 
 function ui.drawMenu(game)
     local graphics = love.graphics
+    local centerX = game.viewport.w * 0.5 - 160
+    local buttons = {
+        {
+            id = "play",
+            x = centerX,
+            y = 280,
+            w = 320,
+            h = 56,
+            label = "Level Select",
+        },
+        {
+            id = "editor",
+            x = centerX,
+            y = 352,
+            w = 320,
+            h = 56,
+            label = "Map Editor",
+        },
+        {
+            id = "quit",
+            x = centerX,
+            y = 424,
+            w = 320,
+            h = 56,
+            label = "Quit",
+        },
+    }
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -546,7 +1169,7 @@ function ui.drawMenu(game)
         "center"
     )
 
-    for _, rect in ipairs(getMenuButtons(game)) do
+    for _, rect in ipairs(buttons) do
         drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
     end
 
@@ -557,75 +1180,53 @@ end
 
 function ui.drawLevelSelect(game)
     local graphics = love.graphics
+    local maps = getLevelSelectMaps(game)
+    local selectedIndex = getSelectedMapIndex(game, maps)
+    local selectedMap = selectedIndex and maps[selectedIndex] or nil
+    local cardRects = buildLevelSelectCardRects(game)
+    local actionRects = getLevelSelectActionRects(game)
+    local filterRect = getLevelSelectFilterRect(game)
+    local filterSegments = getLevelSelectFilterSegments()
 
-    graphics.setColor(0.05, 0.07, 0.1, 1)
+    graphics.setColor(PANEL_COLORS.background[1], PANEL_COLORS.background[2], PANEL_COLORS.background[3], PANEL_COLORS.background[4])
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
 
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Level Select", 40, 28)
+    drawLevelSelectChrome(game)
+    drawLevelSelectTitleBar(game, selectedMap)
 
-    drawButton(getLevelSelectBackRect(), "Back", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+    drawButton(getLevelSelectBackRect(), "Back", { 0.12, 0.15, 0.19, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.small)
 
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.print("Tutorial Maps", 40, 90)
-    graphics.print("Saved Maps", 700, 90)
-
-    local builtinRects = getBuiltinEntryRects(game)
-    if #builtinRects == 0 then
-        graphics.setColor(0.09, 0.11, 0.15, 0.98)
-        graphics.rectangle("fill", 40, 128, 540, 120, 16, 16)
-        graphics.setColor(0.26, 0.34, 0.42, 1)
-        graphics.rectangle("line", 40, 128, 540, 120, 16, 16)
-        love.graphics.setFont(game.fonts.body)
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf("No built-in tutorial maps were found.", 70, 166, 480, "center")
-    else
-        for _, rect in ipairs(builtinRects) do
-            graphics.setColor(0.09, 0.11, 0.15, 0.98)
-            graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
-            graphics.setColor(0.26, 0.34, 0.42, 1)
-            graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
-
-            love.graphics.setFont(game.fonts.body)
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.print(rect.map.name, rect.x + 18, rect.y + 14)
-
-            love.graphics.setFont(game.fonts.small)
-            graphics.setColor(0.82, 0.86, 0.9, 1)
-            graphics.print("Click to play", rect.x + 18, rect.y + 46)
-
-            drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
-        end
+    for _, cardRect in ipairs(cardRects) do
+        drawLevelCard(game, cardRect)
     end
 
-    local userRects = getUserEntryRects(game)
-    if #userRects == 0 then
-        graphics.setColor(0.09, 0.11, 0.15, 0.98)
-        graphics.rectangle("fill", 700, 128, 540, 120, 16, 16)
-        graphics.setColor(0.26, 0.34, 0.42, 1)
-        graphics.rectangle("line", 700, 128, 540, 120, 16, 16)
-        love.graphics.setFont(game.fonts.body)
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf("No saved maps yet. Open the editor from the main menu and save one there.", 730, 166, 480, "center")
+    if #maps == 0 then
+        drawLevelSelectEmptyState(game, game.levelSelectFilter or "all")
+    end
+
+    uiControls.drawSegmentedToggle(
+        filterRect,
+        filterSegments,
+        game.levelSelectFilter or "all",
+        game.levelSelectFilterHoverId,
+        game.fonts.small,
+        {
+            backgroundColor = { 0.08, 0.1, 0.14, 0.98 },
+            activeFillColor = { 0.78, 0.88, 0.98, 0.94 },
+            hoverColor = { 0.3, 0.4, 0.5, 0.22 },
+            outlineColor = { 0.26, 0.38, 0.5, 1 },
+            innerOutlineColor = { 0.44, 0.62, 0.78, 0.34 },
+            selectedTextColor = { 0.08, 0.11, 0.15, 1 },
+            textColor = { 0.9, 0.93, 0.97, 1 },
+        }
+    )
+
+    if selectedMap then
+        drawButton(actionRects.start, "Start", { 0.12, 0.17, 0.2, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+        drawButton(actionRects.edit, "Edit", { 0.12, 0.17, 0.2, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.body)
     else
-        for _, rect in ipairs(userRects) do
-            graphics.setColor(0.09, 0.11, 0.15, 0.98)
-            graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
-            graphics.setColor(0.26, 0.34, 0.42, 1)
-            graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
-
-            love.graphics.setFont(game.fonts.body)
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.print(rect.map.name, rect.x + 18, rect.y + 14)
-
-            love.graphics.setFont(game.fonts.small)
-            graphics.setColor(0.82, 0.86, 0.9, 1)
-            graphics.print("Click to play", rect.x + 18, rect.y + 46)
-
-            drawButton(rect.editRect, "Edit", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
-        end
+        drawButton(actionRects.start, "Start", { 0.1, 0.12, 0.15, 0.98 }, { 0.24, 0.3, 0.36, 1 }, game.fonts.body)
+        drawButton(actionRects.edit, "Edit", { 0.1, 0.12, 0.15, 0.98 }, { 0.24, 0.3, 0.36, 1 }, game.fonts.body)
     end
 
     if game.levelSelectIssue then
