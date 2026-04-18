@@ -7,6 +7,45 @@ local ui = require("src.game.ui")
 local Game = {}
 Game.__index = Game
 
+local function findLevelSelectIndex(game, maps)
+    local fallbackIndex = #maps > 0 and 1 or nil
+
+    for index, descriptor in ipairs(maps or {}) do
+        if descriptor.id == game.levelSelectSelectedId then
+            return index
+        end
+    end
+
+    if fallbackIndex then
+        game.levelSelectSelectedId = maps[fallbackIndex].id
+    else
+        game.levelSelectSelectedId = nil
+    end
+
+    return fallbackIndex
+end
+
+local function closestWrappedIndex(currentValue, targetIndex, count)
+    if not currentValue or not targetIndex or count <= 0 then
+        return targetIndex
+    end
+
+    local cycle = math.floor((currentValue - 1) / count)
+    local bestValue = targetIndex + (cycle * count)
+    local bestDistance = math.abs(bestValue - currentValue)
+
+    for _, offset in ipairs({ -count, count }) do
+        local candidate = bestValue + offset
+        local candidateDistance = math.abs(candidate - currentValue)
+        if candidateDistance < bestDistance then
+            bestValue = candidate
+            bestDistance = candidateDistance
+        end
+    end
+
+    return bestValue
+end
+
 function Game.new()
     local self = setmetatable({}, Game)
 
@@ -34,6 +73,9 @@ function Game.new()
     self.currentMapDescriptor = nil
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
+    self.levelSelectFilter = "all"
+    self.levelSelectFilterHoverId = nil
+    self.levelSelectVisualIndex = nil
     self.levelSelectScroll = 0
 
     self:updateRenderTransform()
@@ -84,6 +126,41 @@ end
 function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
     self.levelSelectScroll = 0
+end
+
+function Game:resetLevelSelectVisualIndex()
+    local maps = self:getLevelSelectMaps()
+    local targetIndex = findLevelSelectIndex(self, maps)
+    self.levelSelectVisualIndex = targetIndex
+end
+
+function Game:setLevelSelectFilter(filterId)
+    self.levelSelectFilter = filterId or "all"
+    self:getSelectedLevelMap()
+    self:resetLevelSelectVisualIndex()
+    self.levelSelectScroll = 0
+end
+
+function Game:updateLevelSelectAnimation(dt)
+    local maps = self:getLevelSelectMaps()
+    local targetIndex = findLevelSelectIndex(self, maps)
+    if not targetIndex then
+        self.levelSelectVisualIndex = nil
+        return
+    end
+
+    if not self.levelSelectVisualIndex then
+        self.levelSelectVisualIndex = targetIndex
+        return
+    end
+
+    local targetValue = closestWrappedIndex(self.levelSelectVisualIndex, targetIndex, #maps)
+    local smoothing = 1 - math.exp(-dt * 12)
+    self.levelSelectVisualIndex = self.levelSelectVisualIndex + ((targetValue - self.levelSelectVisualIndex) * smoothing)
+
+    if math.abs(targetValue - self.levelSelectVisualIndex) < 0.001 then
+        self.levelSelectVisualIndex = targetValue
+    end
 end
 
 function Game:moveLevelSelectSelection(direction)
@@ -141,12 +218,15 @@ end
 function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
+    self.levelSelectFilterHoverId = nil
     self:refreshMaps()
 end
 
 function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
+    self.levelSelectFilter = "all"
+    self.levelSelectFilterHoverId = nil
     self:refreshMaps()
     local preferredMap = self.currentMapDescriptor
     if preferredMap then
@@ -159,6 +239,7 @@ function Game:openLevelSelect()
         end
     end
     self:getSelectedLevelMap()
+    self:resetLevelSelectVisualIndex()
     self.levelSelectScroll = 0
 end
 
@@ -222,6 +303,11 @@ function Game:isRunLocked()
 end
 
 function Game:update(dt)
+    if self.screen == "level_select" then
+        self:updateLevelSelectAnimation(dt)
+        return
+    end
+
     if self.screen == "editor" then
         self.editor:update(dt)
         return
@@ -421,6 +507,8 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
+        elseif hit.kind == "set_filter" then
+            self:setLevelSelectFilter(hit.filter)
         elseif hit.kind == "issue_edit" then
             self:openEditorMap(hit.map)
         elseif hit.kind == "issue_cancel" then
@@ -470,6 +558,12 @@ function Game:mousepressed(x, y, button)
 end
 
 function Game:mousemoved(x, y)
+    if self.screen == "level_select" then
+        local viewportX, viewportY = self:toViewportPosition(x, y)
+        self.levelSelectFilterHoverId = ui.getLevelSelectFilterHoverId(self, viewportX, viewportY)
+        return
+    end
+
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousemoved(viewportX, viewportY)

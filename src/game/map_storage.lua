@@ -135,11 +135,36 @@ local function buildPath(source, fileName)
     return USER_MAP_DIR .. "/" .. fileName
 end
 
+local function inferMapKind(source, data)
+    if source == "user" then
+        return "user"
+    end
+
+    local description = string.lower(((data.level and data.level.description) or data.description or ""))
+    if description:match("^tutorial:") then
+        return "tutorial"
+    end
+
+    return "campaign"
+end
+
+local function buildDisplayName(name, fileName)
+    local rawName = name or fileName:gsub("%.lua$", "")
+    local cleanedName = rawName:gsub("^Map%s+%d+:%s*", "")
+    if cleanedName == "" then
+        return rawName
+    end
+    return cleanedName
+end
+
 local function buildDescriptor(source, fileName, data)
+    local name = data.name or fileName:gsub("%.lua$", "")
     return {
         id = source .. ":" .. fileName,
         source = source,
-        name = data.name or fileName:gsub("%.lua$", ""),
+        name = name,
+        displayName = buildDisplayName(name, fileName),
+        mapKind = inferMapKind(source, data),
         fileName = fileName,
         path = buildPath(source, fileName),
         savedAt = data.savedAt,
