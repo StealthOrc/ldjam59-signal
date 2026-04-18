@@ -181,6 +181,35 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
     graphics.printf(footer, 0, game.viewport.h * 0.5 + 72, game.viewport.w, "center")
 end
 
+local function drawPlayOverlayPanel(game, title, lines, accentColor)
+    local graphics = love.graphics
+    local panelX = 24
+    local panelY = 76
+    local panelW = 460
+    local panelH = 212
+    local lineHeight = 24
+    local textX = panelX + 20
+    local textY = panelY + 54
+    local textW = panelW - 40
+    local accent = accentColor or { 0.48, 0.92, 0.62 }
+
+    graphics.setColor(0, 0, 0, 0.58)
+    graphics.rectangle("fill", panelX, panelY, panelW, panelH, 18, 18)
+    graphics.setColor(accent[1], accent[2], accent[3], 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle("line", panelX, panelY, panelW, panelH, 18, 18)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(title, textX, panelY + 18)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    for lineIndex, line in ipairs(lines) do
+        graphics.printf(line, textX, textY + (lineIndex - 1) * lineHeight, textW)
+    end
+end
+
 function ui.getMenuActionAt(game, x, y)
     for _, rect in ipairs(getMenuButtons(game)) do
         if pointInRect(x, y, rect) then
@@ -408,30 +437,22 @@ end
 function ui.drawPlay(game)
     local graphics = love.graphics
     local level = game.world:getLevel()
+    local trainsText = string.format("Trains %d / %d", game.world:countCompletedTrains(), #game.world.trains)
+    local timeText = game.world.timeRemaining and string.format("Time %.1fs", game.world.timeRemaining) or nil
 
     graphics.setColor(0, 0, 0, 0.34)
-    graphics.rectangle("fill", 22, 20, 620, 170, 18, 18)
+    graphics.rectangle("fill", 22, 20, 360, 52, 18, 18)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Out of Signal", 40, 32)
-
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.print(level.title, 42, 80)
-    graphics.printf(level.description, 42, 108, 570)
+    graphics.print(level.title, 40, 30)
 
     love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.print(game.world:getActiveRouteSummary(), 42, 152)
-
-    local trainsText = string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains)
     graphics.setColor(0.84, 0.88, 0.92, 0.95)
-    graphics.print(trainsText, 42, 172)
-
-    if game.world.timeRemaining then
+    graphics.print(trainsText, 410, 34)
+    if timeText then
         graphics.setColor(0.99, 0.83, 0.44, 1)
-        graphics.print(string.format("Time left: %.1fs", game.world.timeRemaining), 220, 172)
+        graphics.print(timeText, 520, 34)
     end
 
     drawButton(
@@ -442,10 +463,38 @@ function ui.drawPlay(game)
         game.fonts.small
     )
 
+    graphics.setColor(0, 0, 0, 0.3)
+    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
     graphics.setColor(0.8, 0.84, 0.9, 0.82)
-    graphics.printf(level.hint, 0, game.viewport.h - 66, game.viewport.w, "center")
-    graphics.printf(level.footer, 0, game.viewport.h - 42, game.viewport.w, "center")
-    graphics.printf("Press M for the main menu, E for the editor, or R to restart", 0, game.viewport.h - 90, game.viewport.w, "center")
+    graphics.printf("F2 info   F3 help", game.viewport.w - 274, game.viewport.h - 47, 226, "center")
+
+    if game.showPlayInfoOverlay then
+        drawPlayOverlayPanel(
+            game,
+            "Run Info",
+            {
+                level.description or "",
+                "Route: " .. game.world:getActiveRouteSummary(),
+                trainsText .. (timeText and ("   " .. timeText) or ""),
+                "Press F2 again to close this panel.",
+            },
+            { 0.48, 0.92, 0.62 }
+        )
+    elseif game.showPlayHelpOverlay then
+        drawPlayOverlayPanel(
+            game,
+            "Help",
+            {
+                level.hint or "",
+                level.footer or "",
+                "Click a junction center to switch inputs.",
+                "Use the lower selector to switch outputs.",
+                "Press M for menu, E for editor, and R to restart.",
+                "Press F3 again to close this panel.",
+            },
+            { 0.99, 0.78, 0.32 }
+        )
+    end
 
     if game.failureReason == "collision" then
         drawCenteredOverlay(

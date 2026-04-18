@@ -33,6 +33,8 @@ function Game.new()
     self.availableMaps = {}
     self.currentMapDescriptor = nil
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -71,18 +73,24 @@ end
 function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
     self:refreshMaps()
 end
 
 function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
     self:refreshMaps()
 end
 
 function Game:openEditorBlank()
     self.screen = "editor"
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -96,6 +104,8 @@ function Game:openEditorMap(mapDescriptor)
 
     self.screen = "editor"
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
 end
@@ -122,6 +132,8 @@ function Game:startMap(mapDescriptor)
     self.failureReason = nil
     self.currentMapDescriptor = mapDescriptor
     self.levelSelectIssue = nil
+    self.showPlayInfoOverlay = false
+    self.showPlayHelpOverlay = false
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -248,6 +260,22 @@ function Game:keypressed(key)
 
     if key == "m" then
         self:openMenu()
+        return
+    end
+
+    if key == "f2" then
+        self.showPlayInfoOverlay = not self.showPlayInfoOverlay
+        if self.showPlayInfoOverlay then
+            self.showPlayHelpOverlay = false
+        end
+        return
+    end
+
+    if key == "f3" then
+        self.showPlayHelpOverlay = not self.showPlayHelpOverlay
+        if self.showPlayHelpOverlay then
+            self.showPlayInfoOverlay = false
+        end
         return
     end
 
