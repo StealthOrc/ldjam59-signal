@@ -1,5 +1,24 @@
 local ui = {}
 
+local PLAY_OVERLAY = {
+    margin = 24,
+    width = 420,
+    padding = 18,
+    radius = 18,
+    lineGap = 6,
+    sectionGap = 14,
+}
+
+local PLAY_HEADER = {
+    x = 22,
+    y = 20,
+    paddingX = 18,
+    paddingY = 12,
+    titleGap = 14,
+    rowGap = 8,
+    radius = 18,
+}
+
 local function pointInRect(x, y, rect)
     return x >= rect.x
         and x <= rect.x + rect.w
@@ -101,6 +120,207 @@ local function getLevelIssueOverlayRects(game)
     }
 end
 
+local function getPlayInfoOverlayRect(game)
+    return {
+        x = game.viewport.w - PLAY_OVERLAY.margin - PLAY_OVERLAY.width,
+        y = PLAY_OVERLAY.margin,
+        w = PLAY_OVERLAY.width,
+        h = game.viewport.h - PLAY_OVERLAY.margin * 2,
+    }
+end
+
+local function getJunctionRouteText(junction)
+    local activeInput = junction.inputs[junction.activeInputIndex]
+    local activeOutput = junction.outputs[junction.activeOutputIndex]
+    return string.format(
+        "%s -> %s",
+        activeInput and activeInput.label or ("Input " .. tostring(junction.activeInputIndex)),
+        activeOutput and activeOutput.label or ("Output " .. tostring(junction.activeOutputIndex))
+    )
+end
+
+local function getJunctionHelpText(junction)
+    local control = junction.control or {}
+
+    if control.type == "delayed" then
+        return string.format("Click the junction to arm a %.1fs delayed swap.", control.delay or 0)
+    end
+
+    if control.type == "pump" then
+        return string.format("Click the junction %d times before the charge drains.", control.target or 0)
+    end
+
+    return "Click the junction to switch the active input immediately."
+end
+
+local function getJunctionStateText(junction)
+    local control = junction.control or {}
+
+    if control.type == "delayed" then
+        if control.armed then
+            return string.format("State: armed, %.1fs left", control.remainingDelay or 0)
+        end
+        return string.format("State: idle, %.1fs delay", control.delay or 0)
+    end
+
+    if control.type == "pump" then
+        return string.format("State: charge %d / %d", control.pumpCount or 0, control.target or 0)
+    end
+
+    return "State: instant switch"
+end
+
+local function getTrainStatusText(worldState, train)
+    if train.completed then
+        return "cleared"
+    end
+
+    local currentEdge, occupiedEdges = worldState:getCurrentEdge(train)
+    if not currentEdge then
+        return "inactive"
+    end
+
+    if currentEdge.targetType == "junction" then
+        local junction = worldState.junctions[currentEdge.targetId]
+        local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
+        if activeInput and activeInput.id ~= currentEdge.id then
+            return string.format("waiting at %s", junction.label or currentEdge.targetId)
+        end
+
+        local localProgress = worldState:getHeadLocalProgress(train, occupiedEdges)
+        return string.format("%s %.0f / %.0f", junction and (junction.label or junction.id) or currentEdge.targetId, localProgress, currentEdge.path.length)
+    end
+
+    return currentEdge.label or currentEdge.id
+end
+
+local function buildPlayHelpSections(game)
+    local sections = {
+        {
+            title = "Controls",
+            lines = {
+                "Left click a junction to activate its control.",
+                "Left click the selector below a junction to cycle outputs forward.",
+                "Right click the selector below a junction to cycle outputs backward.",
+                "M opens the menu. E opens the editor. R restarts the run.",
+                "F2 closes this help panel. F3 opens the debug panel.",
+            },
+        },
+        {
+            title = "Junctions",
+            lines = {},
+        },
+    }
+
+    for _, junction in ipairs(game.world.junctionOrder or {}) do
+        sections[2].lines[#sections[2].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
+        sections[2].lines[#sections[2].lines + 1] = getJunctionHelpText(junction)
+    end
+
+    return sections
+end
+
+local function buildPlayDebugSections(game)
+    local sections = {
+        {
+            title = "Junction State",
+            lines = {},
+        },
+        {
+            title = "Train Queue",
+            lines = {},
+        },
+    }
+    local worldState = game.world
+    local queueGroups = {}
+    local orderedGroups = {}
+
+    for _, junction in ipairs(worldState.junctionOrder or {}) do
+        sections[1].lines[#sections[1].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
+        sections[1].lines[#sections[1].lines + 1] = getJunctionStateText(junction)
+    end
+
+    for _, train in ipairs(worldState.trains or {}) do
+        local startEdgeId = train.startEdgeId or train.edgeId
+        local startEdge = worldState.edges[startEdgeId]
+        if not queueGroups[startEdgeId] then
+            queueGroups[startEdgeId] = {
+                label = startEdge and startEdge.label or startEdgeId,
+                trains = {},
+            }
+            orderedGroups[#orderedGroups + 1] = queueGroups[startEdgeId]
+        end
+        queueGroups[startEdgeId].trains[#queueGroups[startEdgeId].trains + 1] = train
+    end
+
+    table.sort(orderedGroups, function(firstGroup, secondGroup)
+        return firstGroup.label < secondGroup.label
+    end)
+
+    for _, group in ipairs(orderedGroups) do
+        table.sort(group.trains, function(firstTrain, secondTrain)
+            return (firstTrain.startProgress or 0) > (secondTrain.startProgress or 0)
+        end)
+
+        sections[2].lines[#sections[2].lines + 1] = string.format("%s queue", group.label)
+        for index, train in ipairs(group.trains) do
+            sections[2].lines[#sections[2].lines + 1] = string.format(
+                "%d. %s | start %.0f | %.2fx | %s",
+                index,
+                train.id,
+                train.startProgress or 0,
+                train.speedScale or 1,
+                getTrainStatusText(worldState, train)
+            )
+        end
+    end
+
+    return sections
+end
+
+local function drawPlayInfoOverlay(game)
+    if game.playOverlayMode ~= "help" and game.playOverlayMode ~= "debug" then
+        return
+    end
+
+    local graphics = love.graphics
+    local rect = getPlayInfoOverlayRect(game)
+    local title = game.playOverlayMode == "help" and "Route Help" or "Route Debug"
+    local accentColor = game.playOverlayMode == "help" and { 0.48, 0.92, 0.62, 1 } or { 0.99, 0.78, 0.32, 1 }
+    local sections = game.playOverlayMode == "help" and buildPlayHelpSections(game) or buildPlayDebugSections(game)
+    local currentY = rect.y + PLAY_OVERLAY.padding
+    local contentX = rect.x + PLAY_OVERLAY.padding
+    local contentWidth = rect.w - PLAY_OVERLAY.padding * 2
+
+    graphics.setColor(0, 0, 0, 0.62)
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, PLAY_OVERLAY.radius, PLAY_OVERLAY.radius)
+    graphics.setColor(0.24, 0.3, 0.36, 1)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, PLAY_OVERLAY.radius, PLAY_OVERLAY.radius)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(title, contentX, currentY, contentWidth, "left")
+    currentY = currentY + game.fonts.title:getHeight() + PLAY_OVERLAY.sectionGap
+
+    for _, section in ipairs(sections) do
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(accentColor[1], accentColor[2], accentColor[3], accentColor[4])
+        graphics.printf(section.title, contentX, currentY, contentWidth, "left")
+        currentY = currentY + game.fonts.body:getHeight() + PLAY_OVERLAY.lineGap
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        for _, line in ipairs(section.lines or {}) do
+            graphics.printf(line, contentX, currentY, contentWidth, "left")
+            currentY = currentY
+                + getWrappedLineCount(game.fonts.small, line, contentWidth) * game.fonts.small:getHeight()
+                + PLAY_OVERLAY.lineGap
+        end
+
+        currentY = currentY + PLAY_OVERLAY.sectionGap
+    end
+end
+
 local function filterMapsBySource(game, source)
     local maps = {}
     for _, descriptor in ipairs(game.availableMaps or {}) do
@@ -189,6 +409,35 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
     graphics.printf(footer, 0, game.viewport.h * 0.5 + 72, game.viewport.w, "center")
 end
 
+local function drawPlayOverlayPanel(game, title, lines, accentColor)
+    local graphics = love.graphics
+    local panelX = 24
+    local panelY = 76
+    local panelW = 460
+    local panelH = 212
+    local lineHeight = 24
+    local textX = panelX + 20
+    local textY = panelY + 54
+    local textW = panelW - 40
+    local accent = accentColor or { 0.48, 0.92, 0.62 }
+
+    graphics.setColor(0, 0, 0, 0.58)
+    graphics.rectangle("fill", panelX, panelY, panelW, panelH, 18, 18)
+    graphics.setColor(accent[1], accent[2], accent[3], 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle("line", panelX, panelY, panelW, panelH, 18, 18)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(title, textX, panelY + 18)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    for lineIndex, line in ipairs(lines) do
+        graphics.printf(line, textX, textY + (lineIndex - 1) * lineHeight, textW)
+    end
+end
+
 function ui.getMenuActionAt(game, x, y)
     for _, rect in ipairs(getMenuButtons(game)) do
         if pointInRect(x, y, rect) then
@@ -240,7 +489,7 @@ function ui.getLevelSelectHit(game, x, y)
     return nil
 end
 
-function ui.getPlayBackHit(_, x, y)
+function ui.getPlayBackHit(game, x, y)
     return pointInRect(x, y, {
         x = 1114,
         y = 28,
@@ -441,18 +690,57 @@ function ui.drawPlay(game)
     local graphics = love.graphics
     local level = game.world:getLevel()
     local runSummary = game.world:getRunSummary()
+    local gameTitleText = "Out of Signal"
+    local levelTitleText = level.title or ""
+    local titleFont = game.fonts.title
+    local levelFont = game.fonts.body
+    local timerFont = game.fonts.small
+    local timerText = game.world.timeRemaining and string.format("Time left: %.1fs", game.world.timeRemaining) or nil
+    local titleRowWidth = titleFont:getWidth(gameTitleText)
+    local levelRowWidth = 0
+    local timerRowWidth = timerText and timerFont:getWidth(timerText) or 0
+    local titleRowHeight = math.max(titleFont:getHeight(), levelFont:getHeight())
+    local headerHeight = titleRowHeight + PLAY_HEADER.paddingY * 2
+
+    if levelTitleText ~= "" then
+        levelRowWidth = PLAY_HEADER.titleGap + levelFont:getWidth(levelTitleText)
+    end
+
+    if timerText then
+        headerHeight = headerHeight + PLAY_HEADER.rowGap + timerFont:getHeight()
+    end
+
+    local playHeaderRect = {
+        x = PLAY_HEADER.x,
+        y = PLAY_HEADER.y,
+        w = math.max(titleRowWidth + levelRowWidth, timerRowWidth) + PLAY_HEADER.paddingX * 2,
+        h = headerHeight,
+    }
+    local titleRowY = playHeaderRect.y + PLAY_HEADER.paddingY
+    local textX = playHeaderRect.x + PLAY_HEADER.paddingX
 
     graphics.setColor(0, 0, 0, 0.34)
-    graphics.rectangle("fill", 22, 20, 620, 170, 18, 18)
+    graphics.rectangle("fill", playHeaderRect.x, playHeaderRect.y, playHeaderRect.w, playHeaderRect.h, PLAY_HEADER.radius, PLAY_HEADER.radius)
 
-    love.graphics.setFont(game.fonts.title)
+    love.graphics.setFont(titleFont)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Out of Signal", 40, 32)
+    graphics.print(gameTitleText, textX, titleRowY)
 
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.print(level.title, 42, 80)
-    graphics.printf(level.description, 42, 108, 570)
+    if levelTitleText ~= "" then
+        love.graphics.setFont(levelFont)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.print(
+            levelTitleText,
+            textX + titleRowWidth + PLAY_HEADER.titleGap,
+            titleRowY + math.floor((titleRowHeight - levelFont:getHeight()) * 0.5 + 0.5)
+        )
+    end
+
+    if timerText then
+        love.graphics.setFont(timerFont)
+        graphics.setColor(0.99, 0.83, 0.44, 1)
+        graphics.print(timerText, textX, titleRowY + titleRowHeight + PLAY_HEADER.rowGap)
+    end
 
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.48, 0.92, 0.62, 1)
@@ -460,25 +748,20 @@ function ui.drawPlay(game)
 
     local trainsText = string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains)
     graphics.setColor(0.84, 0.88, 0.92, 0.95)
-    graphics.print(trainsText, 42, 172)
-    graphics.print(string.format("Interactions: %d", runSummary.interactionCount or 0), 42, 194)
-    graphics.print(string.format("Score: %s", formatScore(runSummary.finalScore or 0)), 220, 194)
-
-    if game.world.timeRemaining then
-        graphics.setColor(0.99, 0.83, 0.44, 1)
-        graphics.print(string.format("Time left: %.1fs", game.world.timeRemaining), 220, 172)
-    end
+    graphics.print(trainsText, 42, 174)
+    graphics.print(string.format("Interactions: %d", runSummary.interactionCount or 0), 42, 196)
+    graphics.print(string.format("Score: %s", formatScore(runSummary.finalScore or 0)), 220, 196)
 
     local nextTrain = game.world:getNextQueuedTrain()
     if nextTrain then
         graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.print(string.format("Next spawn: %s at %.1fs", game.world:getTrainSummary(nextTrain), nextTrain.spawnTime or 0), 42, 216)
+        graphics.print(string.format("Next spawn: %s at %.1fs", game.world:getTrainSummary(nextTrain), nextTrain.spawnTime or 0), 42, 220)
     end
 
     local nextDeadline = game.world:getNearestPendingDeadline()
     if nextDeadline then
         graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.print(string.format("Nearest deadline: %s by %.1fs", game.world:getTrainSummary(nextDeadline), nextDeadline.deadline), 360, 216)
+        graphics.print(string.format("Nearest deadline: %s by %.1fs", game.world:getTrainSummary(nextDeadline), nextDeadline.deadline), 360, 220)
     end
 
     drawButton(
@@ -489,10 +772,12 @@ function ui.drawPlay(game)
         game.fonts.small
     )
 
+    graphics.setColor(0, 0, 0, 0.3)
+    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
     graphics.setColor(0.8, 0.84, 0.9, 0.82)
-    graphics.printf(level.hint, 0, game.viewport.h - 66, game.viewport.w, "center")
-    graphics.printf(level.footer, 0, game.viewport.h - 42, game.viewport.w, "center")
-    graphics.printf("Press M for the main menu, E for the editor, or R to restart", 0, game.viewport.h - 90, game.viewport.w, "center")
+    graphics.printf("Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart", 0, game.viewport.h - 42, game.viewport.w, "center")
+
+    drawPlayInfoOverlay(game)
 end
 
 function ui.drawResults(game)

@@ -234,6 +234,72 @@ local function getTailClearanceDistance(wagonCount, carriageLength, carriageGap)
     return math.max(0, ((wagonCount or 1) - 1) * ((carriageLength or 0) + (carriageGap or 0)))
 end
 
+local function pointOnCircle(centerX, centerY, angle, radius)
+    return {
+        x = centerX + math.cos(angle) * radius,
+        y = centerY + math.sin(angle) * radius,
+    }
+end
+
+local function appendPoint(points, x, y)
+    local lastPoint = points[#points]
+    if lastPoint and math.abs(lastPoint.x - x) <= 0.001 and math.abs(lastPoint.y - y) <= 0.001 then
+        return
+    end
+
+    points[#points + 1] = {
+        x = x,
+        y = y,
+    }
+end
+
+local function buildPathSlice(path, startDistance, endDistance)
+    local points = {}
+    local clampedStart = clamp(startDistance or 0, 0, path.length)
+    local clampedEnd = clamp(endDistance or path.length, 0, path.length)
+
+    if clampedEnd <= clampedStart then
+        local x, y = pointOnPath(path, clampedStart)
+        appendPoint(points, x, y)
+        return points
+    end
+
+    local startX, startY = pointOnPath(path, clampedStart)
+    local endX, endY = pointOnPath(path, clampedEnd)
+    appendPoint(points, startX, startY)
+
+    for _, segment in ipairs(path.segments) do
+        local segmentEndDistance = segment.startDistance + segment.length
+        if segmentEndDistance > clampedStart and segmentEndDistance < clampedEnd then
+            appendPoint(points, segment.b.x, segment.b.y)
+        end
+    end
+
+    appendPoint(points, endX, endY)
+    return points
+end
+
+local function buildCubicCurvePoints(startPoint, controlPointA, controlPointB, endPoint, stepCount)
+    local points = {}
+
+    for stepIndex = 0, stepCount do
+        local t = stepIndex / stepCount
+        local oneMinusT = 1 - t
+        local x = oneMinusT ^ 3 * startPoint.x
+            + 3 * oneMinusT ^ 2 * t * controlPointA.x
+            + 3 * oneMinusT * t ^ 2 * controlPointB.x
+            + t ^ 3 * endPoint.x
+        local y = oneMinusT ^ 3 * startPoint.y
+            + 3 * oneMinusT ^ 2 * t * controlPointA.y
+            + 3 * oneMinusT * t ^ 2 * controlPointB.y
+            + t ^ 3 * endPoint.y
+
+        points[#points + 1] = { x = x, y = y }
+    end
+
+    return points
+end
+
 function world.new(viewportW, viewportH, levelSource)
     local self = setmetatable({}, world)
 
@@ -247,6 +313,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.carriageCount = 4
     self.exitPadding = 220
     self.crossingRadius = 40
+    self.junctionTrackClearance = self.crossingRadius + 4
     self.collisionPoint = nil
     self.failureReason = nil
     self.timeRemaining = nil
@@ -1328,6 +1395,25 @@ function world:getActiveRouteSummary()
     return table.concat(segments, "  |  ")
 end
 
+function world:getHighlightedEdgeIds()
+    local highlightedEdgeIds = {}
+
+    for _, junction in ipairs(self.junctionOrder) do
+        local activeInput = junction.inputs[junction.activeInputIndex]
+        local activeOutput = junction.outputs[junction.activeOutputIndex]
+
+        if activeInput then
+            highlightedEdgeIds[activeInput.id] = true
+        end
+
+        if activeOutput then
+            highlightedEdgeIds[activeOutput.id] = true
+        end
+    end
+
+    return highlightedEdgeIds
+end
+
 function world:getOutputDisplayColor(junction, outputIndex, isActive)
     local outputTrack = junction.outputs[outputIndex]
     if not outputTrack then
@@ -1344,11 +1430,40 @@ function world:getOutputDisplayColor(junction, outputIndex, isActive)
     return isActive and outputTrack.color or outputTrack.darkColor, outputTrack.darkColor
 end
 
+function world:getRenderedTrackPoints(track)
+    local trimStartDistance = 0
+    local trimEndDistance = track.path.length
+
+    if track.sourceType == "junction" then
+        trimStartDistance = self.junctionTrackClearance
+    end
+
+    if track.targetType == "junction" then
+        trimEndDistance = math.max(track.path.length - self.junctionTrackClearance, 0)
+    end
+
+    return buildPathSlice(track.path, trimStartDistance, trimEndDistance)
+end
+
+function world:getInputTrackAngle(track)
+    if not track or #track.path.points < 2 then
+        return -math.pi * 0.5
+    end
+
+    local points = track.path.points
+    return angleBetweenPoints(points[#points - 1], points[#points])
+end
+
 function world:drawInputTrack(track, isActive)
     local graphics = love.graphics
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
-    local points = flattenPoints(track.path.points)
+    local renderedPoints = self:getRenderedTrackPoints(track)
+    if #renderedPoints < 2 then
+        return
+    end
+
+    local points = flattenPoints(renderedPoints)
 
     graphics.setLineStyle("rough")
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
@@ -1364,7 +1479,12 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
     local color = self:getOutputDisplayColor(junction, outputIndex, isActive)
-    local points = flattenPoints(outputTrack.path.points)
+    local renderedPoints = self:getRenderedTrackPoints(outputTrack)
+    if #renderedPoints < 2 then
+        return
+    end
+
+    local points = flattenPoints(renderedPoints)
 
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(self.sharedWidth + 10)
@@ -1461,34 +1581,103 @@ function world:drawControlOverlay(junction)
     end
 end
 
+function world:getOutputTrackAngle(track)
+    if not track or #track.path.points < 2 then
+        return math.pi * 0.5
+    end
+
+    local points = track.path.points
+    return angleBetweenPoints(points[1], points[2])
+end
+
+function world:drawActiveRouteIndicator(junction, activeInput, activeOutputColor)
+    local graphics = love.graphics
+    local activeOutput = junction.outputs[junction.activeOutputIndex]
+    if not activeInput or not activeOutput then
+        return
+    end
+
+    local coverPadding = 4
+    local routeInset = 2
+    local coverRadius = junction.crossingRadius + coverPadding
+    local routeRadius = coverRadius - routeInset
+    local routeOutlineWidth = self.trackWidth + 8
+    local routeInnerWidth = self.trackWidth
+    local curveControlDistance = routeRadius * 0.58
+    local curveStepCount = 12
+    local x = junction.mergePoint.x
+    local y = junction.mergePoint.y
+    local inputAngle = self:getInputTrackAngle(activeInput)
+    local outputAngle = self:getOutputTrackAngle(activeOutput)
+    local inputPoint = pointOnCircle(x, y, inputAngle + math.pi, routeRadius)
+    local outputPoint = pointOnCircle(x, y, outputAngle, routeRadius)
+    local controlPointA = pointOnCircle(
+        inputPoint.x,
+        inputPoint.y,
+        inputAngle,
+        curveControlDistance
+    )
+    local controlPointB = pointOnCircle(
+        outputPoint.x,
+        outputPoint.y,
+        outputAngle + math.pi,
+        curveControlDistance
+    )
+    local curvePoints = flattenPoints(buildCubicCurvePoints(
+        inputPoint,
+        controlPointA,
+        controlPointB,
+        outputPoint,
+        curveStepCount
+    ))
+
+    graphics.setColor(0.04, 0.05, 0.07, 0.98)
+    graphics.circle("fill", x, y, coverRadius)
+
+    graphics.setLineStyle("rough")
+    graphics.setLineWidth(routeOutlineWidth)
+    graphics.setColor(0.12, 0.15, 0.18, 1)
+    graphics.line(curvePoints)
+
+    graphics.setLineWidth(routeInnerWidth)
+    graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
+    graphics.line(curvePoints)
+end
+
 function world:drawCrossing(junction)
     local graphics = love.graphics
     local activeInput = junction.inputs[junction.activeInputIndex]
     local activeOutputColor = self:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
+    local activeInputColor = activeInput and activeInput.color or activeOutputColor
     local pulse = 0.75 + 0.22 * math.sin(love.timer.getTime() * 4.2)
     local outerRadius = junction.crossingRadius + pulse * 4
+    local panelPadding = 2
+    local panelRadius = junction.crossingRadius + panelPadding
+    local plateInset = 8
+    local plateWidth = 16
     local x = junction.mergePoint.x
     local y = junction.mergePoint.y
 
-    graphics.setColor(0.06, 0.08, 0.1, 1)
-    graphics.circle("fill", x, y, junction.crossingRadius + 18)
+    self:drawActiveRouteIndicator(junction, activeInput, activeOutputColor)
 
-    graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 0.18)
+    graphics.setColor(0.05, 0.06, 0.08, 1)
+    graphics.circle("fill", x, y, panelRadius)
+
+    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.18)
     graphics.circle("fill", x, y, outerRadius)
 
-    graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
-    graphics.setLineWidth(4)
+    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 1)
+    graphics.setLineWidth(3)
     graphics.circle("line", x, y, junction.crossingRadius)
 
     if activeInput and #activeInput.path.points >= 2 then
-        local points = activeInput.path.points
-        local angle = angleBetweenPoints(points[#points - 1], points[#points]) - math.pi * 0.5
+        local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
 
         graphics.push()
         graphics.translate(x, y)
         graphics.rotate(angle)
-        graphics.setColor(0.98, 0.99, 1, 1)
-        graphics.rectangle("fill", -8, -26, 16, 52, 6, 6)
+        graphics.setColor(0.96, 0.97, 0.99, 0.95)
+        graphics.rectangle("fill", -plateWidth * 0.5, -(junction.crossingRadius - plateInset), plateWidth, panelRadius + 4, 6, 6)
         graphics.setColor(activeInput.color[1], activeInput.color[2], activeInput.color[3], 1)
         graphics.circle("fill", 0, -28, 11)
         graphics.pop()
@@ -1498,7 +1687,7 @@ function world:drawCrossing(junction)
         local selectorY = y + 36
         graphics.setColor(0.08, 0.1, 0.13, 1)
         graphics.circle("fill", x, selectorY, 15)
-        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
         graphics.circle("line", x, selectorY, 15)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.printf(tostring(junction.activeOutputIndex), x - 14, selectorY - 7, 28, "center")
@@ -1567,17 +1756,20 @@ end
 
 function world:draw()
     local graphics = love.graphics
+    local highlightedEdgeIds = self:getHighlightedEdgeIds()
 
     graphics.setColor(0.08, 0.1, 0.12, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
 
     for _, junction in ipairs(self.junctionOrder) do
         for outputIndex = 1, #junction.outputs do
-            self:drawOutputTrack(junction, outputIndex, outputIndex == junction.activeOutputIndex)
+            local outputTrack = junction.outputs[outputIndex]
+            self:drawOutputTrack(junction, outputIndex, outputTrack and highlightedEdgeIds[outputTrack.id] == true)
         end
 
         for inputIndex = 1, #junction.inputs do
-            self:drawInputTrack(junction.inputs[inputIndex], inputIndex == junction.activeInputIndex)
+            local inputTrack = junction.inputs[inputIndex]
+            self:drawInputTrack(inputTrack, inputTrack and highlightedEdgeIds[inputTrack.id] == true)
         end
 
         self:drawCrossing(junction)

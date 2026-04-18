@@ -1,4 +1,3 @@
-local input = require("src.game.input")
 local mapEditor = require("src.game.map_editor")
 local mapStorage = require("src.game.map_storage")
 local world = require("src.game.world")
@@ -34,6 +33,7 @@ function Game.new()
     self.currentMapDescriptor = nil
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -56,23 +56,11 @@ function Game:refreshMaps()
     self.availableMaps = mapStorage.listMaps()
 end
 
-function Game:getBuiltinShortcutMap(index)
-    local builtinIndex = 0
-    for _, descriptor in ipairs(self.availableMaps or {}) do
-        if descriptor.source == "builtin" then
-            builtinIndex = builtinIndex + 1
-            if builtinIndex == index then
-                return descriptor
-            end
-        end
-    end
-    return nil
-end
-
 function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
     self:refreshMaps()
 end
 
@@ -80,6 +68,7 @@ function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
     self:refreshMaps()
 end
 
@@ -87,6 +76,7 @@ function Game:openEditorBlank()
     self.screen = "editor"
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -101,6 +91,7 @@ function Game:openEditorMap(mapDescriptor)
     self.screen = "editor"
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
 end
@@ -128,6 +119,7 @@ function Game:startMap(mapDescriptor)
     self.currentMapDescriptor = mapDescriptor
     self.levelSelectIssue = nil
     self.resultsSummary = nil
+    self.playOverlayMode = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -237,16 +229,6 @@ function Game:keypressed(key)
             self:openEditorMap(self.levelSelectIssue.map)
             return
         end
-        local requestedLevel = input.getLevelShortcut(key)
-        if requestedLevel then
-            local descriptor = self:getBuiltinShortcutMap(requestedLevel)
-            if descriptor then
-                local ok, startError, mapData = self:startMap(descriptor)
-                if not ok then
-                    self:showMapIssue(descriptor, mapData, startError)
-                end
-            end
-        end
         return
     end
 
@@ -281,6 +263,24 @@ function Game:keypressed(key)
         return
     end
 
+    if key == "f2" then
+        if self.playOverlayMode == "help" then
+            self.playOverlayMode = nil
+        else
+            self.playOverlayMode = "help"
+        end
+        return
+    end
+
+    if key == "f3" then
+        if self.playOverlayMode == "debug" then
+            self.playOverlayMode = nil
+        else
+            self.playOverlayMode = "debug"
+        end
+        return
+    end
+
     if key == "m" then
         self:openMenu()
         return
@@ -289,15 +289,6 @@ function Game:keypressed(key)
     if key == "e" or key == "tab" then
         if self.currentMapDescriptor then
             self:openEditorMap(self.currentMapDescriptor)
-        end
-        return
-    end
-
-    local requestedLevel = input.getLevelShortcut(key)
-    if requestedLevel then
-        local descriptor = self:getBuiltinShortcutMap(requestedLevel)
-        if descriptor then
-            self:startMap(descriptor)
         end
         return
     end
