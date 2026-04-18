@@ -350,9 +350,6 @@ function world:draw()
             graphics.rectangle("fill", -4, centerY, 8, self.segmentHeight * 0.36, 2, 2)
         end
 
-        graphics.setColor(0.2, 0.21, 0.23, 0.55)
-        graphics.rectangle("fill", self.left + 24, segment.y + self.segmentHeight * 0.08, self.right - self.left - 48, 6)
-
         graphics.setColor(0.89, 0.35, 0.22, 0.75)
         local panelHeight = self.segmentHeight * 0.44
         local panelY = segment.y + self.segmentHeight * 0.28
