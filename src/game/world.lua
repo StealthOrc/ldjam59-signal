@@ -736,7 +736,6 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
 
     train.edgeId = outputEdge.id
     train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
-    train.headDistance = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) + overflow
     self:trimTrainOccupiedEdges(train)
 end
 
