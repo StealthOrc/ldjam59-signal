@@ -92,22 +92,17 @@ local function buildTuning()
         signalTowerLaneRatioMin = 0.34,
         signalTowerLaneRatioMax = 0.64,
         signalTowerPoleHeightMeters = 8,
+        boostSignalEveryNthTower = 3,
         coinDistanceMeters = 100,
         boostPadCost = 2,
         accelerationUpgradeCost = 3,
         sixthGearCost = 6,
         closeRatiosCost = 7,
         sportTransmissionCost = 8,
-        boostPadSpacingMeters = 145,
-        boostPadFirstNorthOffsetMeters = 110,
-        boostPadWidthMeters = 10,
-        boostPadHeightMeters = 3.6,
         boostPadSpeedMultiplier = 1.2,
         boostPadDuration = 3,
         boostPadCooldown = 0.55,
         boostPadAccelerationSeconds = 0.3,
-        boostPadLaneRatioMin = 0.18,
-        boostPadLaneRatioMax = 0.72,
         shopHoldBaseInterval = 0.28,
         shopHoldMinInterval = 0.035,
         baseGearCount = 5,
@@ -209,10 +204,6 @@ function Game.new()
         / math.max(1, self.tuning.signalTowerScriptedCount - 1)
     self.tuning.signalTowerPoleHeight = self:metersToUnits(self.tuning.signalTowerPoleHeightMeters)
     self.tuning.maxReverseSpeed = self:metersToUnits(self.tuning.maxReverseSpeedKmh / 3.6)
-    self.tuning.boostPadSpacing = self:metersToUnits(self.tuning.boostPadSpacingMeters)
-    self.tuning.boostPadFirstNorthOffset = self:metersToUnits(self.tuning.boostPadFirstNorthOffsetMeters)
-    self.tuning.boostPadWidth = self:metersToUnits(self.tuning.boostPadWidthMeters)
-    self.tuning.boostPadHeight = self:metersToUnits(self.tuning.boostPadHeightMeters)
 
     self.world = world.new(self.tuning)
     self.camera = camera.new()
@@ -221,8 +212,8 @@ function Game.new()
         {
             id = "boost_pads",
             kind = "unlock",
-            title = "Boost Pads",
-            description = "Pads spawn on the road and snap the car upright before boosting it.",
+            title = "Boost Signals",
+            description = "Some radio towers turn into boost signals that snap the car upright before boosting it.",
             cost = self.tuning.boostPadCost,
         },
         {
@@ -273,7 +264,7 @@ function Game.new()
     self.state = "title"
     self.activeSignalTower = nil
     self.signalStrength = 0
-    self.activeBoostPad = nil
+    self.activeBoostSignal = nil
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
@@ -769,7 +760,7 @@ function Game:resetRun()
     self.lastRunMetersDriven = 0
     self.activeSignalTower = nil
     self.signalStrength = 0
-    self.activeBoostPad = nil
+    self.activeBoostSignal = nil
     self.lowFuelBeepTimer = 0
     self.lowFuelBeepIndex = 1
     self.lowFuelBeepWaitingForGap = false
@@ -802,7 +793,7 @@ function Game:update(dt)
     self.world:resolveBarriers(self.car, self.tuning)
     self.camera:update(self.car, dt, self.viewport, self.tuning)
     self.world:update(self.car.y, self.camera:getViewportForZoom(self.viewport), self.tuning, self.progression)
-    self.activeBoostPad = self.world:resolveBoostPads(self.car, self.tuning)
+    self.activeBoostSignal = self.world:resolveBoostSignals(self.car, self.tuning)
 
     local signalTower, signalStrength = self.world:getSignalAt(self.car.x, self.car.y)
     self.activeSignalTower = signalTower

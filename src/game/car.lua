@@ -87,6 +87,7 @@ function car.new(tuning)
         width = 34,
         boostPadCooldown = 0,
         boostPadTimer = 0,
+        boostSignalTowerIndex = nil,
         gearCount = tuning.gearCount or tuning.baseGearCount or 5,
         currentGear = 1,
         targetGear = 1,
@@ -121,6 +122,7 @@ function car.reset(self, tuning)
     self.maxNorthDistance = 0
     self.boostPadCooldown = 0
     self.boostPadTimer = 0
+    self.boostSignalTowerIndex = nil
     self.gearCount = tuning.gearCount or tuning.baseGearCount or 5
     self.currentGear = 1
     self.targetGear = 1

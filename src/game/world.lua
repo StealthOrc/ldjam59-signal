@@ -16,6 +16,67 @@ local function pseudoRandom(index)
     return value - math.floor(value)
 end
 
+local function createBoostSignalShader()
+    local shader = love.graphics.newShader([[
+        extern number time;
+        extern number phase;
+        extern number pulse;
+
+        float rectMask(vec2 uv, vec2 minCorner, vec2 maxCorner)
+        {
+            vec2 insideMin = step(minCorner, uv);
+            vec2 insideMax = step(uv, maxCorner);
+            return insideMin.x * insideMin.y * insideMax.x * insideMax.y;
+        }
+
+        float arrowMask(vec2 uv)
+        {
+            uv = fract(uv);
+            uv = (uv - vec2(0.5)) / 0.58 + vec2(0.5);
+            float shaft = rectMask(uv, vec2(0.44, 0.28), vec2(0.56, 0.86));
+
+            vec2 headUv = vec2(uv.x - 0.5, (uv.y - 0.04) / 0.28);
+            float headBand = step(0.0, headUv.y) * step(headUv.y, 1.0);
+            float headWidth = headUv.y * 0.34 + 0.04;
+            float head = headBand * step(abs(headUv.x), headWidth);
+
+            return max(shaft, head);
+        }
+
+        vec4 effect(vec4 color, Image texture, vec2 tc, vec2 sc)
+        {
+            vec2 centered = tc - vec2(0.5);
+            float circleMask = 1.0 - smoothstep(0.42, 0.5, length(centered));
+            float arrowsA = arrowMask(vec2(tc.x * 1.2 + 0.08 + phase * 0.17, tc.y * 2.05 + time * 0.9));
+            float arrowsB = arrowMask(vec2(tc.x * 1.0 + 0.54 + phase * 0.11, tc.y * 1.72 + time * 0.76 + 0.21)) * 0.9;
+
+            float arrowsSmallA = arrowMask(vec2(tc.x * 1.95 + 0.36 + phase * 0.23, tc.y * 3.25 + time * 1.22 + 0.15)) * 0.92;
+            float arrowsSmallB = arrowMask(vec2(tc.x * 2.2 + 0.74 + phase * 0.09, tc.y * 3.8 + time * 1.34 + 0.44)) * 0.86;
+            float arrowsSmallC = arrowMask(vec2(tc.x * 1.8 + 0.92 + phase * 0.19, tc.y * 2.95 + time * 1.05 + 0.67)) * 0.8;
+
+            float arrows = max(
+                max(arrowsA, arrowsB),
+                max(arrowsSmallA, max(arrowsSmallB, arrowsSmallC))
+            );
+
+            float glow = 1.0 - smoothstep(0.0, 0.5, length(centered * vec2(0.92, 1.05)));
+            float alpha = circleMask * (arrows * (0.68 + pulse * 0.2) + glow * 0.04);
+
+            return vec4(1.0, 1.0, 1.0, alpha) * color;
+        }
+    ]])
+    return shader
+end
+
+local function createWhitePixelTexture()
+    local imageData = love.image.newImageData(1, 1)
+    imageData:setPixel(0, 0, 1, 1, 1, 1)
+
+    local image = love.graphics.newImage(imageData)
+    image:setFilter("nearest", "nearest")
+    return image
+end
+
 function world.new(tuning)
     local self = setmetatable({}, world)
     self.left = -tuning.corridorHalfWidth
@@ -25,7 +86,9 @@ function world.new(tuning)
     self.drawPadding = tuning.worldDrawPadding
     self.segments = {}
     self.towers = {}
-    self.boostPads = {}
+    self.boostSignalsEnabled = false
+    self.boostSignalShader = createBoostSignalShader()
+    self.boostSignalTexture = createWhitePixelTexture()
     self.visibleTop = -720
     self.visibleBottom = 720
     self:reset(tuning, nil)
@@ -34,12 +97,9 @@ end
 
 function world:reset(tuning, progression)
     self.towers = {}
-    self.boostPads = {}
     self.nextTowerIndex = 1
     self.nextTowerY = -tuning.signalTowerFirstNorthOffset
-    self.nextBoostPadIndex = 1
-    self.nextBoostPadY = -tuning.boostPadFirstNorthOffset
-    self.boostPadsEnabled = progression
+    self.boostSignalsEnabled = progression
         and progression.upgrades
         and progression.upgrades.boost_pads == true
 end
@@ -64,6 +124,7 @@ function world:spawnTower(index, tuning)
         fuelPerSecond = tuning.signalTowerFuelPerSecond,
         poleHeight = tuning.signalTowerPoleHeight,
         phase = pseudoRandom(index + 90),
+        isBoostSignal = self.boostSignalsEnabled and index % tuning.boostSignalEveryNthTower == 0,
     }
 
     self.towers[#self.towers + 1] = tower
@@ -74,24 +135,6 @@ function world:spawnTower(index, tuning)
     )
     self.nextTowerIndex = index + 1
     self.nextTowerY = self.nextTowerY - spacing
-end
-
-function world:spawnBoostPad(index, tuning)
-    local laneRatio = tuning.boostPadLaneRatioMin
-        + (tuning.boostPadLaneRatioMax - tuning.boostPadLaneRatioMin) * pseudoRandom(index + 300)
-    local side = (index % 2 == 1) and -1 or 1
-    local pad = {
-        index = index,
-        x = side * tuning.corridorHalfWidth * laneRatio,
-        y = self.nextBoostPadY,
-        width = tuning.boostPadWidth,
-        height = tuning.boostPadHeight,
-        phase = pseudoRandom(index + 420),
-    }
-
-    self.boostPads[#self.boostPads + 1] = pad
-    self.nextBoostPadIndex = index + 1
-    self.nextBoostPadY = self.nextBoostPadY - tuning.boostPadSpacing
 end
 
 function world:update(carY, viewport, tuning, progression)
@@ -111,31 +154,18 @@ function world:update(carY, viewport, tuning, progression)
     self.visibleTop = top
     self.visibleBottom = bottom
 
+    self.boostSignalsEnabled = progression
+        and progression.upgrades
+        and progression.upgrades.boost_pads == true
+
     local towerGenerationLimit = top - viewport.h * 0.9
     while self.nextTowerY > towerGenerationLimit do
         self:spawnTower(self.nextTowerIndex, tuning)
     end
 
-    self.boostPadsEnabled = progression
-        and progression.upgrades
-        and progression.upgrades.boost_pads == true
-
-    if self.boostPadsEnabled then
-        local boostPadGenerationLimit = top - viewport.h * 0.7
-        while self.nextBoostPadY > boostPadGenerationLimit do
-            self:spawnBoostPad(self.nextBoostPadIndex, tuning)
-        end
-    end
-
     for index = #self.towers, 1, -1 do
         if self.towers[index].y > bottom + viewport.h * 0.7 then
             table.remove(self.towers, index)
-        end
-    end
-
-    for index = #self.boostPads, 1, -1 do
-        if self.boostPads[index].y > bottom + viewport.h * 0.6 then
-            table.remove(self.boostPads, index)
         end
     end
 end
@@ -195,33 +225,52 @@ function world:getSignalAt(carX, carY)
     return bestTower, bestStrength
 end
 
-function world:resolveBoostPads(carBody, tuning)
-    if not self.boostPadsEnabled or (carBody.boostPadCooldown or 0) > 0 then
+function world:getBoostSignalAt(carX, carY)
+    local bestTower
+    local bestStrength = 0
+
+    for _, tower in ipairs(self.towers) do
+        if tower.isBoostSignal then
+            local dx = carX - tower.x
+            local dy = carY - tower.y
+            local distanceSquared = dx * dx + dy * dy
+            local radiusSquared = tower.radius * tower.radius
+
+            if distanceSquared <= radiusSquared then
+                local distance = math.sqrt(distanceSquared)
+                local strength = 1 - (distance / tower.radius)
+                if strength > bestStrength then
+                    bestTower = tower
+                    bestStrength = strength
+                end
+            end
+        end
+    end
+
+    return bestTower, bestStrength
+end
+
+function world:resolveBoostSignals(carBody, tuning)
+    if not self.boostSignalsEnabled then
         return nil
     end
 
-    local carLeft = carBody.x - carBody.collisionRadius
-    local carRight = carBody.x + carBody.collisionRadius
-    local carTop = carBody.y - carBody.collisionRadius
-    local carBottom = carBody.y + carBody.collisionRadius
+    local tower = self:getBoostSignalAt(carBody.x, carBody.y)
+    if not tower then
+        carBody.boostSignalTowerIndex = nil
+        return nil
+    end
 
-    for _, pad in ipairs(self.boostPads) do
-        local padLeft = pad.x - pad.width * 0.5
-        local padRight = pad.x + pad.width * 0.5
-        local padTop = pad.y - pad.height * 0.5
-        local padBottom = pad.y + pad.height * 0.5
-
-        if carRight >= padLeft and carLeft <= padRight and carBottom >= padTop and carTop <= padBottom then
+    if carBody.boostSignalTowerIndex ~= tower.index and (carBody.boostPadCooldown or 0) <= 0 then
             carBody.boostPadCooldown = tuning.boostPadCooldown
             carBody.boostPadTimer = tuning.boostPadDuration
             carBody.heading = 0
             carBody.steerAngle = 0
             carBody.angularVelocity = 0
-            return pad
-        end
+        carBody.boostSignalTowerIndex = tower.index
     end
 
-    return nil
+    return tower
 end
 
 function world:draw()
@@ -241,10 +290,28 @@ function world:draw()
     graphics.setLineWidth(4)
     for _, tower in ipairs(self.towers) do
         local pulse = 0.5 + 0.5 * math.sin(time * 1.8 + tower.phase * math.pi * 2)
-        local alpha = 0.08 + 0.08 * pulse
-        graphics.setColor(0.18, 0.72, 0.84, alpha)
+        local fillColor = tower.isBoostSignal and { 0.24, 0.92, 0.36 } or { 0.18, 0.72, 0.84 }
+        local lineColor = tower.isBoostSignal and { 0.82, 0.98, 0.54 } or { 0.5, 0.92, 0.98 }
+        local alpha = tower.isBoostSignal and (0.05 + 0.04 * pulse) or (0.08 + 0.08 * pulse)
+        graphics.setColor(fillColor[1], fillColor[2], fillColor[3], alpha)
         graphics.circle("fill", tower.x, tower.y, tower.radius)
-        graphics.setColor(0.5, 0.92, 0.98, 0.18 + 0.1 * pulse)
+        if tower.isBoostSignal and self.boostSignalShader then
+            self.boostSignalShader:send("time", time)
+            self.boostSignalShader:send("phase", tower.phase)
+            self.boostSignalShader:send("pulse", pulse)
+            graphics.setShader(self.boostSignalShader)
+            graphics.setColor(1, 1, 1, 1)
+            graphics.draw(
+                self.boostSignalTexture,
+                tower.x - tower.radius,
+                tower.y - tower.radius,
+                0,
+                tower.radius * 2,
+                tower.radius * 2
+            )
+            graphics.setShader()
+        end
+        graphics.setColor(lineColor[1], lineColor[2], lineColor[3], tower.isBoostSignal and (0.28 + 0.14 * pulse) or (0.18 + 0.1 * pulse))
         graphics.circle("line", tower.x, tower.y, tower.radius)
     end
     graphics.setLineWidth(1)
@@ -252,21 +319,6 @@ function world:draw()
     graphics.setColor(0.42, 0.09, 0.08)
     graphics.rectangle("fill", self.left - self.barrierThickness, spanTop, self.barrierThickness, spanHeight)
     graphics.rectangle("fill", self.right, spanTop, self.barrierThickness, spanHeight)
-
-    for _, pad in ipairs(self.boostPads) do
-        local pulse = 0.58 + 0.42 * math.sin(time * 4 + pad.phase * math.pi * 2)
-        graphics.setColor(0.18, 0.84, 0.36, 0.88)
-        graphics.rectangle("fill", pad.x - pad.width * 0.5, pad.y - pad.height * 0.5, pad.width, pad.height, 5, 5)
-        graphics.setColor(0.78, 0.97, 0.46, 0.65 + 0.2 * pulse)
-        graphics.rectangle("line", pad.x - pad.width * 0.5, pad.y - pad.height * 0.5, pad.width, pad.height, 5, 5)
-        graphics.setColor(0.92, 0.98, 0.9, 0.8)
-        graphics.polygon(
-            "fill",
-            pad.x, pad.y - pad.height * 0.3,
-            pad.x - pad.width * 0.18, pad.y + pad.height * 0.16,
-            pad.x + pad.width * 0.18, pad.y + pad.height * 0.16
-        )
-    end
 
     graphics.setColor(0.86, 0.74, 0.52, 0.85)
     graphics.rectangle("fill", self.left - 5, spanTop, 10, spanHeight)
@@ -299,9 +351,17 @@ function world:draw()
         graphics.rectangle("fill", tower.x - 10, tower.y - tower.poleHeight, 20, tower.poleHeight + 8, 4, 4)
         graphics.setColor(0.94, 0.96, 0.98)
         graphics.rectangle("fill", tower.x - 3, tower.y - tower.poleHeight - 12, 6, tower.poleHeight + 20, 2, 2)
-        graphics.setColor(0.49, 0.95, 0.9, 0.9)
+        if tower.isBoostSignal then
+            graphics.setColor(0.88, 0.98, 0.44, 0.95)
+        else
+            graphics.setColor(0.49, 0.95, 0.9, 0.9)
+        end
         graphics.circle("fill", tower.x, tower.y - tower.poleHeight - 10, 8)
-        graphics.setColor(0.82, 0.9, 0.97, 0.55)
+        if tower.isBoostSignal then
+            graphics.setColor(0.98, 0.96, 0.62, 0.64)
+        else
+            graphics.setColor(0.82, 0.9, 0.97, 0.55)
+        end
         graphics.circle("line", tower.x, tower.y - tower.poleHeight - 10, 12)
     end
 end
