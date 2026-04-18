@@ -257,9 +257,15 @@ function car.update(self, intent, dt, tuning)
 
     local throttle = self.fuel > 0 and intent.throttle or 0
     local brake = intent.brake
-    local steerTarget = intent.steer * tuning.maxSteerAngle
+    local steerInput = intent.steer
+    local steerSpeed = tuning.steerSpeed
+    if not intent.usingController then
+        steerInput = steerInput * tuning.keyboardSteerLimit
+        steerSpeed = tuning.keyboardSteerSpeed
+    end
+    local steerTarget = steerInput * tuning.maxSteerAngle
 
-    self.steerAngle = approach(self.steerAngle, steerTarget, tuning.steerSpeed * dt)
+    self.steerAngle = approach(self.steerAngle, steerTarget, steerSpeed * dt)
 
     local forwardX, forwardY = car.getBasis(self.heading)
     local forwardSpeed = self.vx * forwardX + self.vy * forwardY

@@ -41,6 +41,8 @@ local function buildTuning()
         maxSteerAngle = math.rad(34),
         carLengthMeters = 4,
         steerSpeed = math.rad(180),
+        keyboardSteerSpeed = math.rad(110),
+        keyboardSteerLimit = 0.58,
         wheelBase = 52,
         baseEngineForce = 420,
         brakeForce = 520,
