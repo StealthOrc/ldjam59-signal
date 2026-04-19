@@ -43,6 +43,7 @@ dist/
 
 # Local tooling metadata
 .codex/
+.env
 
 # Local environment secrets
 .env
@@ -58,3 +59,4 @@ settings.json
 /AGENTS.md
 .idea
 *idea/
+.env
