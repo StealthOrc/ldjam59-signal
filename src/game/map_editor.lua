@@ -17,6 +17,7 @@ local DEFAULT_TRAIN_WAGONS = 4
 local LEGACY_TRAIN_SPEED = 168
 local DEFAULT_ROAD_TYPE = roadTypes.DEFAULT_ID
 local ROAD_TYPE_OPTIONS = roadTypes.getOrderedOptions()
+local VALIDATION_CHILD_INDENT = 20
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -438,6 +439,174 @@ local function getWrappedLineCount(font, text, width)
     return 1
 end
 
+local function getValidationEntryMessage(entry)
+    if type(entry) == "table" then
+        return tostring(entry.message or "")
+    end
+    return tostring(entry or "")
+end
+
+local function getColorLabel(colorId)
+    local option = getColorOptionById(colorId)
+    if option then
+        return option.label
+    end
+
+    local text = tostring(colorId or "Unknown")
+    return (text:gsub("^%l", string.upper))
+end
+
+local function buildTrainValidationLabel(trainInfo, diagnostic)
+    local lineColorLabel = getColorLabel(trainInfo and trainInfo.lineColor or diagnostic and diagnostic.lineColor)
+    local trainColorLabel = getColorLabel(trainInfo and trainInfo.trainColor or diagnostic and diagnostic.trainColor)
+
+    if trainInfo and trainInfo.castName then
+        return string.format("%s (%s -> %s)", trainInfo.castName, lineColorLabel, trainColorLabel)
+    end
+
+    return string.format("Train (%s -> %s)", lineColorLabel, trainColorLabel)
+end
+
+local function getValidationColorDisplayMode(editor)
+    return editor and editor.validationColorDisplayMode or "swatch"
+end
+
+local function getValidationColorSwatchSize(font)
+    return math.max(8, math.floor(font:getHeight() * 0.75 + 0.5))
+end
+
+local function sanitizeColorAffix(text)
+    if not text or text == "" then
+        return ""
+    end
+
+    return (text:gsub("['\"`]", ""))
+end
+
+local function parseValidationColorWord(word)
+    if not word or word == "" then
+        return nil
+    end
+
+    local startIndex, endIndex = word:find("%a+")
+    if not startIndex then
+        return nil
+    end
+
+    local core = word:sub(startIndex, endIndex)
+    local colorId = nil
+
+    for _, option in ipairs(COLOR_OPTIONS) do
+        if core:lower() == option.id or core:lower() == option.label:lower() then
+            colorId = option.id
+            break
+        end
+    end
+
+    if not colorId then
+        return nil
+    end
+
+    return {
+        prefix = sanitizeColorAffix(word:sub(1, startIndex - 1)),
+        colorId = colorId,
+        suffix = sanitizeColorAffix(word:sub(endIndex + 1)),
+    }
+end
+
+local function buildValidationWordParts(font, word, displayMode)
+    local parts = {}
+    local width = 0
+
+    if displayMode == "swatch" then
+        local colorWord = parseValidationColorWord(word)
+        if colorWord then
+            if colorWord.prefix ~= "" then
+                parts[#parts + 1] = { type = "text", text = colorWord.prefix }
+                width = width + font:getWidth(colorWord.prefix)
+            end
+
+            parts[#parts + 1] = { type = "swatch", colorId = colorWord.colorId }
+            width = width + getValidationColorSwatchSize(font)
+
+            if colorWord.suffix ~= "" then
+                parts[#parts + 1] = { type = "text", text = colorWord.suffix }
+                width = width + font:getWidth(colorWord.suffix)
+            end
+
+            return parts, width
+        end
+    end
+
+    parts[1] = { type = "text", text = word }
+    return parts, font:getWidth(word)
+end
+
+local function measureValidationMessage(font, text, width, displayMode)
+    local maxWidth = math.max(20, width or 20)
+    local spaceWidth = font:getWidth(" ")
+    local lineWidth = 0
+    local lineCount = 1
+
+    for word in tostring(text or ""):gmatch("%S+") do
+        local _, wordWidth = buildValidationWordParts(font, word, displayMode)
+        local extraWidth = lineWidth > 0 and spaceWidth or 0
+
+        if lineWidth > 0 and lineWidth + extraWidth + wordWidth > maxWidth then
+            lineCount = lineCount + 1
+            lineWidth = wordWidth
+        else
+            lineWidth = lineWidth + extraWidth + wordWidth
+        end
+    end
+
+    return math.max(font:getHeight(), lineCount * font:getHeight())
+end
+
+local function drawValidationMessage(font, text, x, y, width, textColor, displayMode)
+    local graphics = love.graphics
+    local maxWidth = math.max(20, width or 20)
+    local lineHeight = font:getHeight()
+    local swatchSize = getValidationColorSwatchSize(font)
+    local spaceWidth = font:getWidth(" ")
+    local cursorX = x
+    local cursorY = y
+
+    for word in tostring(text or ""):gmatch("%S+") do
+        local parts, wordWidth = buildValidationWordParts(font, word, displayMode)
+        local extraWidth = cursorX > x and spaceWidth or 0
+
+        if cursorX > x and cursorX + extraWidth + wordWidth > x + maxWidth then
+            cursorX = x
+            cursorY = cursorY + lineHeight
+            extraWidth = 0
+        end
+
+        cursorX = cursorX + extraWidth
+
+        for _, part in ipairs(parts) do
+            if part.type == "swatch" then
+                local option = getColorOptionById(part.colorId)
+                local swatchY = cursorY + (lineHeight - swatchSize) * 0.5
+                local swatchColor = option and option.color or getColorById(part.colorId)
+
+                graphics.setColor(swatchColor[1], swatchColor[2], swatchColor[3], 1)
+                graphics.rectangle("fill", cursorX, swatchY, swatchSize, swatchSize, 3, 3)
+                graphics.setColor(0.97, 0.98, 1, 0.95)
+                graphics.setLineWidth(1.2)
+                graphics.rectangle("line", cursorX, swatchY, swatchSize, swatchSize, 3, 3)
+                cursorX = cursorX + swatchSize
+            else
+                graphics.setColor(textColor[1], textColor[2], textColor[3], textColor[4] or 1)
+                graphics.print(part.text, cursorX, cursorY)
+                cursorX = cursorX + font:getWidth(part.text)
+            end
+        end
+    end
+
+    graphics.setLineWidth(1)
+end
+
 function mapEditor.new(viewportW, viewportH, level)
     local self = setmetatable({}, mapEditor)
 
@@ -461,6 +630,8 @@ function mapEditor.new(viewportW, viewportH, level)
     self.loadedMapPayload = nil
     self.lastValidationError = nil
     self.validationErrors = {}
+    self.validationEntries = {}
+    self.hoveredValidationIndex = nil
     self.statusText = nil
     self.statusTimer = 0
     self.intersections = {}
@@ -472,6 +643,9 @@ function mapEditor.new(viewportW, viewportH, level)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
+    self.validationScroll = 0
+    self.validationScrollDrag = nil
+    self.validationColorDisplayMode = "swatch"
 
     self:updateLayout()
     self:resetFromMap(level and { level = level, name = level.title } or nil, nil)
@@ -625,6 +799,243 @@ function mapEditor:clampSequencerScroll()
         totalHeight = totalHeight - 8
     end
     self.sequencerScroll = clamp(self.sequencerScroll or 0, 0, math.max(0, totalHeight - listHeight))
+end
+
+function mapEditor:getValidationEntries()
+    if self.validationEntries and #self.validationEntries > 0 then
+        return self.validationEntries
+    end
+
+    local fallbackEntries = {}
+    for _, message in ipairs(self.validationErrors or {}) do
+        fallbackEntries[#fallbackEntries + 1] = { message = message }
+    end
+    return fallbackEntries
+end
+
+function mapEditor:getTrainValidationLookup()
+    local lookup = {}
+
+    for _, entry in ipairs(self:getSortedTrainEntries()) do
+        lookup[tostring(entry.train.id)] = {
+            castName = entry.castName,
+            lineColor = entry.train.lineColor,
+            trainColor = entry.train.trainColor,
+        }
+    end
+
+    return lookup
+end
+
+function mapEditor:buildValidationEntry(message, diagnostic, trainLookup)
+    local entry = {
+        message = message,
+        diagnostic = diagnostic,
+        indentLevel = diagnostic and diagnostic.parentDiagnosticIndex and 1 or 0,
+        parentEntryIndex = diagnostic and diagnostic.parentDiagnosticIndex or nil,
+    }
+
+    if diagnostic and diagnostic.kind and diagnostic.kind:match("^train_") then
+        local trainInfo = trainLookup and trainLookup[tostring(diagnostic.trainId)] or nil
+        entry.message = tostring(message or ""):gsub(
+            "^Train%s+%d+",
+            buildTrainValidationLabel(trainInfo, diagnostic),
+            1
+        )
+    end
+
+    return entry
+end
+
+function mapEditor:groupValidationEntriesByHierarchy()
+    local orderedEntries = {}
+    local childrenByParent = {}
+    local entryBySourceIndex = {}
+    local visited = {}
+
+    for _, entry in ipairs(self.validationEntries or {}) do
+        entryBySourceIndex[entry.sourceIndex] = entry
+        if entry.parentEntryIndex then
+            childrenByParent[entry.parentEntryIndex] = childrenByParent[entry.parentEntryIndex] or {}
+            childrenByParent[entry.parentEntryIndex][#childrenByParent[entry.parentEntryIndex] + 1] = entry
+        end
+    end
+
+    local function appendEntry(entry)
+        if not entry or visited[entry] then
+            return
+        end
+
+        visited[entry] = true
+        orderedEntries[#orderedEntries + 1] = entry
+
+        for _, child in ipairs(childrenByParent[entry.sourceIndex] or {}) do
+            appendEntry(child)
+        end
+    end
+
+    for _, entry in ipairs(self.validationEntries or {}) do
+        if not entry.parentEntryIndex or not entryBySourceIndex[entry.parentEntryIndex] then
+            appendEntry(entry)
+        end
+    end
+
+    for _, entry in ipairs(self.validationEntries or {}) do
+        appendEntry(entry)
+    end
+
+    local orderedIndexBySourceIndex = {}
+    for orderedIndex, entry in ipairs(orderedEntries) do
+        orderedIndexBySourceIndex[entry.sourceIndex] = orderedIndex
+    end
+
+    for _, entry in ipairs(orderedEntries) do
+        if entry.parentEntryIndex then
+            entry.parentEntryIndex = orderedIndexBySourceIndex[entry.parentEntryIndex]
+        end
+    end
+
+    self.validationEntries = orderedEntries
+end
+
+function mapEditor:refreshValidationEntryNumbering()
+    local topLevelCount = 0
+    local childCounts = {}
+
+    for index, entry in ipairs(self.validationEntries or {}) do
+        local parentIndex = entry.parentEntryIndex
+        local parentEntry = parentIndex and self.validationEntries[parentIndex] or nil
+
+        if parentEntry then
+            childCounts[parentIndex] = (childCounts[parentIndex] or 0) + 1
+            entry.displayNumber = string.format("%s.%d", parentEntry.displayNumber or tostring(parentIndex), childCounts[parentIndex])
+            entry.numberLabel = entry.displayNumber
+            entry.indentLevel = 1
+        else
+            topLevelCount = topLevelCount + 1
+            entry.displayNumber = tostring(topLevelCount)
+            entry.numberLabel = entry.displayNumber .. "."
+            entry.indentLevel = 0
+        end
+
+        self.validationEntries[index] = entry
+    end
+end
+
+function mapEditor:getValidationListLayout(font)
+    font = font or love.graphics.getFont()
+
+    local panelX = self.sidePanel.x + 18
+    local panelWidth = self.sidePanel.w - 36
+    local panelBottom = self:getSaveButtonRect().y - 16
+    local listTop = self.sidePanel.y + 224
+    local listBottom = panelBottom - 12
+
+    if self:getSelectedRoute() then
+        listBottom = listBottom - 94
+    end
+
+    local listHeight = math.max(72, listBottom - listTop)
+    local listRect = {
+        x = panelX,
+        y = listTop,
+        w = panelWidth,
+        h = listHeight,
+    }
+
+    local entries = self:getValidationEntries()
+    local displayMode = getValidationColorDisplayMode(self)
+    local totalContentHeight = 0
+    for index, entry in ipairs(entries) do
+        local item = getValidationEntryMessage(entry)
+        local indentOffset = math.max(0, (entry.indentLevel or 0) * VALIDATION_CHILD_INDENT)
+        local numberWidth = font:getWidth((entry.numberLabel or (tostring(index) .. ".")) .. " ")
+        local lineHeight = font:getHeight()
+        local itemHeight = measureValidationMessage(font, item, listRect.w - numberWidth - indentOffset, displayMode)
+        totalContentHeight = totalContentHeight + itemHeight
+        if index < #entries then
+            totalContentHeight = totalContentHeight + 10
+        end
+    end
+
+    local maxScroll = math.max(0, totalContentHeight - listRect.h)
+    self.validationScroll = clamp(self.validationScroll or 0, 0, maxScroll)
+
+    local scrollbar = nil
+    local contentWidth = listRect.w
+    if maxScroll > 0 then
+        local track = {
+            x = panelX + panelWidth - 8,
+            y = listRect.y,
+            w = 8,
+            h = listRect.h,
+        }
+        local thumbHeight = math.max(28, track.h * (listRect.h / math.max(totalContentHeight, listRect.h)))
+        local thumbY = track.y + (track.h - thumbHeight) * ((self.validationScroll or 0) / maxScroll)
+        scrollbar = {
+            track = track,
+            thumb = {
+                x = track.x,
+                y = thumbY,
+                w = track.w,
+                h = thumbHeight,
+            },
+            maxScroll = maxScroll,
+        }
+        contentWidth = panelWidth - 16
+        listRect.w = contentWidth
+    end
+
+    return {
+        panelX = panelX,
+        panelWidth = panelWidth,
+        panelBottom = panelBottom,
+        listRect = listRect,
+        totalContentHeight = totalContentHeight,
+        maxScroll = maxScroll,
+        scrollbar = scrollbar,
+        contentWidth = contentWidth,
+    }
+end
+
+function mapEditor:getVisibleValidationRows(font, layout)
+    local entries = self:getValidationEntries()
+    local displayMode = getValidationColorDisplayMode(self)
+    local rows = {}
+    local currentY = layout.listRect.y - (self.validationScroll or 0)
+
+    for index, entry in ipairs(entries) do
+        local message = getValidationEntryMessage(entry)
+        local indentOffset = math.max(0, (entry.indentLevel or 0) * VALIDATION_CHILD_INDENT)
+        local lineHeight = font:getHeight()
+        local numberLabel = entry.numberLabel or (tostring(index) .. ".")
+        local numberWidth = font:getWidth(numberLabel .. " ")
+        local textWidth = math.max(20, layout.listRect.w - numberWidth - indentOffset)
+        local itemHeight = measureValidationMessage(font, message, textWidth, displayMode)
+        local itemBottom = currentY + itemHeight
+
+        if itemBottom >= layout.listRect.y and currentY <= layout.listRect.y + layout.listRect.h then
+            rows[#rows + 1] = {
+                index = index,
+                entry = entry,
+                message = message,
+                rect = {
+                    x = layout.listRect.x,
+                    y = currentY,
+                    w = layout.listRect.w,
+                    h = itemHeight,
+                },
+                indentOffset = indentOffset,
+                textWidth = textWidth,
+                numberLabel = numberLabel,
+                numberWidth = numberWidth,
+            }
+        end
+
+        currentY = currentY + itemHeight + 10
+    end
+
+    return rows
 end
 
 function mapEditor:addTrain()
@@ -829,14 +1240,31 @@ function mapEditor:showStatus(text)
     self.statusTimer = 2.8
 end
 
+function mapEditor:setValidationResults(buildError, buildErrors, buildDiagnostics)
+    self.lastValidationError = buildError
+    self.validationErrors = buildErrors or {}
+    self.validationEntries = {}
+    local trainLookup = self:getTrainValidationLookup()
+
+    for index, message in ipairs(self.validationErrors) do
+        local diagnostic = buildDiagnostics and buildDiagnostics[index] or nil
+        local entry = self:buildValidationEntry(message, diagnostic, trainLookup)
+        entry.sourceIndex = index
+        self.validationEntries[#self.validationEntries + 1] = entry
+    end
+    self:groupValidationEntriesByHierarchy()
+    self:refreshValidationEntryNumbering()
+
+    self.hoveredValidationIndex = nil
+end
+
 function mapEditor:refreshValidation(mapName)
-    local level, buildError, buildErrors = authoredMap.buildPlayableLevel(
+    local level, buildError, buildErrors, buildDiagnostics = authoredMap.buildPlayableLevel(
         mapName or self.currentMapName or "Untitled",
         self:getExportData(),
         self.editingMapUuid
     )
-    self.lastValidationError = buildError
-    self.validationErrors = buildErrors or {}
+    self:setValidationResults(buildError, buildErrors, buildDiagnostics)
     return level, buildError, self.validationErrors
 end
 
@@ -1405,6 +1833,67 @@ function mapEditor:scrollOpenDialog(delta)
     return true
 end
 
+function mapEditor:scrollValidationList(delta)
+    local layout = self:getValidationListLayout()
+    if layout.maxScroll <= 0 then
+        return false
+    end
+
+    self.validationScroll = clamp((self.validationScroll or 0) + delta, 0, layout.maxScroll)
+    return true
+end
+
+function mapEditor:updateHoveredValidationEntry(font)
+    self.hoveredValidationIndex = nil
+
+    if self.sidePanelMode ~= "default" then
+        return
+    end
+
+    if not (love and love.mouse and love.mouse.getPosition) then
+        return
+    end
+
+    local mouseX, mouseY = love.mouse.getPosition()
+    local layout = self:getValidationListLayout(font)
+    if not pointInRect(mouseX, mouseY, layout.listRect) then
+        return
+    end
+
+    for _, row in ipairs(self:getVisibleValidationRows(font, layout)) do
+        if pointInRect(mouseX, mouseY, row.rect) then
+            self.hoveredValidationIndex = row.index
+            return
+        end
+    end
+end
+
+function mapEditor:handleValidationListClick(x, y)
+    if self.sidePanelMode ~= "default" or #self:getValidationEntries() == 0 then
+        return false
+    end
+
+    local layout = self:getValidationListLayout()
+    if layout.scrollbar and pointInRect(x, y, layout.scrollbar.thumb) then
+        self.validationScrollDrag = {
+            offsetY = y - layout.scrollbar.thumb.y,
+            track = layout.scrollbar.track,
+            thumbHeight = layout.scrollbar.thumb.h,
+            maxScroll = layout.scrollbar.maxScroll,
+        }
+        return true
+    end
+
+    if layout.scrollbar and pointInRect(x, y, layout.scrollbar.track) then
+        local thumbTravel = math.max(1, layout.scrollbar.track.h - layout.scrollbar.thumb.h)
+        local targetY = clamp(y - layout.scrollbar.thumb.h * 0.5, layout.scrollbar.track.y, layout.scrollbar.track.y + thumbTravel)
+        self.validationScroll = ((targetY - layout.scrollbar.track.y) / thumbTravel) * layout.scrollbar.maxScroll
+        return true
+    end
+
+    return pointInRect(x, y, layout.listRect)
+end
+
 function mapEditor:openDialogMap(savedMap)
     local loadedMap, loadError = mapStorage.loadMap(savedMap)
     if not loadedMap or not loadedMap.editor then
@@ -1573,6 +2062,10 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
+    self.validationScroll = 0
+    self.validationScrollDrag = nil
+    self.validationEntries = {}
+    self.hoveredValidationIndex = nil
     self:closeDialog()
     self:closeColorPicker()
     self:closeRouteTypePicker()
@@ -1796,7 +2289,7 @@ function mapEditor:saveMap(name)
     self.sourceInfo = record
     self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
-    self.validationErrors = buildErrors or {}
+    self.hoveredValidationIndex = nil
     self:closeDialog()
     if level then
         self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ". Press Play Saved Map (P) to test.")
@@ -1831,6 +2324,10 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self.sequencerScroll = 0
         self.activeTextField = nil
         self.sequencerScrollDrag = nil
+        self.validationScroll = 0
+        self.validationScrollDrag = nil
+        self.validationEntries = {}
+        self.hoveredValidationIndex = nil
         self:closeColorPicker()
         self:closeRouteTypePicker()
         self:clearSelection()
@@ -1868,6 +2365,10 @@ function mapEditor:resetFromLevel(level)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
+    self.validationScroll = 0
+    self.validationScrollDrag = nil
+    self.validationEntries = {}
+    self.hoveredValidationIndex = nil
     self:closeColorPicker()
     self:closeRouteTypePicker()
     self:clearSelection()
@@ -1977,7 +2478,7 @@ end
 
 function mapEditor:findIntersectionHit(x, y)
     for _, intersection in ipairs(self.intersections) do
-        local radius = intersection.unsupported and 18 or 22
+        local radius = 22
         if distanceSquared(x, y, intersection.x, intersection.y) <= radius * radius then
             return intersection
         end
@@ -2602,7 +3103,6 @@ function mapEditor:rebuildIntersections()
                 outputEndpointIds = outputEndpointIds,
                 inputRouteIds = inputRouteIds,
                 outputRouteIds = outputRouteIds,
-                unsupported = #inputRouteIds > 5 or #outputEndpointIds > 5,
             }
             local state = self:getJunctionState(intersection, previousIntersections)
             intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
@@ -2705,11 +3205,6 @@ function mapEditor:updateDraggedPoint(x, y)
 end
 
 function mapEditor:cycleIntersection(intersection)
-    if intersection.unsupported then
-        self:showStatus("Junctions currently support up to five inputs and five outputs.")
-        return
-    end
-
     local currentIndex = 1
     for controlIndex, controlType in ipairs(CONTROL_ORDER) do
         if controlType == intersection.controlType then
@@ -3503,6 +3998,10 @@ function mapEditor:mousepressed(x, y, button)
         return true
     end
 
+    if self:handleValidationListClick(x, y) then
+        return true
+    end
+
     if pointInRect(x, y, self:getSaveButtonRect()) then
         self:openSaveDialog()
         return true
@@ -3609,6 +4108,16 @@ function mapEditor:wheelmoved(_, y)
         return false
     end
 
+    if self.sidePanelMode == "default" then
+        if y > 0 then
+            return self:scrollValidationList(-40)
+        end
+        if y < 0 then
+            return self:scrollValidationList(40)
+        end
+        return false
+    end
+
     if self.sidePanelMode ~= "sequencer" then
         return false
     end
@@ -3628,6 +4137,14 @@ function mapEditor:wheelmoved(_, y)
 end
 
 function mapEditor:mousemoved(x, y)
+    if self.validationScrollDrag then
+        local drag = self.validationScrollDrag
+        local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
+        local thumbY = clamp(y - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
+        self.validationScroll = ((thumbY - drag.track.y) / thumbTravel) * drag.maxScroll
+        return true
+    end
+
     if self.sequencerScrollDrag then
         local drag = self.sequencerScrollDrag
         local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
@@ -3647,6 +4164,11 @@ end
 function mapEditor:mousereleased(x, y, button)
     if button ~= 1 then
         return false
+    end
+
+    if self.validationScrollDrag then
+        self.validationScrollDrag = nil
+        return true
     end
 
     if self.sequencerScrollDrag then
@@ -4087,17 +4609,7 @@ end
 
 function mapEditor:drawIntersection(intersection)
     local graphics = love.graphics
-    local radius = intersection.unsupported and 14 or 18
-
-    if intersection.unsupported then
-        graphics.setColor(0.78, 0.22, 0.18, 0.95)
-        graphics.circle("fill", intersection.x, intersection.y, radius)
-        graphics.setColor(0.98, 0.96, 0.96, 1)
-        graphics.setLineWidth(3)
-        graphics.line(intersection.x - 7, intersection.y - 7, intersection.x + 7, intersection.y + 7)
-        graphics.line(intersection.x - 7, intersection.y + 7, intersection.x + 7, intersection.y - 7)
-        return
-    end
+    local radius = 18
 
     local fillColor = {
         direct = { 0.34, 0.84, 0.98 },
@@ -4192,6 +4704,57 @@ function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numb
     end
 
     return currentY, renderedCount
+end
+
+function mapEditor:drawScrollableWrappedList(font, items, listRect, scrollOffset, color, numberColor)
+    local graphics = love.graphics
+    local currentY = listRect.y - (scrollOffset or 0)
+
+    love.graphics.setFont(font)
+    love.graphics.setScissor(listRect.x, listRect.y, listRect.w, listRect.h)
+    for index, item in ipairs(items or {}) do
+        local bullet = string.format("%d. ", index)
+        local lineHeight = font:getHeight()
+        local lineCount = getWrappedLineCount(font, item, math.max(20, listRect.w - 22))
+        local itemHeight = math.max(lineHeight, lineCount * lineHeight)
+        local itemBottom = currentY + itemHeight
+
+        if itemBottom >= listRect.y and currentY <= listRect.y + listRect.h then
+            graphics.setColor(numberColor[1], numberColor[2], numberColor[3], numberColor[4] or 1)
+            graphics.print(bullet, listRect.x, currentY)
+            graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+            graphics.printf(item, listRect.x + 22, currentY, listRect.w - 22)
+        end
+
+        currentY = currentY + itemHeight + 10
+    end
+    love.graphics.setScissor()
+end
+
+function mapEditor:drawValidationMarkers()
+    local graphics = love.graphics
+
+    for index, entry in ipairs(self:getValidationEntries()) do
+        local diagnostic = type(entry) == "table" and entry.diagnostic or nil
+        if diagnostic and diagnostic.x and diagnostic.y then
+            local x = diagnostic.x * self.viewport.w
+            local y = diagnostic.y * self.viewport.h
+            local isHovered = self.hoveredValidationIndex == index
+            local size = isHovered and 13 or 9
+
+            if pointInRect(x, y, self.canvas) then
+                graphics.setLineWidth(isHovered and 5 or 4)
+                graphics.setColor(0.96, 0.22, 0.22, isHovered and 1 or 0.92)
+                graphics.line(x - size, y - size, x + size, y + size)
+                graphics.line(x - size, y + size, x + size, y - size)
+
+                if isHovered then
+                    graphics.setColor(1, 0.9, 0.35, 0.95)
+                    graphics.circle("line", x, y, size + 7)
+                end
+            end
+        end
+    end
 end
 
 function mapEditor:drawColorPicker(game)
@@ -4554,9 +5117,10 @@ end
 
 function mapEditor:drawDefaultSidePanel(game)
     local graphics = love.graphics
-    local panelX = self.sidePanel.x + 18
-    local panelWidth = self.sidePanel.w - 36
-    local panelBottom = self:getSaveButtonRect().y - 16
+    local validationLayout = self:getValidationListLayout(game.fonts.small)
+    local panelX = validationLayout.panelX
+    local panelWidth = validationLayout.panelWidth
+    local panelBottom = validationLayout.panelBottom
     local currentY = self.sidePanel.y + 104
 
     love.graphics.setFont(game.fonts.body)
@@ -4586,27 +5150,72 @@ function mapEditor:drawDefaultSidePanel(game)
         graphics.setColor(0.99, 0.78, 0.32, 1)
         graphics.printf("Resolve these before the run can start:", panelX, currentY, panelWidth)
         currentY = currentY + 28
-        local renderedCount
-        currentY, renderedCount = self:drawWrappedList(
-            game.fonts.small,
-            self.validationErrors,
-            panelX,
-            currentY,
-            panelWidth,
-            panelBottom - 90,
-            { 0.84, 0.88, 0.92, 1 },
-            { 0.99, 0.78, 0.32, 1 }
+        local visibleRows = self:getVisibleValidationRows(game.fonts.small, validationLayout)
+
+        graphics.setScissor(
+            validationLayout.listRect.x,
+            validationLayout.listRect.y,
+            validationLayout.listRect.w,
+            validationLayout.listRect.h
         )
-        if renderedCount < #self.validationErrors and currentY + 20 < panelBottom then
-            graphics.setColor(0.68, 0.74, 0.8, 1)
-            graphics.printf(
-                string.format("%d more issue(s) below the fold.", #self.validationErrors - renderedCount),
-                panelX,
-                currentY,
-                panelWidth
+        love.graphics.setFont(game.fonts.small)
+        for _, row in ipairs(visibleRows) do
+            if row.index == self.hoveredValidationIndex then
+                graphics.setColor(0.18, 0.22, 0.27, 0.95)
+                graphics.rectangle("fill", row.rect.x - 6, row.rect.y - 4, row.rect.w + 8, row.rect.h + 8, 8, 8)
+            end
+
+            local bulletX = row.rect.x + row.indentOffset
+            local textX = bulletX + row.numberWidth
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+            graphics.print(row.numberLabel .. " ", bulletX, row.rect.y)
+            drawValidationMessage(
+                game.fonts.small,
+                row.message,
+                textX,
+                row.rect.y,
+                row.textWidth,
+                { 0.84, 0.88, 0.92, 1 },
+                getValidationColorDisplayMode(self)
             )
-            currentY = currentY + 24
         end
+        graphics.setLineWidth(1)
+        graphics.setScissor()
+
+        if validationLayout.scrollbar then
+            graphics.setColor(0.1, 0.12, 0.16, 1)
+            graphics.rectangle(
+                "fill",
+                validationLayout.scrollbar.track.x,
+                validationLayout.scrollbar.track.y,
+                validationLayout.scrollbar.track.w,
+                validationLayout.scrollbar.track.h,
+                4,
+                4
+            )
+            graphics.setColor(0.24, 0.32, 0.4, 1)
+            graphics.rectangle(
+                "line",
+                validationLayout.scrollbar.track.x,
+                validationLayout.scrollbar.track.y,
+                validationLayout.scrollbar.track.w,
+                validationLayout.scrollbar.track.h,
+                4,
+                4
+            )
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+            graphics.rectangle(
+                "fill",
+                validationLayout.scrollbar.thumb.x,
+                validationLayout.scrollbar.thumb.y,
+                validationLayout.scrollbar.thumb.w,
+                validationLayout.scrollbar.thumb.h,
+                4,
+                4
+            )
+        end
+
+        currentY = validationLayout.listRect.y + validationLayout.listRect.h + 18
     end
 
     local selectedRoute = self:getSelectedRoute()
@@ -4642,6 +5251,8 @@ end
 
 function mapEditor:draw(game)
     local graphics = love.graphics
+
+    self:updateHoveredValidationEntry(game.fonts.small)
 
     graphics.setColor(0.05, 0.07, 0.09, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
@@ -4697,6 +5308,7 @@ function mapEditor:draw(game)
 
     self:drawColorPicker(game)
     self:drawRouteTypePicker(game)
+    self:drawValidationMarkers()
 
     graphics.setColor(0.7, 0.76, 0.82, 1)
     local sourceLabel

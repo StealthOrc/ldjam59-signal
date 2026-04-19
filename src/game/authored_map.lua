@@ -68,6 +68,18 @@ local function getColor(colorId)
     return copyColor(COLOR_LOOKUP[colorId] or COLOR_LOOKUP.blue)
 end
 
+local function formatColorLabel(colorId)
+    local text = tostring(colorId or "route")
+    return (text:gsub("^%l", string.upper))
+end
+
+local function getRouteDisplayName(route)
+    if route and route.color then
+        return string.format("%s route", formatColorLabel(route.color))
+    end
+    return tostring(route and (route.label or route.id) or "Route")
+end
+
 local function darkerColor(color)
     return {
         color[1] * 0.42,
@@ -438,6 +450,15 @@ local function containsValue(list, expected)
     return false
 end
 
+local function endpointHasColor(editorData, endpointKind, colorId)
+    for _, endpoint in ipairs(editorData and editorData.endpoints or {}) do
+        if endpoint.kind == endpointKind and containsValue(endpoint.colors or {}, colorId) then
+            return true, endpoint
+        end
+    end
+    return false, nil
+end
+
 local function getSortedLookupKeys(lookup)
     local keys = {}
     for key, enabled in pairs(lookup or {}) do
@@ -542,10 +563,18 @@ end
 
 function authoredMap.validateEditorMap(mapName, editorData)
     local errors = {}
+    local diagnostics = {}
+
+    local function addError(message, diagnostic)
+        errors[#errors + 1] = message
+        diagnostics[#diagnostics + 1] = diagnostic or { message = message }
+        diagnostics[#diagnostics].message = message
+        return #diagnostics
+    end
 
     if not editorData or #(editorData.routes or {}) == 0 then
-        errors[#errors + 1] = "Draw at least one route before starting this map."
-        return nil, errors, errors[1]
+        addError("Draw at least one route before starting this map.")
+        return nil, errors, errors[1], diagnostics
     end
 
     local junctionLookup = {}
@@ -586,6 +615,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
     local lineColorToEdgeId = {}
     local outputColorLookup = {}
     local duplicateInputColorErrors = {}
+    local routeBlockingDiagnosticIndexByColor = {}
 
     for _, route in ipairs(editorData.routes or {}) do
         local routeHits = routeJunctions[route.id] or {}
@@ -599,7 +629,20 @@ function authoredMap.validateEditorMap(mapName, editorData)
         for _, hit in ipairs(routeHits) do
             local distanceAlongRoute, snappedPoint = findDistanceAlongRoute(route.points or {}, hit.point)
             if not distanceAlongRoute then
-                errors[#errors + 1] = string.format("Route '%s' did not actually reach a detected junction.", route.label or route.id)
+                local diagnosticIndex = addError(
+                    string.format(
+                        "%s is marked as connecting to a junction, but the route line no longer reaches that junction point. Move the junction onto the route or redraw the route through it.",
+                        getRouteDisplayName(route)
+                    ),
+                    {
+                        kind = "route_junction_miss",
+                        routeId = route.id,
+                        routeColor = route.color,
+                        x = hit.point and hit.point.x or nil,
+                        y = hit.point and hit.point.y or nil,
+                    }
+                )
+                routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
                 goto continue_route
             end
 
@@ -645,7 +688,22 @@ function authoredMap.validateEditorMap(mapName, editorData)
             local points = extractRouteSegment(route.points or {}, sourceNode.distance, targetNode.distance)
 
             if #points < 2 then
-                errors[#errors + 1] = string.format("Route '%s' contains a zero-length segment near a junction.", route.label or route.id)
+                local diagnosticIndex = addError(
+                    string.format(
+                        "%s has two junctions so close together that no track remains between them. Move one junction farther away so a track segment can fit between the junctions.",
+                        getRouteDisplayName(route)
+                    ),
+                    {
+                        kind = "route_zero_length_segment",
+                        routeId = route.id,
+                        routeColor = route.color,
+                        x = (sourceNode.point.x + targetNode.point.x) * 0.5,
+                        y = (sourceNode.point.y + targetNode.point.y) * 0.5,
+                        sourceNodeId = sourceNode.id,
+                        targetNodeId = targetNode.id,
+                    }
+                )
+                routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
                 goto continue_route
             end
 
@@ -655,7 +713,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
             local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
             local edge = {
                 id = string.format("%s_segment_%d", route.id, nodeIndex),
-                label = string.format("%s Segment %d", route.label or route.id, nodeIndex),
+                label = string.format("%s Segment %d", getRouteDisplayName(route), nodeIndex),
                 routeId = route.id,
                 roadType = primaryRoadType,
                 speedScale = roadTypes.getConfig(primaryRoadType).speedScale,
@@ -678,11 +736,13 @@ function authoredMap.validateEditorMap(mapName, editorData)
             local existingEdge = edgeLookup[edgeKey]
             if existingEdge then
                 if not pointsRoughlyMatch(existingEdge.points, edge.points) then
-                    errors[#errors + 1] = "Merged tracks must share the same path between their nodes."
+                    local diagnosticIndex = addError("Merged tracks must share the same path between their nodes.")
+                    routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
                     goto continue_route
                 end
                 if not styleSectionsRoughlyMatch(existingEdge.styleSections or {}, edge.styleSections or {}) then
-                    errors[#errors + 1] = "Merged tracks must use the same road style profile."
+                    local diagnosticIndex = addError("Merged tracks must use the same road style profile.")
+                    routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
                     goto continue_route
                 end
                 edge = existingEdge
@@ -708,7 +768,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
                     if lineColorToEdgeId[colorId] and lineColorToEdgeId[colorId] ~= edge.id then
                         if not duplicateInputColorErrors[colorId] then
                             duplicateInputColorErrors[colorId] = true
-                            errors[#errors + 1] = string.format("Input color '%s' is used on more than one source line.", colorId)
+                            addError(string.format("Input color '%s' is used on more than one source line.", colorId))
                         end
                     else
                         lineColorToEdgeId[colorId] = edge.id
@@ -764,12 +824,16 @@ function authoredMap.validateEditorMap(mapName, editorData)
             goto continue_junction
         end
 
-        if #inputEdges > 5 or #outputEdges > 5 then
-            errors[#errors + 1] = "A junction exceeds the current limit of five inputs or five outputs."
-        end
-
         if #inputEdges == 0 or #outputEdges == 0 then
-            errors[#errors + 1] = "A playable junction needs at least one input and one output."
+            addError(
+                "A playable junction needs at least one input and one output.",
+                {
+                    kind = "junction_missing_edges",
+                    x = junction.x,
+                    y = junction.y,
+                    junctionId = junction.id,
+                }
+            )
         end
 
         junction.inputEdgeIds = {}
@@ -795,6 +859,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
     local trains = {}
     local timeLimit = editorData.timeLimit
     for trainIndex, trainData in ipairs(authoredTrains or {}) do
+        local trainId = trainData.id or string.format("train_%d", trainIndex)
         local lineColor = trainData.lineColor
         local trainColor = trainData.trainColor
         local spawnTime = tonumber(trainData.spawnTime or 0) or 0
@@ -802,36 +867,105 @@ function authoredMap.validateEditorMap(mapName, editorData)
         local deadline = trainData.deadline ~= nil and (tonumber(trainData.deadline) or 0) or nil
 
         if spawnTime < 0 then
-            errors[#errors + 1] = string.format("Train %d has a negative spawn time.", trainIndex)
+            addError(string.format("Train %d has a negative spawn time.", trainIndex), {
+                kind = "train_negative_spawn",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
         if wagonCount < 1 then
-            errors[#errors + 1] = string.format("Train %d needs at least one wagon.", trainIndex)
+            addError(string.format("Train %d needs at least one wagon.", trainIndex), {
+                kind = "train_invalid_wagons",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
         if deadline ~= nil and deadline < spawnTime then
-            errors[#errors + 1] = string.format("Train %d has a deadline earlier than its spawn time.", trainIndex)
+            addError(string.format("Train %d has a deadline earlier than its spawn time.", trainIndex), {
+                kind = "train_deadline_before_spawn",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
         if timeLimit ~= nil and deadline ~= nil and deadline > timeLimit then
-            errors[#errors + 1] = string.format("Train %d has a deadline after the map deadline.", trainIndex)
+            addError(string.format("Train %d has a deadline after the map deadline.", trainIndex), {
+                kind = "train_deadline_after_map",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
         if not lineColorToEdgeId[lineColor] then
-            errors[#errors + 1] = string.format("Train %d uses source color '%s', but no matching input line exists.", trainIndex, tostring(lineColor))
+            addError(string.format("Train %d uses source color '%s', but no matching input line exists.", trainIndex, tostring(lineColor)), {
+                kind = "train_missing_input",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
         if not outputColorLookup[trainColor] then
-            errors[#errors + 1] = string.format("Train %d targets color '%s', but no matching output exists.", trainIndex, tostring(trainColor))
+            local hasOutputEndpoint, outputEndpoint = endpointHasColor(editorData, "output", trainColor)
+            local outputMessage
+            local parentDiagnosticIndex = hasOutputEndpoint and routeBlockingDiagnosticIndexByColor[trainColor] or nil
+            if hasOutputEndpoint then
+                if parentDiagnosticIndex then
+                    outputMessage = string.format(
+                        "Train %d cannot currently finish on color '%s' because the %s could not be built into a playable path.",
+                        trainIndex,
+                        tostring(trainColor),
+                        string.lower(getRouteDisplayName({ color = trainColor }))
+                    )
+                else
+                    outputMessage = string.format(
+                        "Train %d targets color '%s', but no playable output exists for that color.",
+                        trainIndex,
+                        tostring(trainColor)
+                    )
+                end
+            else
+                outputMessage = string.format("Train %d targets color '%s', but no matching output exists.", trainIndex, tostring(trainColor))
+            end
+            addError(
+                outputMessage,
+                {
+                    kind = hasOutputEndpoint and "train_unplayable_output" or "train_missing_output",
+                    trainId = trainId,
+                    trainIndex = trainIndex,
+                    lineColor = lineColor,
+                    trainColor = trainColor,
+                    x = outputEndpoint and outputEndpoint.x or nil,
+                    y = outputEndpoint and outputEndpoint.y or nil,
+                    parentDiagnosticIndex = parentDiagnosticIndex,
+                }
+            )
         end
         if lineColorToEdgeId[lineColor]
             and outputColorLookup[trainColor]
             and not canReachGoalColor(lineColorToEdgeId[lineColor], trainColor, edgeById, junctionLookup) then
-            errors[#errors + 1] = string.format(
+            addError(string.format(
                 "Train %d cannot reach goal color '%s' from source line '%s'.",
                 trainIndex,
                 tostring(trainColor),
                 tostring(lineColor)
-            )
+            ), {
+                kind = "train_unreachable_output",
+                trainId = trainId,
+                trainIndex = trainIndex,
+                lineColor = lineColor,
+                trainColor = trainColor,
+            })
         end
 
         trains[#trains + 1] = {
-            id = trainData.id or string.format("train_%d", trainIndex),
+            id = trainId,
             edgeId = lineColorToEdgeId[lineColor],
             lineColor = lineColor,
             trainColor = trainColor,
@@ -844,7 +978,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
     end
 
     if #errors > 0 then
-        return nil, errors, table.concat(errors, " ")
+        return nil, errors, table.concat(errors, " "), diagnostics
     end
 
     local hasPlayableJunctions = #playableJunctions > 0
@@ -862,16 +996,16 @@ function authoredMap.validateEditorMap(mapName, editorData)
         junctions = playableJunctions,
         edges = edges,
         trains = trains,
-    }, {}, nil
+    }, {}, nil, diagnostics
 end
 
 function authoredMap.buildPlayableLevel(mapName, editorData, mapUuid)
-    local level, errors, errorText = authoredMap.validateEditorMap(mapName, editorData)
+    local level, errors, errorText, diagnostics = authoredMap.validateEditorMap(mapName, editorData)
     if level then
         level.id = mapUuid or level.id
         level.mapUuid = mapUuid or level.mapUuid
     end
-    return level, errorText, errors
+    return level, errorText, errors, diagnostics
 end
 
 return authoredMap
