@@ -6,6 +6,8 @@ mapEditor.__index = mapEditor
 
 local DEFAULT_CONTROL = "direct"
 local MAX_TRIP_PASS_COUNT = 5
+local ENDPOINT_MERGE_RADIUS = 20
+local INTERSECTION_GROUP_BUCKET = 20
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
 local DEFAULT_TRAIN_WAGONS = 4
 local LEGACY_TRAIN_SPEED = 168
@@ -1544,7 +1546,7 @@ end
 function mapEditor:findEndpointAt(x, y, kind, excludeEndpointId)
     for _, endpoint in ipairs(self.endpoints) do
         if endpoint.kind == kind and endpoint.id ~= excludeEndpointId then
-            if distanceSquared(x, y, endpoint.x, endpoint.y) <= 18 * 18 then
+            if distanceSquared(x, y, endpoint.x, endpoint.y) <= ENDPOINT_MERGE_RADIUS * ENDPOINT_MERGE_RADIUS then
                 return endpoint
             end
         end
@@ -1713,8 +1715,8 @@ function mapEditor:rebuildIntersections()
                     local hit = segmentIntersection(a, b, c, d)
 
                     if hit then
-                        local groupX = math.floor(hit.x / 10 + 0.5) * 10
-                        local groupY = math.floor(hit.y / 10 + 0.5) * 10
+                        local groupX = math.floor(hit.x / INTERSECTION_GROUP_BUCKET + 0.5) * INTERSECTION_GROUP_BUCKET
+                        local groupY = math.floor(hit.y / INTERSECTION_GROUP_BUCKET + 0.5) * INTERSECTION_GROUP_BUCKET
                         local groupKey = groupX .. ":" .. groupY
                         local entry = grouped[groupKey]
 
