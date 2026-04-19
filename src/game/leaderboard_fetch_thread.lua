@@ -12,6 +12,7 @@ local DEFAULT_MARKETPLACE_LIMIT = 10
 local DEFAULT_REQUEST_TIMEOUT_SECONDS = 5
 local MARKETPLACE_MODE_FAVORITES = "favorites"
 local MARKETPLACE_MODE_SEARCH = "search"
+local LEADERBOARD_UNAVAILABLE_MESSAGE = "Leaderboard unavailable."
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
@@ -48,11 +49,11 @@ end
 
 local function validateConfig(config)
     if tostring(config.apiKey or "") == "" then
-        return nil, "API_KEY is missing."
+        return nil, LEADERBOARD_UNAVAILABLE_MESSAGE
     end
 
     if normalizeBaseUrl(config.apiBaseUrl) == "" then
-        return nil, "API_BASE_URL is missing."
+        return nil, LEADERBOARD_UNAVAILABLE_MESSAGE
     end
 
     return true
