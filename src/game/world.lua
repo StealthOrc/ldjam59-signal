@@ -12,6 +12,7 @@ local COLOR_OPTIONS = {
 local RELAY_FLASH_DURATION = 0.28
 local TRIP_FLASH_DURATION = 0.28
 local CROSSBAR_FLASH_DURATION = 0.28
+local SPRING_RELEASE_DURATION = 0.42
 local roadTypes = require("src.game.road_types")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
@@ -436,6 +437,15 @@ function world.new(viewportW, viewportH, levelSource)
     self.elapsedTime = 0
     self.failureTrain = nil
     self.interactionCount = 0
+    self.springImage = nil
+
+    if love and love.graphics and love.filesystem and love.filesystem.getInfo("assets/spring.png", "file") then
+        local ok, image = pcall(love.graphics.newImage, "assets/spring.png")
+        if ok and image then
+            image:setFilter("linear", "linear")
+            self.springImage = image
+        end
+    end
 
     self.level = self:normalizeLevel(levelSource or {})
 
@@ -775,6 +785,7 @@ function world:buildJunction(definition, existing)
             remainingDelay = existing and existing.control.remainingDelay or 0,
             remainingHold = existing and existing.control.remainingHold or 0,
             returnInputIndex = existing and existing.control.returnInputIndex or 1,
+            releaseTimer = existing and existing.control.releaseTimer or 0,
             remainingTrips = existing and existing.control.remainingTrips or 0,
             pendingResetTrainId = existing and existing.control.pendingResetTrainId or nil,
             pendingResetEdgeId = existing and existing.control.pendingResetEdgeId or nil,
@@ -1218,6 +1229,7 @@ function world:activateControl(junction)
         control.returnInputIndex = junction.activeInputIndex
         self:cycleInput(junction)
         control.remainingHold = control.holdTime
+        control.releaseTimer = 0
         control.armed = true
         return true
     end
@@ -1319,11 +1331,19 @@ function world:updateControlState(junction, dt)
         return
     end
 
-    if control.type == "spring" and control.armed then
-        control.remainingHold = math.max(0, control.remainingHold - dt)
-        if control.remainingHold <= 0 then
-            control.armed = false
-            junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+    if control.type == "spring" then
+        if control.armed then
+            control.remainingHold = math.max(0, control.remainingHold - dt)
+            if control.remainingHold <= 0 then
+                control.armed = false
+                control.releaseTimer = SPRING_RELEASE_DURATION
+                junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+            end
+            return
+        end
+
+        if control.releaseTimer > 0 then
+            control.releaseTimer = math.max(0, control.releaseTimer - dt)
         end
         return
     end
@@ -2152,44 +2172,299 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     self:drawTrackRoadTypeMarkers(outputTrack, isActive)
 end
 
-function world:drawControlOverlay(junction)
-    local graphics = love.graphics
-    local control = junction.control
-    local centerX = junction.mergePoint.x
-    local centerY = junction.mergePoint.y
-    local innerRadius = junction.crossingRadius - 10
+local function getTimerRatio(armed, remaining, duration)
+    if duration <= 0 then
+        return armed and 0 or 1
+    end
 
-    if control.type == "delayed" then
-        local ratio = 0
-        if control.armed and control.delay > 0 then
-            ratio = 1 - (control.remainingDelay / control.delay)
-        end
+    if not armed then
+        return 1
+    end
 
-        graphics.setColor(0.99, 0.77, 0.32, 0.24)
-        graphics.circle("fill", centerX, centerY, innerRadius)
-        graphics.setColor(0.99, 0.77, 0.32, 1)
-        graphics.setLineWidth(5)
+    return clamp(remaining / duration, 0, 1)
+end
+
+local function drawTimerPie(graphics, centerX, centerY, radius, color, ratio)
+    local fillRatio = clamp(ratio or 0, 0, 1)
+
+    graphics.setColor(color[1], color[2], color[3], 0.12)
+    graphics.circle("fill", centerX, centerY, radius)
+
+    if fillRatio >= 0.999 then
+        graphics.setColor(color[1], color[2], color[3], 0.3)
+        graphics.circle("fill", centerX, centerY, radius)
+    elseif fillRatio > 0.001 then
+        graphics.setColor(color[1], color[2], color[3], 0.3)
         graphics.arc(
-            "line",
+            "fill",
             centerX,
             centerY,
-            innerRadius + 4,
+            radius,
             -math.pi * 0.5,
-            -math.pi * 0.5 + math.pi * 2 * ratio
+            -math.pi * 0.5 + math.pi * 2 * fillRatio
+        )
+    end
+
+    graphics.setColor(color[1], color[2], color[3], 0.92)
+    graphics.setLineWidth(3)
+    graphics.circle("line", centerX, centerY, radius + 1.5)
+end
+
+local function drawHourglassIcon(graphics, centerX, centerY, size, progress, color)
+    local clampedProgress = clamp(progress or 0, 0, 1)
+    local halfWidth = size * 0.48
+    local halfHeight = size * 0.64
+    local neckWidth = size * 0.12
+    local inset = size * 0.13
+    local sourceFill = 1 - clampedProgress
+    local targetFill = clampedProgress
+    local angle = math.pi * clampedProgress
+    local sinAngle = math.sin(angle)
+    local cosAngle = math.cos(angle)
+    local streamAlpha = math.sin(clampedProgress * math.pi)
+    local chamberOffset = halfHeight * 0.42
+
+    local function rotateLocal(x, y)
+        return centerX + x * cosAngle - y * sinAngle, centerY + x * sinAngle + y * cosAngle
+    end
+
+    local chamberAX, chamberAY = rotateLocal(0, -chamberOffset)
+    local chamberBX, chamberBY = rotateLocal(0, chamberOffset)
+    local sourceCenterX, sourceCenterY = chamberBX, chamberBY
+    local targetCenterX, targetCenterY = chamberAX, chamberAY
+    local sourceBaseY = sourceCenterY + size * 0.18
+    local targetBaseY = targetCenterY + size * 0.18
+    local sourceWidth = size * (0.08 + sourceFill * 0.18)
+    local targetWidth = size * (0.08 + targetFill * 0.18)
+    local sourceTipY = sourceBaseY - size * (0.04 + sourceFill * 0.18)
+    local targetTipY = targetBaseY - size * (0.04 + targetFill * 0.18)
+    local middleY = centerY + size * 0.1
+    local middleWidth = size * (0.03 + streamAlpha * 0.07)
+    local middleTipY = middleY - size * (0.04 + streamAlpha * 0.08)
+
+    graphics.stencil(function()
+        graphics.push()
+        graphics.translate(centerX, centerY)
+        graphics.rotate(angle)
+        graphics.polygon(
+            "fill",
+            -halfWidth + inset,
+            -halfHeight + inset,
+            halfWidth - inset,
+            -halfHeight + inset,
+            0,
+            -size * 0.06
+        )
+        graphics.polygon(
+            "fill",
+            -halfWidth + inset,
+            halfHeight - inset,
+            halfWidth - inset,
+            halfHeight - inset,
+            0,
+            size * 0.06
+        )
+        graphics.pop()
+    end, "replace", 1)
+
+    graphics.setStencilTest("greater", 0)
+
+    if sourceFill > 0.02 then
+        graphics.setColor(color[1], color[2], color[3], 0.94)
+        graphics.polygon(
+            "fill",
+            sourceCenterX - sourceWidth,
+            sourceBaseY,
+            sourceCenterX + sourceWidth,
+            sourceBaseY,
+            sourceCenterX,
+            sourceTipY
+        )
+    end
+
+    if targetFill > 0.02 then
+        graphics.setColor(color[1], color[2], color[3], 0.94)
+        graphics.polygon(
+            "fill",
+            targetCenterX - targetWidth,
+            targetBaseY,
+            targetCenterX + targetWidth,
+            targetBaseY,
+            targetCenterX,
+            targetTipY
+        )
+    end
+
+    if streamAlpha > 0.04 then
+        graphics.setColor(color[1], color[2], color[3], 0.82 * streamAlpha)
+        graphics.polygon(
+            "fill",
+            centerX - middleWidth,
+            middleY,
+            centerX + middleWidth,
+            middleY,
+            centerX,
+            middleTipY
         )
 
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            control.armed and string.format("%.1f", control.remainingDelay) or "D",
-            centerX - 20,
-            centerY - 9,
-            40,
-            "center"
+        graphics.setLineWidth(2)
+        graphics.setColor(color[1], color[2], color[3], 0.88 * streamAlpha)
+        graphics.line(centerX, centerY - size * 0.08, centerX, middleTipY)
+    end
+
+    graphics.setStencilTest()
+
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.rotate(angle)
+
+    graphics.setLineWidth(2.4)
+    graphics.setColor(0.05, 0.06, 0.08, 0.96)
+    graphics.line(-halfWidth, -halfHeight, halfWidth, -halfHeight)
+    graphics.line(-halfWidth, halfHeight, halfWidth, halfHeight)
+    graphics.line(-halfWidth, -halfHeight, -neckWidth, 0, -halfWidth, halfHeight)
+    graphics.line(halfWidth, -halfHeight, neckWidth, 0, halfWidth, halfHeight)
+
+    graphics.pop()
+end
+
+local function drawSpringIcon(graphics, springImage, centerX, centerY, size, compression, releaseProgress, color)
+    local clampedCompression = clamp(compression or 0, 0, 1)
+    if springImage then
+        local imageWidth, imageHeight = springImage:getDimensions()
+        local baseScale = math.min((size * 1.18) / imageWidth, (size * 2) / imageHeight)
+        local animatedCompression = clampedCompression
+        local yOffset = size * 0.14 * animatedCompression
+
+        if releaseProgress and releaseProgress > 0 then
+            local t = clamp(releaseProgress, 0, 1)
+            local relax = 1 - (1 - t) ^ 3
+            local rebound = math.sin(t * math.pi) * math.exp(-2.2 * t)
+            animatedCompression = math.max(0, 1 - relax - 0.16 * rebound)
+            yOffset = size * 0.14 * animatedCompression - size * 0.2 * rebound
+        end
+
+        local scaleX = baseScale * lerp(1, 1.08, animatedCompression)
+        local scaleY = baseScale * lerp(1, 0.7, animatedCompression)
+
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(
+            springImage,
+            centerX,
+            centerY + yOffset,
+            0,
+            scaleX,
+            scaleY,
+            imageWidth * 0.5,
+            imageHeight * 0.5
         )
         return
     end
 
+    local fullHeight = size * 1.12
+    local compressedHeight = size * 0.64
+    local coilHeight = lerp(fullHeight, compressedHeight, clampedCompression)
+    local coilWidth = size * 0.48
+    local turnCount = 4.35
+    local sampleCount = 88
+    local hookLength = size * 0.16
+    local points = {}
+
+    if releaseProgress and releaseProgress > 0 then
+        local damped = math.cos(releaseProgress * math.pi * 4.2) * math.exp(-4.1 * releaseProgress)
+        coilHeight = fullHeight - (fullHeight - compressedHeight) * damped
+    end
+
+    coilHeight = clamp(coilHeight, size * 0.34, size * 1.28)
+
+    for index = 0, sampleCount do
+        local ratio = index / sampleCount
+        local angle = ratio * math.pi * 2 * turnCount
+        local x = math.sin(angle) * coilWidth
+        local y = lerp(-coilHeight * 0.5, coilHeight * 0.5, ratio)
+        points[#points + 1] = x
+        points[#points + 1] = y
+    end
+
+    local topX = points[1]
+    local topY = points[2]
+    local bottomX = points[#points - 1]
+    local bottomY = points[#points]
+
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.setLineWidth(3.1)
+    graphics.setColor(0.05, 0.06, 0.08, 1)
+
+    graphics.line(topX + hookLength * 0.35, topY - hookLength, topX, topY)
+    graphics.line(points)
+    graphics.line(bottomX, bottomY, bottomX + hookLength * 0.4, bottomY + hookLength)
+
+    graphics.pop()
+end
+
+local function getControlBubbleLayout(junction)
+    local bubbleRadius = math.max(22, junction.crossingRadius * 0.62)
+    local bubbleX = junction.mergePoint.x + junction.crossingRadius + bubbleRadius + 12
+    local bubbleY = junction.mergePoint.y - junction.crossingRadius * 0.18
+
+    return bubbleX, bubbleY, bubbleRadius
+end
+
+local function drawControlBubble(graphics, junction, ringColor)
+    local junctionX = junction.mergePoint.x
+    local junctionY = junction.mergePoint.y
+    local bubbleX, bubbleY, bubbleRadius = getControlBubbleLayout(junction)
+    local dx = bubbleX - junctionX
+    local dy = bubbleY - junctionY
+    local distance = math.sqrt(dx * dx + dy * dy)
+
+    if distance > 0.001 then
+        local nx = dx / distance
+        local ny = dy / distance
+        local startX = junctionX + nx * (junction.crossingRadius + 4)
+        local startY = junctionY + ny * (junction.crossingRadius + 4)
+        local endX = bubbleX - nx * (bubbleRadius + 1)
+        local endY = bubbleY - ny * (bubbleRadius + 1)
+
+        graphics.setLineStyle("rough")
+        graphics.setLineWidth(8)
+        graphics.setColor(0.05, 0.06, 0.08, 0.92)
+        graphics.line(startX, startY, endX, endY)
+        graphics.setLineWidth(3)
+        graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.65)
+        graphics.line(startX, startY, endX, endY)
+    end
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.96)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius + 4)
+
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.15)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius + 8)
+
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.92)
+    graphics.setLineWidth(3)
+    graphics.circle("line", bubbleX, bubbleY, bubbleRadius + 4)
+
+    return bubbleX, bubbleY, bubbleRadius
+end
+
+function world:drawControlOverlay(junction)
+    local graphics = love.graphics
+    local control = junction.control
+
+    if control.type == "delayed" then
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.99, 0.77, 0.32 })
+        local ratio = getTimerRatio(control.armed, control.remainingDelay, control.delay)
+        local progress = control.delay > 0 and (1 - ratio) or 0
+
+        drawTimerPie(graphics, centerX, centerY, innerRadius, { 0.99, 0.77, 0.32 }, ratio)
+        drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
+        return
+    end
+
     if control.type == "pump" then
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.95, 0.12, 0.88 })
         local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
         local startAngle = math.pi * 1.16
         local endAngle = math.pi * 1.84
@@ -2239,33 +2514,25 @@ function world:drawControlOverlay(junction)
     end
 
     if control.type == "spring" then
-        local ratio = control.holdTime > 0 and (control.remainingHold / control.holdTime) or 0
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.4, 0.96, 0.74 })
+        local ratio = getTimerRatio(control.armed, control.remainingHold, control.holdTime)
+        local compression = 0
+        local releaseProgress = nil
 
-        graphics.setColor(0.4, 0.96, 0.74, 0.2)
-        graphics.circle("fill", centerX, centerY, innerRadius)
-        graphics.setColor(0.4, 0.96, 0.74, 1)
-        graphics.setLineWidth(5)
-        graphics.arc(
-            "line",
-            centerX,
-            centerY,
-            innerRadius + 4,
-            -math.pi * 0.5,
-            -math.pi * 0.5 + math.pi * 2 * ratio
-        )
+        if control.armed then
+            compression = 1 - ratio
+        elseif control.releaseTimer > 0 then
+            compression = 1
+            releaseProgress = 1 - (control.releaseTimer / SPRING_RELEASE_DURATION)
+        end
 
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            control.armed and string.format("%.1f", control.remainingHold) or "S",
-            centerX - 20,
-            centerY - 9,
-            40,
-            "center"
-        )
+        drawTimerPie(graphics, centerX, centerY, innerRadius, { 0.4, 0.96, 0.74 }, ratio)
+        drawSpringIcon(graphics, self.springImage, centerX, centerY, innerRadius * 0.8, compression, releaseProgress, { 0.4, 0.96, 0.74 })
         return
     end
 
     if control.type == "relay" then
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.56, 0.72, 0.98 })
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / RELAY_FLASH_DURATION) or 0
 
         graphics.setColor(0.56, 0.72, 0.98, 0.16 + flashAlpha * 0.18)
@@ -2286,6 +2553,7 @@ function world:drawControlOverlay(junction)
     end
 
     if control.type == "trip" then
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.98, 0.6, 0.28 })
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / TRIP_FLASH_DURATION) or 0
 
         graphics.setColor(0.98, 0.6, 0.28, 0.16 + flashAlpha * 0.18)
@@ -2306,6 +2574,7 @@ function world:drawControlOverlay(junction)
     end
 
     if control.type == "crossbar" then
+        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.92, 0.38, 0.68 })
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / CROSSBAR_FLASH_DURATION) or 0
 
         graphics.setColor(0.92, 0.38, 0.68, 0.16 + flashAlpha * 0.18)
