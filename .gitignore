@@ -60,3 +60,5 @@ settings.json
 .idea
 *idea/
 .env
+
+API_REQUESTS.md
