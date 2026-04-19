@@ -1,21 +1,28 @@
 local envLoader = {}
 
 local ENV_FILE = ".env"
-local DEFAULT_API_BASE_URL = "https://signal-leaderboard.just2dev-signal.workers.dev"
+local BUILD_ENV_FILE = "build.env"
 local MIN_QUOTED_LENGTH = 2
 local DIRECTORY_SEPARATOR = package.config:sub(1, 1)
+local UTF8_BOM_FIRST_BYTE = 239
+local UTF8_BOM_SECOND_BYTE = 187
+local UTF8_BOM_THIRD_BYTE = 191
 local REQUIRED_KEYS = {
     "API_KEY",
+    "API_BASE_URL",
 }
 local OPTIONAL_KEYS = {
-    "API_BASE_URL",
     "HMAC_SECRET",
 }
 local SOURCE_WORKING_DIRECTORY = "working directory .env"
+local SOURCE_WORKING_DIRECTORY_BUILD = "working directory build.env"
 local SOURCE_LOVE_FILESYSTEM = "project .env"
+local SOURCE_LOVE_FILESYSTEM_BUILD = "project build.env"
+local SOURCE_SOURCE_DIRECTORY = "source directory .env"
+local SOURCE_SOURCE_DIRECTORY_BUILD = "source directory build.env"
 local SOURCE_SAVE_DIRECTORY = "save directory .env"
+local SOURCE_SAVE_DIRECTORY_BUILD = "save directory build.env"
 local SOURCE_PROCESS_ENVIRONMENT = "process environment"
-local SOURCE_DEFAULT = "built-in default"
 
 local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -29,6 +36,20 @@ local function stripQuotes(value)
         return trimmed:sub(2, -2)
     end
     return trimmed
+end
+
+local function stripUtf8Bom(value)
+    if type(value) ~= "string" then
+        return value
+    end
+
+    if value:byte(1) == UTF8_BOM_FIRST_BYTE
+        and value:byte(2) == UTF8_BOM_SECOND_BYTE
+        and value:byte(3) == UTF8_BOM_THIRD_BYTE then
+        return value:sub(4)
+    end
+
+    return value
 end
 
 local function readFile(path)
@@ -49,7 +70,9 @@ local function parseEnvContent(content)
         return values
     end
 
-    for line in content:gmatch("[^\r\n]+") do
+    local normalizedContent = stripUtf8Bom(content)
+
+    for line in normalizedContent:gmatch("[^\r\n]+") do
         local trimmedLine = trim(line)
         if trimmedLine ~= "" and trimmedLine:sub(1, 1) ~= "#" then
             local key, value = trimmedLine:match("^([%w_]+)%s*=%s*(.*)$")
@@ -76,19 +99,50 @@ local function mergeValues(target, sourceByKey, source, sourceName)
     end
 end
 
-local function readLoveEnvFile()
+local function readLoveProjectFile(fileName)
     if not (love and love.filesystem and love.filesystem.getInfo) then
         return nil
     end
 
-    if not love.filesystem.getInfo(ENV_FILE, "file") then
+    if not love.filesystem.getInfo(fileName, "file") then
         return nil
     end
 
-    return love.filesystem.read(ENV_FILE)
+    return love.filesystem.read(fileName)
 end
 
-local function readSaveDirectoryEnvFile()
+local function readLoveEnvFile()
+    return readLoveProjectFile(ENV_FILE), SOURCE_LOVE_FILESYSTEM
+end
+
+local function readLoveBuildEnvFile()
+    return readLoveProjectFile(BUILD_ENV_FILE), SOURCE_LOVE_FILESYSTEM_BUILD
+end
+
+local function readSourceDirectoryFile(fileName)
+    if not (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSource) then
+        return nil
+    end
+
+    local sourceBaseDirectory = love.filesystem.getSourceBaseDirectory()
+    local sourceName = love.filesystem.getSource()
+    if not sourceBaseDirectory or sourceBaseDirectory == "" or not sourceName or sourceName == "" then
+        return nil
+    end
+
+    local sourceFilePath = sourceBaseDirectory .. DIRECTORY_SEPARATOR .. sourceName .. DIRECTORY_SEPARATOR .. fileName
+    return readFile(sourceFilePath)
+end
+
+local function readSourceDirectoryEnvFile()
+    return readSourceDirectoryFile(ENV_FILE), SOURCE_SOURCE_DIRECTORY
+end
+
+local function readSourceDirectoryBuildEnvFile()
+    return readSourceDirectoryFile(BUILD_ENV_FILE), SOURCE_SOURCE_DIRECTORY_BUILD
+end
+
+local function readSaveDirectoryFile(fileName)
     if not (love and love.filesystem and love.filesystem.getSaveDirectory) then
         return nil
     end
@@ -98,7 +152,15 @@ local function readSaveDirectoryEnvFile()
         return nil
     end
 
-    return readFile(saveDirectory .. DIRECTORY_SEPARATOR .. ENV_FILE)
+    return readFile(saveDirectory .. DIRECTORY_SEPARATOR .. fileName)
+end
+
+local function readSaveDirectoryEnvFile()
+    return readSaveDirectoryFile(ENV_FILE), SOURCE_SAVE_DIRECTORY
+end
+
+local function readSaveDirectoryBuildEnvFile()
+    return readSaveDirectoryFile(BUILD_ENV_FILE), SOURCE_SAVE_DIRECTORY_BUILD
 end
 
 local function readEnvValues()
@@ -106,22 +168,43 @@ local function readEnvValues()
     local sourceByKey = {}
     local loadedSourceCount = 0
 
-    local loveContent = readLoveEnvFile()
-    if loveContent then
-        mergeValues(values, sourceByKey, parseEnvContent(loveContent), SOURCE_LOVE_FILESYSTEM)
-        loadedSourceCount = loadedSourceCount + 1
-    end
+    local fileReaders = {
+        {
+            read = readLoveBuildEnvFile,
+        },
+        {
+            read = readLoveEnvFile,
+        },
+        {
+            read = function()
+                return readFile(BUILD_ENV_FILE), SOURCE_WORKING_DIRECTORY_BUILD
+            end,
+        },
+        {
+            read = function()
+                return readFile(ENV_FILE), SOURCE_WORKING_DIRECTORY
+            end,
+        },
+        {
+            read = readSourceDirectoryBuildEnvFile,
+        },
+        {
+            read = readSourceDirectoryEnvFile,
+        },
+        {
+            read = readSaveDirectoryBuildEnvFile,
+        },
+        {
+            read = readSaveDirectoryEnvFile,
+        },
+    }
 
-    local workingDirectoryContent = readFile(ENV_FILE)
-    if workingDirectoryContent then
-        mergeValues(values, sourceByKey, parseEnvContent(workingDirectoryContent), SOURCE_WORKING_DIRECTORY)
-        loadedSourceCount = loadedSourceCount + 1
-    end
-
-    local saveDirectoryContent = readSaveDirectoryEnvFile()
-    if saveDirectoryContent then
-        mergeValues(values, sourceByKey, parseEnvContent(saveDirectoryContent), SOURCE_SAVE_DIRECTORY)
-        loadedSourceCount = loadedSourceCount + 1
+    for _, fileReader in ipairs(fileReaders) do
+        local content, sourceName = fileReader.read()
+        if content then
+            mergeValues(values, sourceByKey, parseEnvContent(content), sourceName)
+            loadedSourceCount = loadedSourceCount + 1
+        end
     end
 
     return values, sourceByKey, loadedSourceCount
@@ -150,19 +233,19 @@ function envLoader.load()
     applyProcessEnvironment(values, sourceByKey)
 
     if loadedSourceCount == 0 and not os.getenv("API_KEY") and not os.getenv("API_BASE_URL") then
-        errors[#errors + 1] = string.format("%s was not found. Set API_KEY in process environment variables or a local %s file.", ENV_FILE, ENV_FILE)
+        errors[#errors + 1] = string.format("%s was not found. Set API_KEY and API_BASE_URL in process environment variables or a local %s file.", ENV_FILE, ENV_FILE)
     end
 
     local apiKey = values.API_KEY or ""
-    local apiBaseUrl = values.API_BASE_URL or DEFAULT_API_BASE_URL
+    local apiBaseUrl = values.API_BASE_URL or ""
     local hmacSecret = values.HMAC_SECRET or ""
-
-    if apiBaseUrl == DEFAULT_API_BASE_URL and not sourceByKey.API_BASE_URL then
-        sourceByKey.API_BASE_URL = SOURCE_DEFAULT
-    end
 
     if apiKey == "" then
         errors[#errors + 1] = "API_KEY is missing. Set it in the process environment or in .env."
+    end
+
+    if apiBaseUrl == "" then
+        errors[#errors + 1] = "API_BASE_URL is missing. Set it in the process environment or in .env."
     end
 
     return {
