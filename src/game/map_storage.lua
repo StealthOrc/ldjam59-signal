@@ -1,5 +1,6 @@
 local mapStorage = {}
 local authoredMap = require("src.game.authored_map")
+local uuid = require("src.game.uuid")
 
 local USER_MAP_DIR = "maps"
 local BUILTIN_MAP_DIR = "src/game/maps"
@@ -128,6 +129,11 @@ local function loadMapFile(path)
     return data
 end
 
+local function writeMapFile(path, payload)
+    local body = "return " .. serializeValue(payload) .. "\n"
+    return love.filesystem.write(path, body)
+end
+
 local function getBuiltinDirectory(mapKind)
     if mapKind == "tutorial" then
         return BUILTIN_TUTORIAL_DIR
@@ -182,6 +188,7 @@ local function buildDescriptor(source, fileName, data, options)
     local mapKind = descriptorOptions.mapKind or inferMapKind(source, data, descriptorOptions.directory)
     return {
         id = source .. ":" .. fileName,
+        mapUuid = data.mapUuid,
         source = source,
         name = name,
         displayName = buildDisplayName(name, fileName),
@@ -228,8 +235,13 @@ function mapStorage.saveMap(name, payload)
 
     local fileName = sanitizeFileName(name)
     local path = USER_MAP_DIR .. "/" .. fileName
-    local body = "return " .. serializeValue(payload) .. "\n"
-    local ok, writeError = love.filesystem.write(path, body)
+    payload.mapUuid = payload.mapUuid or uuid.generateV4()
+    if payload.level then
+        payload.level.id = payload.mapUuid
+        payload.level.mapUuid = payload.mapUuid
+    end
+
+    local ok, writeError = writeMapFile(path, payload)
     if not ok then
         return nil, writeError
     end
@@ -260,6 +272,22 @@ function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)
         return nil, loadError
     end
 
+    if type(data.mapUuid) ~= "string" or data.mapUuid == "" then
+        if resolvedSource == "user" then
+            data.mapUuid = uuid.generateV4()
+            writeMapFile(path, data)
+        elseif type(data.level) == "table" and type(data.level.id) == "string" and data.level.id ~= "" then
+            data.mapUuid = data.level.id
+        else
+            data.mapUuid = "builtin-" .. fileName:gsub("%.lua$", "")
+        end
+    end
+
+    if data.level then
+        data.level.id = data.mapUuid
+        data.level.mapUuid = data.mapUuid
+    end
+
     data.fileName = fileName
     data.path = path
     data.source = resolvedSource
@@ -269,10 +297,20 @@ function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)
     data.validationErrors = {}
     data.validationErrorText = nil
     if data.editor then
-        local level, errorText, errors = authoredMap.buildPlayableLevel(data.name or fileName:gsub("%.lua$", ""), data.editor)
+        local existingLevel = data.level
+        local level, errorText, errors = authoredMap.buildPlayableLevel(data.name or fileName:gsub("%.lua$", ""), data.editor, data.mapUuid)
         data.validationErrors = errors or {}
         data.validationErrorText = errorText
         if level then
+            if existingLevel then
+                level.title = existingLevel.title or level.title
+                level.description = existingLevel.description or level.description
+                level.hint = existingLevel.hint or level.hint
+                level.footer = existingLevel.footer or level.footer
+                if existingLevel.timeLimit ~= nil then
+                    level.timeLimit = existingLevel.timeLimit
+                end
+            end
             data.level = level
         end
     end
