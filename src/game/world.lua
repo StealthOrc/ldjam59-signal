@@ -12,6 +12,9 @@ local COLOR_OPTIONS = {
 local RELAY_FLASH_DURATION = 0.28
 local TRIP_FLASH_DURATION = 0.28
 local CROSSBAR_FLASH_DURATION = 0.28
+local roadTypes = require("src.game.road_types")
+local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
+local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
 
 local function clamp(value, minValue, maxValue)
@@ -130,6 +133,48 @@ local function formatColorLabel(colorId)
         return "Unknown"
     end
     return colorId:sub(1, 1):upper() .. colorId:sub(2)
+end
+
+local function getRoadTypeScale(roadType, explicitScale)
+    if explicitScale then
+        return explicitScale
+    end
+
+    return roadTypes.getConfig(roadType).speedScale
+end
+
+local function normalizeStyleSections(styleSections, totalLength, fallbackRoadType, fallbackSpeedScale)
+    local normalizedSections = {}
+    local clampedLength = math.max(0, totalLength or 0)
+
+    for _, section in ipairs(styleSections or {}) do
+        local roadTypeId = roadTypes.normalizeRoadType(section.roadType or fallbackRoadType)
+        local startDistance = section.startRatio and (section.startRatio * clampedLength) or section.startDistance or 0
+        local endDistance = section.endRatio and (section.endRatio * clampedLength) or section.endDistance or clampedLength
+        startDistance = clamp(startDistance, 0, clampedLength)
+        endDistance = clamp(endDistance, 0, clampedLength)
+
+        if endDistance > startDistance + 0.0001 then
+            normalizedSections[#normalizedSections + 1] = {
+                roadType = roadTypeId,
+                speedScale = getRoadTypeScale(roadTypeId, section.speedScale),
+                startDistance = startDistance,
+                endDistance = endDistance,
+            }
+        end
+    end
+
+    if #normalizedSections == 0 then
+        local roadTypeId = roadTypes.normalizeRoadType(fallbackRoadType)
+        normalizedSections[1] = {
+            roadType = roadTypeId,
+            speedScale = getRoadTypeScale(roadTypeId, fallbackSpeedScale),
+            startDistance = 0,
+            endDistance = clampedLength,
+        }
+    end
+
+    return normalizedSections
 end
 
 local function appendUnique(list, lookup, value)
@@ -424,6 +469,7 @@ end
 function world:normalizeLevel(sourceLevel)
     local normalized = {
         id = sourceLevel.id,
+        mapUuid = sourceLevel.mapUuid or sourceLevel.id,
         title = sourceLevel.title,
         description = sourceLevel.description,
         hint = sourceLevel.hint,
@@ -446,6 +492,9 @@ function world:normalizeLevel(sourceLevel)
                 -- Authored map routes already carry their accepted endpoint colors, so
                 -- older saved maps should not inherit the active input color visually.
                 adoptInputColor = edgeDefinition.adoptInputColor == true and edgeDefinition.routeId == nil,
+                roadType = roadTypes.normalizeRoadType(edgeDefinition.roadType),
+                speedScale = getRoadTypeScale(edgeDefinition.roadType, edgeDefinition.speedScale),
+                styleSections = edgeDefinition.styleSections or {},
                 points = edgeDefinition.points or {},
                 sourceType = edgeDefinition.sourceType,
                 sourceId = edgeDefinition.sourceId,
@@ -575,6 +624,9 @@ function world:normalizeLevel(sourceLevel)
                 color = inputColor,
                 darkColor = copyColor(inputDefinition.darkColor or darkerColor(inputColor)),
                 adoptInputColor = false,
+                roadType = roadTypes.DEFAULT_ID,
+                speedScale = roadTypes.getConfig(roadTypes.DEFAULT_ID).speedScale,
+                styleSections = {},
                 points = inputDefinition.inputPoints or {},
                 sourceType = "start",
                 sourceId = edgeId .. "_start",
@@ -594,6 +646,9 @@ function world:normalizeLevel(sourceLevel)
                 color = outputColor,
                 darkColor = copyColor(outputDefinition.darkColor or darkerColor(outputColor)),
                 adoptInputColor = outputDefinition.adoptInputColor == true,
+                roadType = roadTypes.DEFAULT_ID,
+                speedScale = roadTypes.getConfig(roadTypes.DEFAULT_ID).speedScale,
+                styleSections = {},
                 points = outputDefinition.outputPoints or {},
                 sourceType = "junction",
                 sourceId = definition.id,
@@ -649,6 +704,9 @@ function world:buildEdge(edgeDefinition)
     local stopDistance = math.max(signalDistance - (self.carriageLength + 12), 0)
     local stopX, stopY = pointOnPath(path, stopDistance)
     local signalX, signalY = pointOnPath(path, signalDistance)
+    local roadTypeId = roadTypes.normalizeRoadType(edgeDefinition.roadType)
+    local speedScale = getRoadTypeScale(roadTypeId, edgeDefinition.speedScale)
+    local styleSections = normalizeStyleSections(edgeDefinition.styleSections, path.length, roadTypeId, speedScale)
 
     return {
         id = edgeDefinition.id,
@@ -657,6 +715,9 @@ function world:buildEdge(edgeDefinition)
         color = color,
         darkColor = copyColor(edgeDefinition.darkColor or darkerColor(color)),
         adoptInputColor = edgeDefinition.adoptInputColor == true,
+        roadType = roadTypeId,
+        speedScale = speedScale,
+        styleSections = styleSections,
         sourceType = edgeDefinition.sourceType,
         sourceId = edgeDefinition.sourceId,
         targetType = edgeDefinition.targetType,
@@ -1309,6 +1370,18 @@ function world:getDesiredLeadDistance(train)
     return nil
 end
 
+function world:getEdgeSpeedScaleAtDistance(edge, distance)
+    local clampedDistance = clamp(distance or 0, 0, edge.path.length)
+
+    for _, section in ipairs(edge.styleSections or {}) do
+        if clampedDistance >= section.startDistance and clampedDistance <= section.endDistance then
+            return section.speedScale
+        end
+    end
+
+    return edge.speedScale or 1
+end
+
 function world:advanceTrainToNextEdge(train, junction, overflow)
     local outputEdge = junction.outputs[clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))]
     if not outputEdge then
@@ -1349,7 +1422,7 @@ function world:updateTrain(train, dt)
     end
 
     local desiredStopDistance = self:getDesiredLeadDistance(train)
-    local targetSpeed = train.speed
+    local targetSpeed = train.speed * self:getEdgeSpeedScaleAtDistance(currentEdge, localProgress)
     local localProgress = self:getHeadLocalProgress(train)
 
     if desiredStopDistance then
@@ -1362,7 +1435,7 @@ function world:updateTrain(train, dt)
             train.headDistance = previousLength + desiredStopDistance
             localProgress = desiredStopDistance
         else
-            targetSpeed = train.speed * clamp(remainingDistance / brakingWindow, 0, 1)
+            targetSpeed = train.speed * self:getEdgeSpeedScaleAtDistance(currentEdge, localProgress) * clamp(remainingDistance / brakingWindow, 0, 1)
         end
     end
 
@@ -1569,6 +1642,8 @@ function world:getRunSummary()
     local scoring = self:getScoringConstants()
     local summary = {
         endReason = self:getRunEndReason(),
+        mapUuid = self.level and (self.level.mapUuid or self.level.id) or nil,
+        mapTitle = self.level and self.level.title or nil,
         correctOnTimeCount = 0,
         correctLateCount = 0,
         wrongDestinationCount = 0,
@@ -1847,7 +1922,7 @@ function world:getOutputDisplayColor(junction, outputIndex, isActive)
     return isActive and outputTrack.color or outputTrack.darkColor, outputTrack.darkColor
 end
 
-function world:getRenderedTrackPoints(track)
+function world:getRenderedTrackWindow(track)
     local trimStartDistance = 0
     local trimEndDistance = track.path.length
 
@@ -1859,7 +1934,66 @@ function world:getRenderedTrackPoints(track)
         trimEndDistance = math.max(track.path.length - self.junctionTrackClearance, 0)
     end
 
+    return trimStartDistance, trimEndDistance
+end
+
+function world:getRenderedTrackPoints(track)
+    local trimStartDistance, trimEndDistance = self:getRenderedTrackWindow(track)
     return buildPathSlice(track.path, trimStartDistance, trimEndDistance)
+end
+
+function world:drawTrackPatternSegment(startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
+    local graphics = love.graphics
+    graphics.setColor(ROAD_PATTERN_OUTLINE[1], ROAD_PATTERN_OUTLINE[2], ROAD_PATTERN_OUTLINE[3], alpha)
+    graphics.setLineWidth(outlineWidth)
+    graphics.line(startX, startY, endX, endY)
+    graphics.setColor(ROAD_PATTERN_FILL[1], ROAD_PATTERN_FILL[2], ROAD_PATTERN_FILL[3], alpha)
+    graphics.setLineWidth(fillWidth)
+    graphics.line(startX, startY, endX, endY)
+end
+
+function world:drawTrackRoadTypeMarkers(track, isActive)
+    local startDistance, endDistance = self:getRenderedTrackWindow(track)
+    local alpha = isActive and 0.95 or 0.78
+
+    for _, section in ipairs(track.styleSections or {}) do
+        local roadTypeConfig = roadTypes.getConfig(section.roadType)
+        if roadTypeConfig.pattern ~= "plain" then
+            local sectionStartDistance = math.max(startDistance, section.startDistance)
+            local sectionEndDistance = math.min(endDistance, section.endDistance)
+            local markerDistance = sectionStartDistance + roadTypeConfig.markerSpacing * 0.5
+            local markerSize = roadTypeConfig.markerSize
+            local outlineWidth = roadTypeConfig.markerWidth + 2
+            local fillWidth = roadTypeConfig.markerWidth
+
+            while markerDistance < sectionEndDistance do
+                local markerX, markerY, angle = pointOnPath(track.path, markerDistance)
+                local directionX = math.cos(angle)
+                local directionY = math.sin(angle)
+                local normalX = -directionY
+                local normalY = directionX
+
+                if roadTypeConfig.pattern == "chevron" then
+                    local tipX = markerX + directionX * markerSize
+                    local tipY = markerY + directionY * markerSize
+                    local leftX = markerX - normalX * markerSize * 0.7
+                    local leftY = markerY - normalY * markerSize * 0.7
+                    local rightX = markerX + normalX * markerSize * 0.7
+                    local rightY = markerY + normalY * markerSize * 0.7
+                    self:drawTrackPatternSegment(leftX, leftY, tipX, tipY, alpha, outlineWidth, fillWidth)
+                    self:drawTrackPatternSegment(rightX, rightY, tipX, tipY, alpha, outlineWidth, fillWidth)
+                elseif roadTypeConfig.pattern == "crossbar" then
+                    local startX = markerX - normalX * markerSize
+                    local startY = markerY - normalY * markerSize
+                    local endX = markerX + normalX * markerSize
+                    local endY = markerY + normalY * markerSize
+                    self:drawTrackPatternSegment(startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
+                end
+
+                markerDistance = markerDistance + roadTypeConfig.markerSpacing
+            end
+        end
+    end
 end
 
 function world:drawTrackLine(points, width, color, alpha)
@@ -1968,6 +2102,8 @@ function world:drawStandaloneTrack(track, isActive)
     else
         self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
     end
+
+    self:drawTrackRoadTypeMarkers(track, isActive)
 end
 
 function world:drawOutputTrack(junction, outputIndex, isActive)
@@ -1991,6 +2127,8 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     else
         self:drawTrackLine(points, self.sharedWidth, color, isActive and 0.98 or 0.7)
     end
+
+    self:drawTrackRoadTypeMarkers(outputTrack, isActive)
 end
 
 function world:drawControlOverlay(junction)

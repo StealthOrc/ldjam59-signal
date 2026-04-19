@@ -1,5 +1,7 @@
 local mapStorage = require("src.game.map_storage")
 local authoredMap = require("src.game.authored_map")
+local roadTypes = require("src.game.road_types")
+local uuid = require("src.game.uuid")
 
 local mapEditor = {}
 mapEditor.__index = mapEditor
@@ -12,6 +14,10 @@ local SHARED_LANE_STRIPE_LENGTH = 14
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
 local DEFAULT_TRAIN_WAGONS = 4
 local LEGACY_TRAIN_SPEED = 168
+local DEFAULT_ROAD_TYPE = roadTypes.DEFAULT_ID
+local ROAD_TYPE_OPTIONS = roadTypes.getOrderedOptions()
+local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
+local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
     direct = "D",
     delayed = "T",
@@ -149,6 +155,46 @@ local function routePairKey(a, b)
         return a .. "|" .. b
     end
     return b .. "|" .. a
+end
+
+local function segmentLength(a, b)
+    local dx = b.x - a.x
+    local dy = b.y - a.y
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+local function angleBetweenPoints(a, b)
+    local dx = b.x - a.x
+    local dy = b.y - a.y
+
+    if math.atan2 then
+        return math.atan2(dy, dx)
+    end
+
+    if dx == 0 then
+        if dy >= 0 then
+            return math.pi * 0.5
+        end
+        return -math.pi * 0.5
+    end
+
+    local angle = math.atan(dy / dx)
+    if dx < 0 then
+        angle = angle + math.pi
+    end
+    return angle
+end
+
+local function buildDefaultSegmentRoadTypes(pointCount, fallbackRoadType)
+    local segmentRoadTypes = {}
+    local normalizedRoadType = roadTypes.normalizeRoadType(fallbackRoadType)
+    local segmentCount = math.max(0, (pointCount or 0) - 1)
+
+    for segmentIndex = 1, segmentCount do
+        segmentRoadTypes[segmentIndex] = normalizedRoadType
+    end
+
+    return segmentRoadTypes
 end
 
 local function formatNumber(value)
@@ -378,9 +424,13 @@ function mapEditor.new(viewportW, viewportH, level)
     self.selectedPointIndex = nil
     self.drag = nil
     self.colorPicker = nil
+    self.routeTypePicker = nil
     self.dialog = nil
     self.currentMapName = nil
+    self.editingMapUuid = nil
     self.sourceInfo = nil
+    self.lastSavedDescriptor = nil
+    self.pendingPlaytestDescriptor = nil
     self.loadedMapPayload = nil
     self.lastValidationError = nil
     self.validationErrors = {}
@@ -604,6 +654,60 @@ function mapEditor:getSelectedRoute()
     return nil
 end
 
+function mapEditor:getRouteSegmentCount(route)
+    if not route or not route.points then
+        return 0
+    end
+
+    return math.max(0, #route.points - 1)
+end
+
+function mapEditor:ensureRouteSegmentRoadTypes(route)
+    if not route then
+        return {}
+    end
+
+    local segmentCount = self:getRouteSegmentCount(route)
+    local segmentRoadTypes = route.segmentRoadTypes or {}
+    local normalizedRoadTypes = {}
+    local fallbackRoadType = roadTypes.normalizeRoadType(route.roadType)
+
+    for segmentIndex = 1, segmentCount do
+        normalizedRoadTypes[segmentIndex] = roadTypes.normalizeRoadType(segmentRoadTypes[segmentIndex] or fallbackRoadType)
+    end
+
+    route.segmentRoadTypes = normalizedRoadTypes
+    route.roadType = nil
+    return route.segmentRoadTypes
+end
+
+function mapEditor:getRouteSegmentRoadType(route, segmentIndex)
+    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    return segmentRoadTypes[segmentIndex] or DEFAULT_ROAD_TYPE
+end
+
+function mapEditor:summarizeRouteRoadTypes(route)
+    local counts = {}
+    local summaryParts = {}
+
+    for _, roadTypeId in ipairs(self:ensureRouteSegmentRoadTypes(route)) do
+        counts[roadTypeId] = (counts[roadTypeId] or 0) + 1
+    end
+
+    for _, option in ipairs(ROAD_TYPE_OPTIONS) do
+        local count = counts[option.id] or 0
+        if count > 0 then
+            summaryParts[#summaryParts + 1] = string.format("%d %s", count, option.label:lower())
+        end
+    end
+
+    if #summaryParts == 0 then
+        return "No road segments."
+    end
+
+    return table.concat(summaryParts, ", ")
+end
+
 function mapEditor:createEndpoint(kind, x, y, colors, id)
     local endpointId = id or (kind .. "_endpoint_" .. self.nextEndpointId)
     local fallbackColorId = COLOR_OPTIONS[((self.nextEndpointId - 1) % #COLOR_OPTIONS) + 1].id
@@ -701,14 +805,36 @@ end
 function mapEditor:refreshValidation(mapName)
     local level, buildError, buildErrors = authoredMap.buildPlayableLevel(
         mapName or self.currentMapName or "Untitled",
-        self:getExportData()
+        self:getExportData(),
+        self.editingMapUuid
     )
     self.lastValidationError = buildError
     self.validationErrors = buildErrors or {}
     return level, buildError, self.validationErrors
 end
 
-function mapEditor:createRoute(points, color, id, label, colorId, startColors, endColors, startEndpointId, endEndpointId)
+function mapEditor:canPlaySavedMap()
+    return self.lastSavedDescriptor ~= nil and self.lastSavedDescriptor.hasLevel == true
+end
+
+function mapEditor:requestPlaytestFromSavedMap()
+    if not self:canPlaySavedMap() then
+        self:showStatus("Save a playable map first, then test it from here.")
+        return false
+    end
+
+    self.pendingPlaytestDescriptor = self.lastSavedDescriptor
+    self:showStatus("Starting test run from the saved map...")
+    return true
+end
+
+function mapEditor:consumePlaytestRequest()
+    local descriptor = self.pendingPlaytestDescriptor
+    self.pendingPlaytestDescriptor = nil
+    return descriptor
+end
+
+function mapEditor:createRoute(points, color, id, label, colorId, startColors, endColors, startEndpointId, endEndpointId, segmentRoadTypes)
     local routeId = id or ("route_" .. self.nextRouteId)
     local resolvedColorId = colorId or nearestColorId(color)
     local resolvedColor = normalizeColor(color or getColorById(resolvedColorId))
@@ -727,6 +853,7 @@ function mapEditor:createRoute(points, color, id, label, colorId, startColors, e
         startEndpointId = startEndpoint.id,
         endEndpointId = endEndpoint.id,
         points = {},
+        segmentRoadTypes = {},
     }
 
     for _, point in ipairs(points) do
@@ -735,6 +862,12 @@ function mapEditor:createRoute(points, color, id, label, colorId, startColors, e
 
     self.routes[#self.routes + 1] = route
     self.nextRouteId = self.nextRouteId + 1
+    route.segmentRoadTypes = buildDefaultSegmentRoadTypes(#route.points, DEFAULT_ROAD_TYPE)
+    if type(segmentRoadTypes) == "table" then
+        for segmentIndex = 1, #route.segmentRoadTypes do
+            route.segmentRoadTypes[segmentIndex] = roadTypes.normalizeRoadType(segmentRoadTypes[segmentIndex])
+        end
+    end
     self:updateRouteEndpointPoint(route, "start")
     self:updateRouteEndpointPoint(route, "end")
     return route
@@ -743,13 +876,22 @@ end
 function mapEditor:getSaveButtonRect()
     return {
         x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 210,
+        y = self.sidePanel.y + self.sidePanel.h - 260,
         w = self.sidePanel.w - 36,
         h = 38,
     }
 end
 
 function mapEditor:getOpenButtonRect()
+    return {
+        x = self.sidePanel.x + 18,
+        y = self.sidePanel.y + self.sidePanel.h - 210,
+        w = self.sidePanel.w - 36,
+        h = 38,
+    }
+end
+
+function mapEditor:getPlayTestButtonRect()
     return {
         x = self.sidePanel.x + 18,
         y = self.sidePanel.y + self.sidePanel.h - 160,
@@ -906,6 +1048,10 @@ function mapEditor:closeColorPicker()
     self.colorPicker = nil
 end
 
+function mapEditor:closeRouteTypePicker()
+    self.routeTypePicker = nil
+end
+
 function mapEditor:openColorPicker(route, magnetKind)
     local point = magnetKind == "start" and route.points[1] or route.points[#route.points]
     self.colorPicker = {
@@ -915,6 +1061,17 @@ function mapEditor:openColorPicker(route, magnetKind)
         anchorX = point.x,
         anchorY = point.y,
     }
+    self:closeRouteTypePicker()
+end
+
+function mapEditor:openRouteTypePicker(route, segmentIndex, anchorX, anchorY)
+    self.routeTypePicker = {
+        routeId = route.id,
+        segmentIndex = segmentIndex,
+        anchorX = anchorX,
+        anchorY = anchorY,
+    }
+    self:closeColorPicker()
 end
 
 function mapEditor:openSharedJunctionColorPicker(intersection)
@@ -1055,6 +1212,51 @@ function mapEditor:getColorPickerLayout()
     }
 end
 
+function mapEditor:getRouteTypePickerLayout()
+    if not self.routeTypePicker then
+        return nil
+    end
+
+    local optionCount = #ROAD_TYPE_OPTIONS
+    local optionHeight = 42
+    local optionGap = 10
+    local rect = {
+        w = 236,
+        h = 66 + optionCount * optionHeight + math.max(0, optionCount - 1) * optionGap,
+    }
+    rect.x = clamp(
+        self.routeTypePicker.anchorX + 18,
+        self.canvas.x + 8,
+        self.viewport.w - rect.w - 8
+    )
+    rect.y = clamp(
+        self.routeTypePicker.anchorY - rect.h * 0.5,
+        self.canvas.y + 8,
+        self.viewport.h - rect.h - 8
+    )
+
+    local optionRects = {}
+    local currentY = rect.y + 46
+
+    for _, option in ipairs(ROAD_TYPE_OPTIONS) do
+        optionRects[#optionRects + 1] = {
+            option = option,
+            rect = {
+                x = rect.x + 14,
+                y = currentY,
+                w = rect.w - 28,
+                h = optionHeight,
+            },
+        }
+        currentY = currentY + optionHeight + optionGap
+    end
+
+    return {
+        rect = rect,
+        options = optionRects,
+    }
+end
+
 function mapEditor:closeDialog()
     self.dialog = nil
 end
@@ -1074,6 +1276,7 @@ function mapEditor:openOpenDialog()
     self.dialog = {
         type = "open",
         maps = mapStorage.listMaps(),
+        scroll = 0,
     }
 end
 
@@ -1084,6 +1287,106 @@ function mapEditor:getDialogRect()
         w = 520,
         h = 360,
     }
+end
+
+function mapEditor:getOpenDialogListLayout()
+    local rect = self:getDialogRect()
+    local maps = (self.dialog and self.dialog.maps) or {}
+    local listRect = {
+        x = rect.x + 24,
+        y = rect.y + 78,
+        w = rect.w - 48,
+        h = rect.h - 142,
+    }
+    local rowStride = 54
+    local rowHeight = 44
+    local visibleRows = math.max(1, math.floor(listRect.h / rowStride))
+    local maxScroll = math.max(0, #maps - visibleRows)
+    local scroll = clamp((self.dialog and self.dialog.scroll) or 0, 0, maxScroll)
+
+    if self.dialog then
+        self.dialog.scroll = scroll
+    end
+
+    local contentWidth = listRect.w
+    local scrollbar = nil
+    if maxScroll > 0 then
+        local track = {
+            x = listRect.x + listRect.w - 8,
+            y = listRect.y,
+            w = 8,
+            h = listRect.h,
+        }
+        local thumbHeight = math.max(26, track.h * (visibleRows / #maps))
+        local thumbY = track.y + ((track.h - thumbHeight) * (scroll / maxScroll))
+        scrollbar = {
+            track = track,
+            thumb = {
+                x = track.x,
+                y = thumbY,
+                w = track.w,
+                h = thumbHeight,
+            },
+            maxScroll = maxScroll,
+        }
+        contentWidth = listRect.w - 14
+    end
+
+    local rows = {}
+    for slot = 1, visibleRows do
+        local mapIndex = scroll + slot
+        local savedMap = maps[mapIndex]
+        if not savedMap then
+            break
+        end
+
+        rows[#rows + 1] = {
+            index = mapIndex,
+            map = savedMap,
+            rect = {
+                x = listRect.x,
+                y = listRect.y + (slot - 1) * rowStride,
+                w = contentWidth,
+                h = rowHeight,
+            },
+        }
+    end
+
+    return {
+        listRect = listRect,
+        rows = rows,
+        totalMaps = #maps,
+        visibleRows = visibleRows,
+        maxScroll = maxScroll,
+        firstVisibleIndex = (#rows > 0) and rows[1].index or 0,
+        lastVisibleIndex = (#rows > 0) and rows[#rows].index or 0,
+        scrollbar = scrollbar,
+    }
+end
+
+function mapEditor:scrollOpenDialog(delta)
+    if not self.dialog or self.dialog.type ~= "open" then
+        return false
+    end
+
+    local layout = self:getOpenDialogListLayout()
+    if layout.maxScroll <= 0 then
+        return false
+    end
+
+    self.dialog.scroll = clamp((self.dialog.scroll or 0) + delta, 0, layout.maxScroll)
+    return true
+end
+
+function mapEditor:openDialogMap(savedMap)
+    local loadedMap, loadError = mapStorage.loadMap(savedMap)
+    if not loadedMap or not loadedMap.editor then
+        self:showStatus(loadError or "That map could not be opened.")
+        return false
+    end
+
+    self:resetFromMap(loadedMap, savedMap)
+    return true
 end
 
 function mapEditor:synthesizeTrainsFromLevel(levelData)
@@ -1161,6 +1464,7 @@ function mapEditor:getExportData()
     end
 
     for _, route in ipairs(self.routes) do
+        self:ensureRouteSegmentRoadTypes(route)
         local exportRoute = {
             id = route.id,
             label = route.label or route.id,
@@ -1168,6 +1472,7 @@ function mapEditor:getExportData()
             startEndpointId = route.startEndpointId,
             endEndpointId = route.endEndpointId,
             points = {},
+            segmentRoadTypes = {},
         }
 
         for _, point in ipairs(route.points) do
@@ -1176,6 +1481,10 @@ function mapEditor:getExportData()
                 y = point.y / self.viewport.h,
                 sharedPointId = point.sharedPointId,
             }
+        end
+
+        for _, roadTypeId in ipairs(route.segmentRoadTypes) do
+            exportRoute.segmentRoadTypes[#exportRoute.segmentRoadTypes + 1] = roadTypeId
         end
 
         export.routes[#export.routes + 1] = exportRoute
@@ -1239,6 +1548,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.sequencerScrollDrag = nil
     self:closeDialog()
     self:closeColorPicker()
+    self:closeRouteTypePicker()
     self:clearSelection()
 
     for _, endpointData in ipairs((editorData or {}).endpoints or {}) do
@@ -1273,7 +1583,8 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
             nil,
             nil,
             routeData.startEndpointId,
-            routeData.endEndpointId
+            routeData.endEndpointId,
+            routeData.segmentRoadTypes or buildDefaultSegmentRoadTypes(#points, routeData.roadType)
         )
     end
 
@@ -1440,6 +1751,7 @@ function mapEditor:saveMap(name)
     local payload = {
         version = 1,
         name = trimmedName,
+        mapUuid = self.editingMapUuid or uuid.generateV4(),
         savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         editor = self:getExportData(),
     }
@@ -1453,12 +1765,14 @@ function mapEditor:saveMap(name)
     end
 
     self.currentMapName = trimmedName
+    self.editingMapUuid = payload.mapUuid
     self.sourceInfo = record
+    self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
     self.validationErrors = buildErrors or {}
     self:closeDialog()
     if level then
-        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory())
+        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ". Press Play Saved Map (P) to test.")
     else
         self:showStatus("Saved map: " .. trimmedName .. ". Remaining issues: " .. buildError)
     end
@@ -1468,10 +1782,14 @@ end
 function mapEditor:resetFromMap(mapData, sourceInfo)
     self.loadedMapPayload = mapData
     self.sourceInfo = sourceInfo
+    self.editingMapUuid = mapData and mapData.mapUuid or nil
+    self.lastSavedDescriptor = sourceInfo and sourceInfo.hasLevel and sourceInfo or nil
+    self.pendingPlaytestDescriptor = nil
 
     if not mapData then
         self.level = nil
         self.currentMapName = nil
+        self.editingMapUuid = nil
         self.endpoints = {}
         self.routes = {}
         self.trains = {}
@@ -1487,12 +1805,16 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self.activeTextField = nil
         self.sequencerScrollDrag = nil
         self:closeColorPicker()
+        self:closeRouteTypePicker()
         self:clearSelection()
         self:rebuildIntersections()
         return
     end
 
     if mapData.editor then
+        if sourceInfo and sourceInfo.source == "builtin" then
+            self.editingMapUuid = nil
+        end
         self:loadEditorData(mapData.editor, mapData.name, sourceInfo, mapData.level)
         return
     end
@@ -1520,6 +1842,7 @@ function mapEditor:resetFromLevel(level)
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
     self:closeColorPicker()
+    self:closeRouteTypePicker()
     self:clearSelection()
 
     for _, train in ipairs(self.trains) do
@@ -1890,6 +2213,7 @@ function mapEditor:findSegmentHit(x, y)
                 bestDistance = distance
                 bestHit = {
                     route = route,
+                    segmentIndex = pointIndex,
                     insertIndex = pointIndex + 1,
                     point = { x = closestX, y = closestY },
                 }
@@ -1907,8 +2231,10 @@ function mapEditor:deleteSelection()
     end
 
     self:closeColorPicker()
+    self:closeRouteTypePicker()
 
     if self.selectedPointIndex and self.selectedPointIndex > 1 and self.selectedPointIndex < #selectedRoute.points then
+        self:mergeRouteSegmentStyle(selectedRoute, self.selectedPointIndex)
         table.remove(selectedRoute.points, self.selectedPointIndex)
         self.selectedPointIndex = nil
         self:rebuildIntersections()
@@ -2189,7 +2515,10 @@ function mapEditor:beginRoute(x, y)
         nil,
         colorOption.id,
         { colorOption.id },
-        { colorOption.id }
+        { colorOption.id },
+        nil,
+        nil,
+        { DEFAULT_ROAD_TYPE }
     )
 
     self.selectedRouteId = route.id
@@ -2205,6 +2534,7 @@ function mapEditor:beginRoute(x, y)
         magnetKind = "end",
     }
     self:closeColorPicker()
+    self:closeRouteTypePicker()
     self:rebuildIntersections()
 end
 
@@ -2746,6 +3076,61 @@ function mapEditor:handleSequencerClick(x, y, button)
     return pointInRect(x, y, self.sidePanel)
 end
 
+function mapEditor:splitRouteSegmentStyle(route, segmentIndex)
+    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    local duplicatedRoadType = segmentRoadTypes[segmentIndex] or DEFAULT_ROAD_TYPE
+    table.insert(segmentRoadTypes, segmentIndex + 1, duplicatedRoadType)
+end
+
+function mapEditor:mergeRouteSegmentStyle(route, selectedPointIndex)
+    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    table.remove(segmentRoadTypes, selectedPointIndex)
+end
+
+function mapEditor:setRouteSegmentRoadType(route, segmentIndex, roadType)
+    if not route or not segmentIndex then
+        return
+    end
+
+    local normalizedRoadType = roadTypes.normalizeRoadType(roadType)
+    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    if not segmentRoadTypes[segmentIndex] then
+        return
+    end
+
+    segmentRoadTypes[segmentIndex] = normalizedRoadType
+    self:refreshValidation()
+    self:showStatus("Segment road type set to " .. roadTypes.getConfig(normalizedRoadType).label .. ".")
+end
+
+function mapEditor:handleRouteTypePickerClick(x, y)
+    local layout = self:getRouteTypePickerLayout()
+    if not layout then
+        return false
+    end
+
+    if not pointInRect(x, y, layout.rect) then
+        self:closeRouteTypePicker()
+        return false
+    end
+
+    local route = self:getRouteById(self.routeTypePicker.routeId)
+    if not route then
+        self:closeRouteTypePicker()
+        return true
+    end
+
+    for _, optionEntry in ipairs(layout.options) do
+        if pointInRect(x, y, optionEntry.rect) then
+            self:setRouteSegmentRoadType(route, self.routeTypePicker.segmentIndex, optionEntry.option.id)
+            self:closeRouteTypePicker()
+            return true
+        end
+    end
+
+    return true
+end
+
 function mapEditor:handleDialogClick(x, y)
     if not self.dialog then
         return false
@@ -2758,20 +3143,18 @@ function mapEditor:handleDialogClick(x, y)
     end
 
     if self.dialog.type == "open" then
-        for mapIndex, savedMap in ipairs(self.dialog.maps or {}) do
-            local itemRect = {
-                x = rect.x + 24,
-                y = rect.y + 78 + (mapIndex - 1) * 54,
-                w = rect.w - 48,
-                h = 44,
-            }
-            if pointInRect(x, y, itemRect) then
-                local loadedMap, loadError = mapStorage.loadMap(savedMap)
-                if not loadedMap or not loadedMap.editor then
-                    self:showStatus(loadError or "That map could not be opened.")
-                else
-                    self:resetFromMap(loadedMap, savedMap)
-                end
+        local layout = self:getOpenDialogListLayout()
+        if layout.scrollbar and pointInRect(x, y, layout.scrollbar.track) then
+            local thumbTravel = math.max(1, layout.scrollbar.track.h - layout.scrollbar.thumb.h)
+            local thumbY = clamp(y - layout.scrollbar.thumb.h * 0.5, layout.scrollbar.track.y, layout.scrollbar.track.y + thumbTravel)
+            self.dialog.scroll = ((thumbY - layout.scrollbar.track.y) / thumbTravel) * layout.scrollbar.maxScroll
+            self.dialog.scroll = math.floor(self.dialog.scroll + 0.5)
+            return true
+        end
+
+        for _, row in ipairs(layout.rows) do
+            if pointInRect(x, y, row.rect) then
+                self:openDialogMap(row.map)
                 self:closeDialog()
                 return true
             end
@@ -2795,6 +3178,12 @@ function mapEditor:keypressed(key)
         end
         if self.colorPicker then
             self:closeColorPicker()
+            self:showStatus("Color picker closed.")
+            return true
+        end
+        if self.routeTypePicker then
+            self:closeRouteTypePicker()
+            self:showStatus("Road type picker closed.")
             return true
         end
         if self.sidePanelMode == "sequencer" then
@@ -2818,6 +3207,44 @@ function mapEditor:keypressed(key)
                 local ok, saveError = self:saveMap(self.dialog.input)
                 if not ok then
                     self:showStatus(saveError)
+                end
+                return true
+            end
+        end
+
+        if self.dialog.type == "open" then
+            if key == "up" then
+                self:scrollOpenDialog(-1)
+                return true
+            end
+            if key == "down" then
+                self:scrollOpenDialog(1)
+                return true
+            end
+            if key == "pageup" then
+                local layout = self:getOpenDialogListLayout()
+                self:scrollOpenDialog(-layout.visibleRows)
+                return true
+            end
+            if key == "pagedown" then
+                local layout = self:getOpenDialogListLayout()
+                self:scrollOpenDialog(layout.visibleRows)
+                return true
+            end
+            if key == "home" then
+                self.dialog.scroll = 0
+                return true
+            end
+            if key == "end" then
+                local layout = self:getOpenDialogListLayout()
+                self.dialog.scroll = layout.maxScroll
+                return true
+            end
+            if key == "return" or key == "kpenter" then
+                local layout = self:getOpenDialogListLayout()
+                if layout.rows[1] then
+                    self:openDialogMap(layout.rows[1].map)
+                    self:closeDialog()
                 end
                 return true
             end
@@ -2854,6 +3281,12 @@ function mapEditor:keypressed(key)
     if key == "o" then
         self:commitTextField()
         self:openOpenDialog()
+        return true
+    end
+
+    if key == "p" then
+        self:commitTextField()
+        self:requestPlaytestFromSavedMap()
         return true
     end
 
@@ -2899,6 +3332,10 @@ function mapEditor:mousepressed(x, y, button)
         return true
     end
 
+    if self.routeTypePicker and self:handleRouteTypePickerClick(x, y) then
+        return true
+    end
+
     if button == 2 then
         local route, pointIndex, magnetKind = self:findPointHit(x, y)
         if route and magnetKind then
@@ -2926,6 +3363,16 @@ function mapEditor:mousepressed(x, y, button)
         if hitIntersection and self:cycleIntersectionPassCount(hitIntersection, 1) then
             return true
         end
+
+        local segmentHit = self:findSegmentHit(x, y)
+        if segmentHit and segmentHit.route then
+            self.selectedRouteId = segmentHit.route.id
+            self.selectedPointIndex = nil
+            self:openRouteTypePicker(segmentHit.route, segmentHit.segmentIndex, x, y)
+            self:showStatus("Road type picker opened.")
+            return true
+        end
+
         return false
     end
 
@@ -2940,6 +3387,11 @@ function mapEditor:mousepressed(x, y, button)
 
     if pointInRect(x, y, self:getOpenButtonRect()) then
         self:openOpenDialog()
+        return true
+    end
+
+    if pointInRect(x, y, self:getPlayTestButtonRect()) then
+        self:requestPlaytestFromSavedMap()
         return true
     end
 
@@ -2985,6 +3437,7 @@ function mapEditor:mousepressed(x, y, button)
     local segmentHit = self:findSegmentHit(x, y)
     if segmentHit then
         table.insert(segmentHit.route.points, segmentHit.insertIndex, segmentHit.point)
+        self:splitRouteSegmentStyle(segmentHit.route, segmentHit.segmentIndex)
         self.selectedRouteId = segmentHit.route.id
         self.selectedPointIndex = segmentHit.insertIndex
         self.drag = {
@@ -2998,6 +3451,7 @@ function mapEditor:mousepressed(x, y, button)
             magnetKind = nil,
         }
         self:closeColorPicker()
+        self:closeRouteTypePicker()
         self:rebuildIntersections()
         self:showStatus("Bend point added.")
         return true
@@ -3009,6 +3463,7 @@ function mapEditor:mousepressed(x, y, button)
     end
 
     self:closeColorPicker()
+    self:closeRouteTypePicker()
 
     if pointInRect(x, y, self.canvas) or pointInRect(x, y, self.sidePanel) then
         self:clearSelection()
@@ -3019,6 +3474,18 @@ function mapEditor:mousepressed(x, y, button)
 end
 
 function mapEditor:wheelmoved(_, y)
+    if self.dialog and self.dialog.type == "open" then
+        if y > 0 then
+            self:scrollOpenDialog(-1)
+            return true
+        end
+        if y < 0 then
+            self:scrollOpenDialog(1)
+            return true
+        end
+        return false
+    end
+
     if self.sidePanelMode ~= "sequencer" then
         return false
     end
@@ -3132,12 +3599,18 @@ function mapEditor:serialize()
     lines[#lines + 1] = "    routes = {"
 
     for _, route in ipairs(self.routes) do
+        self:ensureRouteSegmentRoadTypes(route)
         lines[#lines + 1] = "        {"
         lines[#lines + 1] = string.format("            id = %q,", route.id)
         lines[#lines + 1] = string.format("            label = %q,", route.label or route.id)
         lines[#lines + 1] = string.format("            color = %q,", route.colorId)
         lines[#lines + 1] = string.format("            startEndpointId = %q,", route.startEndpointId)
         lines[#lines + 1] = string.format("            endEndpointId = %q,", route.endEndpointId)
+        lines[#lines + 1] = "            segmentRoadTypes = {"
+        for _, roadTypeId in ipairs(route.segmentRoadTypes) do
+            lines[#lines + 1] = string.format("                %q,", roadTypeId)
+        end
+        lines[#lines + 1] = "            },"
         lines[#lines + 1] = "            points = {"
         for _, point in ipairs(route.points) do
             local sharedPointSuffix = point.sharedPointId and string.format(", sharedPointId = %d", point.sharedPointId) or ""
@@ -3243,6 +3716,77 @@ function mapEditor:drawMagnet(route, point, magnetKind, selected)
     end
 end
 
+function mapEditor:drawRoutePatternStroke(pointA, pointB, roadTypeId, alpha)
+    local roadTypeConfig = roadTypes.getConfig(roadTypeId)
+    if roadTypeConfig.pattern == "plain" then
+        return
+    end
+
+    local graphics = love.graphics
+    local length = segmentLength(pointA, pointB)
+    if length <= 0.001 then
+        return
+    end
+
+    local angle = angleBetweenPoints(pointA, pointB)
+    local directionX = math.cos(angle)
+    local directionY = math.sin(angle)
+    local normalX = -directionY
+    local normalY = directionX
+    local markerSpacing = roadTypeConfig.markerSpacing
+    local markerSize = roadTypeConfig.markerSize
+    local markerDistance = markerSpacing * 0.5
+    local outlineWidth = roadTypeConfig.markerWidth + 2
+    local fillWidth = roadTypeConfig.markerWidth
+
+    local function drawPatternSegment(startX, startY, endX, endY)
+        graphics.setColor(ROAD_PATTERN_OUTLINE[1], ROAD_PATTERN_OUTLINE[2], ROAD_PATTERN_OUTLINE[3], alpha)
+        graphics.setLineWidth(outlineWidth)
+        graphics.line(startX, startY, endX, endY)
+        graphics.setColor(ROAD_PATTERN_FILL[1], ROAD_PATTERN_FILL[2], ROAD_PATTERN_FILL[3], alpha)
+        graphics.setLineWidth(fillWidth)
+        graphics.line(startX, startY, endX, endY)
+    end
+
+    while markerDistance < length do
+        local markerX = pointA.x + directionX * markerDistance
+        local markerY = pointA.y + directionY * markerDistance
+
+        if roadTypeConfig.pattern == "chevron" then
+            local tipX = markerX + directionX * markerSize
+            local tipY = markerY + directionY * markerSize
+            local leftX = markerX - normalX * markerSize * 0.7
+            local leftY = markerY - normalY * markerSize * 0.7
+            local rightX = markerX + normalX * markerSize * 0.7
+            local rightY = markerY + normalY * markerSize * 0.7
+            drawPatternSegment(leftX, leftY, tipX, tipY)
+            drawPatternSegment(rightX, rightY, tipX, tipY)
+        elseif roadTypeConfig.pattern == "crossbar" then
+            local startX = markerX - normalX * markerSize
+            local startY = markerY - normalY * markerSize
+            local endX = markerX + normalX * markerSize
+            local endY = markerY + normalY * markerSize
+            drawPatternSegment(startX, startY, endX, endY)
+        end
+
+        markerDistance = markerDistance + markerSpacing
+    end
+end
+
+function mapEditor:drawRouteRoadTypeMarkers(route, selectedRouteId)
+    local alpha = selectedRouteId == route.id and 0.98 or 0.86
+    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+
+    for segmentIndex = 1, #route.points - 1 do
+        self:drawRoutePatternStroke(
+            route.points[segmentIndex],
+            route.points[segmentIndex + 1],
+            segmentRoadTypes[segmentIndex],
+            alpha
+        )
+    end
+end
+
 function mapEditor:buildRouteSegmentGroups(selectedRouteId)
     local grouped = {}
 
@@ -3301,6 +3845,48 @@ function mapEditor:buildRouteSegmentGroups(selectedRouteId)
     return groups
 end
 
+function mapEditor:drawRoute(route, selectedRouteId)
+    local graphics = love.graphics
+    local points = {}
+    self:ensureRouteSegmentRoadTypes(route)
+
+    for _, point in ipairs(route.points) do
+        points[#points + 1] = point.x
+        points[#points + 1] = point.y
+    end
+
+    graphics.setLineStyle("smooth")
+    graphics.setLineJoin("bevel")
+    graphics.setColor(0.11, 0.14, 0.18, 1)
+    graphics.setLineWidth(selectedRouteId == route.id and 16 or 13)
+    graphics.line(points)
+
+    graphics.setColor(route.color[1], route.color[2], route.color[3], selectedRouteId == route.id and 1 or 0.86)
+    graphics.setLineWidth(selectedRouteId == route.id and 8 or 6)
+    graphics.line(points)
+
+    self:drawRouteRoadTypeMarkers(route, selectedRouteId)
+
+    for pointIndex, point in ipairs(route.points) do
+        local selected = selectedRouteId == route.id and pointIndex == self.selectedPointIndex
+        if pointIndex == 1 then
+            self:drawMagnet(route, point, "start", selected)
+        elseif pointIndex == #route.points then
+            self:drawMagnet(route, point, "end", selected)
+        else
+            graphics.setColor(0.08, 0.1, 0.14, 1)
+            graphics.circle("fill", point.x, point.y, 11)
+            graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+            graphics.circle("fill", point.x, point.y, 8)
+            if selected then
+                graphics.setColor(0.97, 0.98, 1, 1)
+                graphics.setLineWidth(2)
+                graphics.circle("line", point.x, point.y, 16)
+            end
+        end
+    end
+end
+
 function mapEditor:drawRouteSegmentGroup(group)
     local graphics = love.graphics
     local a = group.a
@@ -3350,6 +3936,8 @@ end
 
 function mapEditor:drawRouteHandles(route, selectedRouteId)
     local graphics = love.graphics
+
+    self:drawRouteRoadTypeMarkers(route, selectedRouteId)
 
     for pointIndex, point in ipairs(route.points) do
         local selected = selectedRouteId == route.id and pointIndex == self.selectedPointIndex
@@ -3432,15 +4020,27 @@ function mapEditor:drawIntersection(intersection)
     end
 end
 
-function mapEditor:drawPanelButton(rect, label, accentColor)
+function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
     local graphics = love.graphics
     local font = graphics.getFont()
-    graphics.setColor(0.1, 0.12, 0.16, 0.96)
+    if isDisabled then
+        graphics.setColor(0.08, 0.1, 0.13, 0.72)
+    else
+        graphics.setColor(0.1, 0.12, 0.16, 0.96)
+    end
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
     graphics.setLineWidth(1.5)
-    graphics.setColor(accentColor[1], accentColor[2], accentColor[3], 1)
+    if isDisabled then
+        graphics.setColor(0.34, 0.38, 0.42, 0.85)
+    else
+        graphics.setColor(accentColor[1], accentColor[2], accentColor[3], 1)
+    end
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
-    graphics.setColor(0.97, 0.98, 1, 1)
+    if isDisabled then
+        graphics.setColor(0.6, 0.64, 0.68, 0.9)
+    else
+        graphics.setColor(0.97, 0.98, 1, 1)
+    end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
 end
 
@@ -3504,6 +4104,95 @@ function mapEditor:drawColorPicker(game)
     end
 end
 
+function mapEditor:drawRoadTypePreview(option, rect, alpha)
+    local graphics = love.graphics
+    local centerY = rect.y + rect.h * 0.5
+    local startX = rect.x + 10
+    local endX = rect.x + rect.w - 10
+
+    graphics.setColor(0.1, 0.12, 0.16, alpha)
+    graphics.setLineWidth(10)
+    graphics.line(startX, centerY, endX, centerY)
+    graphics.setColor(0.84, 0.88, 0.92, alpha)
+    graphics.setLineWidth(4)
+    graphics.line(startX, centerY, endX, centerY)
+
+    if option.pattern == "chevron" then
+        self:drawRoutePatternStroke(
+            { x = rect.x + 18, y = centerY },
+            { x = rect.x + rect.w - 18, y = centerY },
+            option.id,
+            alpha
+        )
+    elseif option.pattern == "crossbar" then
+        self:drawRoutePatternStroke(
+            { x = rect.x + 18, y = centerY },
+            { x = rect.x + rect.w - 18, y = centerY },
+            option.id,
+            alpha
+        )
+    end
+end
+
+function mapEditor:drawRouteTypePicker(game)
+    local layout = self:getRouteTypePickerLayout()
+    if not layout then
+        return
+    end
+
+    local route = self:getRouteById(self.routeTypePicker.routeId)
+    if not route then
+        return
+    end
+
+    local graphics = love.graphics
+    local selectedRoadType = self:getRouteSegmentRoadType(route, self.routeTypePicker.segmentIndex)
+
+    graphics.setColor(0.08, 0.1, 0.14, 0.98)
+    graphics.rectangle("fill", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(
+        "Road Type For Segment " .. tostring(self.routeTypePicker.segmentIndex),
+        layout.rect.x + 14,
+        layout.rect.y + 14,
+        layout.rect.w - 28,
+        "center"
+    )
+
+    for _, optionEntry in ipairs(layout.options) do
+        local option = optionEntry.option
+        local rect = optionEntry.rect
+        local isSelected = option.id == selectedRoadType
+
+        graphics.setColor(0.05, 0.06, 0.08, 1)
+        graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
+        graphics.setColor(0.58, 0.64, 0.7, 1)
+        graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
+
+        self:drawRoadTypePreview(option, {
+            x = rect.x + 10,
+            y = rect.y + 8,
+            w = 48,
+            h = rect.h - 16,
+        }, 1)
+
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(option.label, rect.x + 68, rect.y + 8)
+        graphics.setColor(0.72, 0.78, 0.84, 1)
+        graphics.print(string.format("%d%% speed", math.floor(option.speedScale * 100 + 0.5)), rect.x + 68, rect.y + 22)
+
+        if isSelected then
+            graphics.setColor(0.97, 0.98, 1, 1)
+            graphics.setLineWidth(2)
+            graphics.rectangle("line", rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 14, 14)
+        end
+    end
+end
+
 function mapEditor:drawDialog(game)
     if not self.dialog then
         return
@@ -3543,18 +4232,16 @@ function mapEditor:drawDialog(game)
     graphics.printf("Open Map", rect.x, rect.y + 20, rect.w, "center")
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
-    if #(self.dialog.maps or {}) == 0 then
+    local layout = self:getOpenDialogListLayout()
+    if layout.totalMaps == 0 then
         graphics.printf("No maps were found yet.", rect.x + 24, rect.y + 142, rect.w - 48, "center")
         return
     end
 
-    for mapIndex, savedMap in ipairs(self.dialog.maps or {}) do
-        local itemRect = {
-            x = rect.x + 24,
-            y = rect.y + 78 + (mapIndex - 1) * 54,
-            w = rect.w - 48,
-            h = 44,
-        }
+    love.graphics.setScissor(layout.listRect.x, layout.listRect.y, layout.listRect.w, layout.listRect.h)
+    for _, row in ipairs(layout.rows) do
+        local savedMap = row.map
+        local itemRect = row.rect
         graphics.setColor(0.05, 0.06, 0.08, 1)
         graphics.rectangle("fill", itemRect.x, itemRect.y, itemRect.w, itemRect.h, 12, 12)
         graphics.setColor(0.3, 0.36, 0.42, 1)
@@ -3562,8 +4249,21 @@ function mapEditor:drawDialog(game)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.print(savedMap.name, itemRect.x + 14, itemRect.y + 12)
         graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.print(savedMap.source == "builtin" and "Tutorial" or "User Save", itemRect.x + itemRect.w - 110, itemRect.y + 12)
+        graphics.printf(savedMap.source == "builtin" and "Tutorial" or "User Save", itemRect.x, itemRect.y + 12, itemRect.w - 12, "right")
     end
+    love.graphics.setScissor()
+
+    if layout.scrollbar then
+        graphics.setColor(0.1, 0.12, 0.16, 1)
+        graphics.rectangle("fill", layout.scrollbar.track.x, layout.scrollbar.track.y, layout.scrollbar.track.w, layout.scrollbar.track.h, 4, 4)
+        graphics.setColor(0.34, 0.44, 0.54, 1)
+        graphics.rectangle("fill", layout.scrollbar.thumb.x, layout.scrollbar.thumb.y, layout.scrollbar.thumb.w, layout.scrollbar.thumb.h, 4, 4)
+    end
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    local rangeText = string.format("Showing %d-%d of %d", layout.firstVisibleIndex, layout.lastVisibleIndex, layout.totalMaps)
+    graphics.printf(rangeText, rect.x + 24, rect.y + rect.h - 52, rect.w - 48, "left")
 end
 
 function mapEditor:drawTextField(label, rect, valueText, accentColor, active)
@@ -3751,6 +4451,10 @@ function mapEditor:drawDefaultSidePanel(game)
     )
     currentY = currentY + 30
 
+    graphics.setColor(0.68, 0.74, 0.8, 1)
+    graphics.printf("Right click a route segment to change its road type.", panelX, currentY, panelWidth)
+    currentY = currentY + 34
+
     if #(self.validationErrors or {}) == 0 then
         graphics.setColor(0.48, 0.92, 0.62, 1)
         graphics.printf("No blocking issues. This map can start.", panelX, currentY, panelWidth)
@@ -3792,7 +4496,12 @@ function mapEditor:drawDefaultSidePanel(game)
         graphics.printf("Selected route: " .. (selectedRoute.label or selectedRoute.id), panelX, currentY, panelWidth)
         currentY = currentY + 24
         graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf("Start magnet: " .. startColors .. "\nExit magnet: " .. endColors, panelX, currentY, panelWidth)
+        graphics.printf(
+            "Road styles: " .. self:summarizeRouteRoadTypes(selectedRoute) .. "\nStart magnet: " .. startColors .. "\nExit magnet: " .. endColors,
+            panelX,
+            currentY,
+            panelWidth
+        )
     end
 
     if self.statusText then
@@ -3803,6 +4512,7 @@ function mapEditor:drawDefaultSidePanel(game)
     love.graphics.setFont(game.fonts.small)
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
+    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
     self:drawPanelButton(self:getSequencerButtonRect(), "Sequencer (C)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getResetButtonRect(), "Reset To Map (R)", { 0.99, 0.78, 0.32 })
 end
@@ -3863,6 +4573,7 @@ function mapEditor:draw(game)
     end
 
     self:drawColorPicker(game)
+    self:drawRouteTypePicker(game)
 
     graphics.setColor(0.7, 0.76, 0.82, 1)
     local sourceLabel
