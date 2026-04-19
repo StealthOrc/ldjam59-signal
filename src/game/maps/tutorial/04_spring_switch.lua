@@ -1,5 +1,6 @@
 return {
     version = 1,
+    mapUuid = "5316d5c9-8e75-4252-8f2f-547bf9e928d3",
     name = "Map 4: Spring Switch",
     template = true,
     editor = {

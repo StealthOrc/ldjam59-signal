@@ -1,5 +1,6 @@
 return {
     version = 1,
+    mapUuid = "c1b2124c-ed71-4b1e-8ec6-8c56bbb1e0a1",
     name = "Map 2: Delayed Button",
     template = true,
     editor = {
