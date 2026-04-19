@@ -3850,6 +3850,43 @@ function mapEditor:drawRoute(route, selectedRouteId)
     local points = {}
     self:ensureRouteSegmentRoadTypes(route)
 
+    for _, point in ipairs(route.points) do
+        points[#points + 1] = point.x
+        points[#points + 1] = point.y
+    end
+
+    graphics.setLineStyle("smooth")
+    graphics.setLineJoin("bevel")
+    graphics.setColor(0.11, 0.14, 0.18, 1)
+    graphics.setLineWidth(selectedRouteId == route.id and 16 or 13)
+    graphics.line(points)
+
+    graphics.setColor(route.color[1], route.color[2], route.color[3], selectedRouteId == route.id and 1 or 0.86)
+    graphics.setLineWidth(selectedRouteId == route.id and 8 or 6)
+    graphics.line(points)
+
+    self:drawRouteRoadTypeMarkers(route, selectedRouteId)
+
+    for pointIndex, point in ipairs(route.points) do
+        local selected = selectedRouteId == route.id and pointIndex == self.selectedPointIndex
+        if pointIndex == 1 then
+            self:drawMagnet(route, point, "start", selected)
+        elseif pointIndex == #route.points then
+            self:drawMagnet(route, point, "end", selected)
+        else
+            graphics.setColor(0.08, 0.1, 0.14, 1)
+            graphics.circle("fill", point.x, point.y, 11)
+            graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+            graphics.circle("fill", point.x, point.y, 8)
+            if selected then
+                graphics.setColor(0.97, 0.98, 1, 1)
+                graphics.setLineWidth(2)
+                graphics.circle("line", point.x, point.y, 16)
+            end
+        end
+    end
+end
+
 function mapEditor:drawRouteSegmentGroup(group)
     local graphics = love.graphics
     local a = group.a
