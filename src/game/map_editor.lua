@@ -20,6 +20,23 @@ local PANEL_BUTTON_SIDE_MARGIN = 18
 local PANEL_BUTTON_HEIGHT = 38
 local PANEL_BUTTON_GAP = 12
 local PANEL_BUTTON_BOTTOM_MARGIN = 22
+local DRAG_START_DISTANCE_SQUARED = 25
+local INTERSECTION_SELECTOR_OFFSET_Y = 36
+local INTERSECTION_SELECTOR_CLICK_RADIUS = 16
+local INTERSECTION_SELECTOR_DRAW_RADIUS = 15
+local INTERSECTION_POINT_TOLERANCE_SQUARED = 9
+local INTERNAL_POINT_MATCH_DISTANCE_SQUARED = 1
+local INTERSECTION_SHARED_POINT_DISTANCE_SQUARED = 12 * 12
+local INTERSECTION_STATE_MATCH_DISTANCE_SQUARED = 24 * 24
+local JUNCTION_MENU_ROOT_RADIUS = 36
+local JUNCTION_MENU_RING_INNER_RADIUS = 22
+local JUNCTION_MENU_COLOR_OUTER_RADIUS = 56
+local JUNCTION_MENU_TYPE_OUTER_RADIUS = 72
+local JUNCTION_MENU_BRANCH_RATIO = 0.35
+local JUNCTION_MENU_ICON_SIZE = 15
+local JUNCTION_MENU_TYPE_ICON_SIZE = 18
+local JUNCTION_MENU_SWATCH_RADIUS = 8
+local JUNCTION_MENU_EDGE_MARGIN = 8
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -39,6 +56,15 @@ local CONTROL_NAMES = {
     relay = "Relay Dial",
     trip = "Trip Switch",
     crossbar = "Crossbar Dial",
+}
+local CONTROL_FILL_COLORS = {
+    direct = { 0.34, 0.84, 0.98 },
+    delayed = { 0.99, 0.78, 0.32 },
+    pump = { 0.93, 0.22, 0.84 },
+    spring = { 0.4, 0.96, 0.74 },
+    relay = { 0.56, 0.72, 0.98 },
+    trip = { 0.98, 0.6, 0.28 },
+    crossbar = { 0.92, 0.38, 0.68 },
 }
 local COLOR_OPTIONS = {
     { id = "blue", label = "Blue", color = { 0.33, 0.8, 0.98 } },
@@ -124,6 +150,20 @@ local function pointInRect(x, y, rect)
         and y <= rect.y + rect.h
 end
 
+local function loadOptionalImage(path)
+    if not (love and love.graphics and love.filesystem and love.filesystem.getInfo(path, "file")) then
+        return nil
+    end
+
+    local ok, image = pcall(love.graphics.newImage, path)
+    if ok and image then
+        image:setFilter("linear", "linear")
+        return image
+    end
+
+    return nil
+end
+
 local function encodeUrlPath(path)
     return tostring(path or ""):gsub("\\", "/"):gsub("([^%w%-%._~/:])", function(character)
         return string.format("%%%02X", string.byte(character))
@@ -201,6 +241,23 @@ local function angleBetweenPoints(a, b)
         angle = angle + math.pi
     end
     return angle
+end
+
+local function angleBetweenCoordinates(centerX, centerY, x, y)
+    if math.atan2 then
+        return math.atan2(y - centerY, x - centerX)
+    end
+
+    return angleBetweenPoints({ x = centerX, y = centerY }, { x = x, y = y })
+end
+
+local function normalizeAngle(angle)
+    local fullTurn = math.pi * 2
+    local normalized = angle % fullTurn
+    if normalized < 0 then
+        normalized = normalized + fullTurn
+    end
+    return normalized
 end
 
 local function buildDefaultSegmentRoadTypes(pointCount, fallbackRoadType)
@@ -464,6 +521,13 @@ function mapEditor.new(viewportW, viewportH, level)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
+    self.editorChargeImage = nil
+    self.editorCrossImage = nil
+    self.editorDirectImage = nil
+    self.editorRelayImage = nil
+    self.editorSpringImage = nil
+    self.editorTripImage = nil
+    self.editorJunctionIconsLoaded = false
 
     self:updateLayout()
     self:resetFromMap(level and { level = level, name = level.title } or nil, nil)
@@ -488,6 +552,20 @@ function mapEditor:updateLayout()
         w = self.panelWidth,
         h = self.viewport.h - self.margin * 2,
     }
+end
+
+function mapEditor:ensureEditorJunctionIcons()
+    if self.editorJunctionIconsLoaded then
+        return
+    end
+
+    self.editorJunctionIconsLoaded = true
+    self.editorChargeImage = loadOptionalImage("assets/Charge.png")
+    self.editorCrossImage = loadOptionalImage("assets/cross.png")
+    self.editorDirectImage = loadOptionalImage("assets/direct.png")
+    self.editorRelayImage = loadOptionalImage("assets/relay.png")
+    self.editorSpringImage = loadOptionalImage("assets/spring.png")
+    self.editorTripImage = loadOptionalImage("assets/trip.png")
 end
 
 function mapEditor:clearSelection()
@@ -1117,19 +1195,20 @@ function mapEditor:openRouteTypePicker(route, segmentIndex, anchorX, anchorY)
     self:closeColorPicker()
 end
 
-function mapEditor:openSharedJunctionColorPicker(intersection)
-    local group = self:getSharedPointGroupForIntersection(intersection)
-    if not group or #group.colorIds <= 1 then
-        self:showStatus("This merger lane only carries one color right now.")
-        return
-    end
+function mapEditor:openJunctionPicker(intersection)
+    self:prepareIntersectionForDrag(intersection)
 
+    local liveIntersection = self:getIntersectionById(intersection.id) or intersection
     self.colorPicker = {
-        mode = "junction_split",
-        intersectionId = intersection.id,
-        anchorX = intersection.x,
-        anchorY = intersection.y,
+        mode = "junction",
+        intersectionId = liveIntersection.id,
+        anchorX = liveIntersection.x,
+        anchorY = liveIntersection.y,
+        hoverBranch = nil,
+        branch = nil,
+        hoverOptionIndex = nil,
     }
+    self:closeRouteTypePicker()
 end
 
 function mapEditor:openSequencerColorPicker(trainId, fieldName, anchorX, anchorY)
@@ -1158,7 +1237,7 @@ function mapEditor:getColorPickerOptions()
             and (self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route))
             or nil
         lookup = endpoint and endpoint.colors or {}
-    elseif self.colorPicker.mode == "junction_split" then
+    elseif self.colorPicker.mode == "junction" then
         local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
         local group = intersection and self:getSharedPointGroupForIntersection(intersection) or nil
         lookup = group and group.colorLookup or {}
@@ -1186,7 +1265,7 @@ function mapEditor:getColorPickerSelectionLookup()
         end
         local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
         return endpoint and endpoint.colors or {}
-    elseif self.colorPicker.mode == "junction_split" then
+    elseif self.colorPicker.mode == "junction" then
         local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
         local group = intersection and self:getSharedPointGroupForIntersection(intersection) or nil
         return group and group.colorLookup or lookup
@@ -1202,14 +1281,169 @@ function mapEditor:getColorPickerSelectionLookup()
     return lookup
 end
 
+function mapEditor:getJunctionPickerRootHover(x, y)
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return nil
+    end
+
+    local dx = x - self.colorPicker.anchorX
+    local dy = y - self.colorPicker.anchorY
+    if math.abs(dx) < math.abs(dy) * JUNCTION_MENU_BRANCH_RATIO then
+        return nil
+    end
+
+    if dx < 0 then
+        return "disconnect"
+    end
+    if dx > 0 then
+        return "junctions"
+    end
+    return nil
+end
+
+function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRadius, outerRadius)
+    local entries = {}
+    local options = {}
+
+    if branch == "disconnect" then
+        options = self:getColorPickerOptions()
+    elseif branch == "junctions" then
+        for _, controlType in ipairs(CONTROL_ORDER) do
+            options[#options + 1] = {
+                id = controlType,
+                controlType = controlType,
+            }
+        end
+    end
+
+    if #options == 0 then
+        return entries
+    end
+
+    local step = (math.pi * 2) / #options
+    local startAngle = -math.pi * 0.5 - step * 0.5
+    local iconRadius = (innerRadius + outerRadius) * 0.5
+
+    for optionIndex, option in ipairs(options) do
+        local segmentStart = startAngle + (optionIndex - 1) * step
+        local segmentMiddle = segmentStart + step * 0.5
+        entries[#entries + 1] = {
+            option = option,
+            index = optionIndex,
+            startAngle = segmentStart,
+            endAngle = segmentStart + step,
+            centerX = centerX + math.cos(segmentMiddle) * iconRadius,
+            centerY = centerY + math.sin(segmentMiddle) * iconRadius,
+        }
+    end
+
+    return entries
+end
+
+function mapEditor:getJunctionPickerLayout()
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return nil
+    end
+
+    local branch = self.colorPicker.branch
+    local rootCenterX = self.colorPicker.anchorX
+    local rootCenterY = self.colorPicker.anchorY
+    local submenu = nil
+
+    if branch then
+        local outerRadius = branch == "junctions" and JUNCTION_MENU_TYPE_OUTER_RADIUS or JUNCTION_MENU_COLOR_OUTER_RADIUS
+        local submenuCenterX = clamp(
+            rootCenterX,
+            self.canvas.x + outerRadius + JUNCTION_MENU_EDGE_MARGIN,
+            self.viewport.w - outerRadius - JUNCTION_MENU_EDGE_MARGIN
+        )
+        local submenuCenterY = clamp(
+            rootCenterY,
+            self.canvas.y + outerRadius + JUNCTION_MENU_EDGE_MARGIN,
+            self.viewport.h - outerRadius - JUNCTION_MENU_EDGE_MARGIN
+        )
+        submenu = {
+            branch = branch,
+            x = submenuCenterX,
+            y = submenuCenterY,
+            radius = outerRadius,
+            innerRadius = JUNCTION_MENU_RING_INNER_RADIUS,
+            outerRadius = outerRadius,
+            entries = self:buildJunctionPickerEntries(
+                branch,
+                submenuCenterX,
+                submenuCenterY,
+                JUNCTION_MENU_RING_INNER_RADIUS,
+                outerRadius
+            ),
+        }
+    end
+
+    return {
+        kind = "junction_radial",
+        root = {
+            x = rootCenterX,
+            y = rootCenterY,
+            radius = JUNCTION_MENU_ROOT_RADIUS,
+        },
+        branch = branch,
+        hoverBranch = self.colorPicker.hoverBranch,
+        submenu = submenu,
+    }
+end
+
+function mapEditor:getJunctionPickerOptionHit(submenu, x, y)
+    if not submenu then
+        return nil
+    end
+    if #submenu.entries == 0 then
+        return nil
+    end
+
+    local distance = math.sqrt(distanceSquared(x, y, submenu.x, submenu.y))
+    if distance < submenu.innerRadius or distance > submenu.outerRadius then
+        return nil
+    end
+
+    local fullTurn = math.pi * 2
+    local baseAngle = normalizeAngle(angleBetweenCoordinates(submenu.x, submenu.y, x, y) + math.pi * 0.5)
+    local step = fullTurn / #submenu.entries
+    local entryIndex = math.floor(baseAngle / step) + 1
+    return submenu.entries[entryIndex]
+end
+
+function mapEditor:updateJunctionPickerHover(x, y)
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return false
+    end
+
+    local rootDistance = math.sqrt(distanceSquared(x, y, self.colorPicker.anchorX, self.colorPicker.anchorY))
+    local hoverBranch = rootDistance <= JUNCTION_MENU_ROOT_RADIUS and self:getJunctionPickerRootHover(x, y) or nil
+
+    self.colorPicker.hoverBranch = hoverBranch
+    self.colorPicker.hoverOptionIndex = nil
+
+    local layout = self:getJunctionPickerLayout()
+    if layout and layout.submenu then
+        local hitEntry = self:getJunctionPickerOptionHit(layout.submenu, x, y)
+        self.colorPicker.hoverOptionIndex = hitEntry and hitEntry.index or nil
+    end
+
+    return true
+end
+
 function mapEditor:getColorPickerLayout()
     if not self.colorPicker then
         return nil
     end
 
     local options = self:getColorPickerOptions()
-    if #options == 0 then
+    if self.colorPicker.mode ~= "junction" and #options == 0 then
         return nil
+    end
+
+    if self.colorPicker.mode == "junction" then
+        return self:getJunctionPickerLayout()
     end
 
     local columns = math.min(3, math.max(1, #options))
@@ -2111,7 +2345,7 @@ function mapEditor:getSharedPointGroupForIntersection(intersection)
         if route then
             for pointIndex = 2, #route.points - 1 do
                 local point = route.points[pointIndex]
-                if point.sharedPointId and distanceSquared(point.x, point.y, intersection.x, intersection.y) <= 12 * 12 then
+                if point.sharedPointId and distanceSquared(point.x, point.y, intersection.x, intersection.y) <= INTERSECTION_SHARED_POINT_DISTANCE_SQUARED then
                     local group = groups[point.sharedPointId]
                     if not group then
                         group = {
@@ -2155,7 +2389,7 @@ function mapEditor:getSharedPointGroupForPoint(route, pointIndex)
     end
 
     for _, intersection in ipairs(self.intersections) do
-        if distanceSquared(point.x, point.y, intersection.x, intersection.y) <= 12 * 12 then
+        if distanceSquared(point.x, point.y, intersection.x, intersection.y) <= INTERSECTION_SHARED_POINT_DISTANCE_SQUARED then
             local group = self:getSharedPointGroupForIntersection(intersection)
             if group and group.sharedPointId == point.sharedPointId then
                 return group, intersection
@@ -2347,12 +2581,13 @@ end
 
 function mapEditor:getIntersectionControlType(intersection, previousMatches)
     local imported = self.importedJunctionState[intersection.routeKey]
-    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= 24 * 24 then
+    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
         return imported.controlType
     end
 
     for _, previous in ipairs(previousMatches) do
-        if previous.routeKey == intersection.routeKey and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= 24 * 24 then
+        if previous.routeKey == intersection.routeKey
+            and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
             return previous.controlType
         end
     end
@@ -2362,12 +2597,13 @@ end
 
 function mapEditor:getJunctionState(intersection, previousMatches)
     local imported = self.importedJunctionState[intersection.routeKey]
-    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= 24 * 24 then
+    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
         return imported
     end
 
     for _, previous in ipairs(previousMatches) do
-        if previous.routeKey == intersection.routeKey and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= 24 * 24 then
+        if previous.routeKey == intersection.routeKey
+            and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
             return previous
         end
     end
@@ -2634,6 +2870,37 @@ function mapEditor:updateDraggedPoint(x, y)
         return
     end
 
+    if self.drag.kind == "intersection" then
+        local movedDistance = distanceSquared(x, y, self.drag.startMouseX, self.drag.startMouseY)
+        if movedDistance > DRAG_START_DISTANCE_SQUARED then
+            self.drag.moved = true
+        end
+
+        if not self.drag.moved then
+            return
+        end
+
+        if not self.drag.sharedPointId then
+            local liveIntersection = self:getIntersectionById(self.drag.intersectionId)
+            local preparedDrag = self:prepareIntersectionForDrag(liveIntersection or self.drag.intersectionSnapshot)
+            if not preparedDrag then
+                return
+            end
+            self.drag.sharedPointId = preparedDrag.sharedPointId
+            self.drag.routeId = preparedDrag.routeId
+            self.drag.pointIndex = preparedDrag.pointIndex
+            self.selectedRouteId = preparedDrag.routeId
+            self.selectedPointIndex = preparedDrag.pointIndex
+        end
+
+        local clampedX, clampedY = self:clampPoint(x, y, false)
+        self:updateSharedPointGroup(self.drag.sharedPointId, clampedX, clampedY)
+        self:closeColorPicker()
+        self:closeRouteTypePicker()
+        self:rebuildIntersections()
+        return
+    end
+
     local route = self:getSelectedRoute()
     if not route then
         return
@@ -2645,7 +2912,7 @@ function mapEditor:updateDraggedPoint(x, y)
     end
 
     local movedDistance = distanceSquared(x, y, self.drag.startMouseX, self.drag.startMouseY)
-    if movedDistance > 25 then
+    if movedDistance > DRAG_START_DISTANCE_SQUARED then
         self.drag.moved = true
     end
 
@@ -2672,6 +2939,127 @@ function mapEditor:updateDraggedPoint(x, y)
     self:rebuildIntersections()
 end
 
+function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
+    if not route or not route.points or #route.points < 2 then
+        return nil, nil
+    end
+
+    for pointIndex = 2, #route.points - 1 do
+        local point = route.points[pointIndex]
+        if distanceSquared(point.x, point.y, intersectionPoint.x, intersectionPoint.y) <= INTERSECTION_POINT_TOLERANCE_SQUARED then
+            return pointIndex, point
+        end
+    end
+
+    for segmentIndex = 1, #route.points - 1 do
+        local pointA = route.points[segmentIndex]
+        local pointB = route.points[segmentIndex + 1]
+        local hitPoint = pointOnSegment(intersectionPoint, pointA, pointB, INTERSECTION_POINT_TOLERANCE_SQUARED)
+        if hitPoint then
+            if distanceSquared(hitPoint.x, hitPoint.y, pointA.x, pointA.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED and segmentIndex > 1 then
+                return segmentIndex, pointA
+            end
+            if distanceSquared(hitPoint.x, hitPoint.y, pointB.x, pointB.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+                and (segmentIndex + 1) < #route.points then
+                return segmentIndex + 1, pointB
+            end
+
+            local insertIndex = segmentIndex + 1
+            table.insert(route.points, insertIndex, hitPoint)
+            self:splitRouteSegmentStyle(route, segmentIndex)
+            return insertIndex, route.points[insertIndex]
+        end
+    end
+
+    return nil, nil
+end
+
+function mapEditor:prepareIntersectionForDrag(intersection)
+    if not intersection then
+        return nil
+    end
+
+    local members = {}
+    local sharedPointId = nil
+
+    for _, routeId in ipairs(intersection.routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        local pointIndex, point = self:ensureRoutePointAtIntersection(route, intersection)
+        if route and pointIndex and point then
+            members[#members + 1] = {
+                route = route,
+                pointIndex = pointIndex,
+                point = point,
+            }
+            if point.sharedPointId and not sharedPointId then
+                sharedPointId = point.sharedPointId
+            end
+        end
+    end
+
+    if #members == 0 then
+        return nil
+    end
+
+    if not sharedPointId then
+        sharedPointId = self.nextSharedPointId
+        self.nextSharedPointId = self.nextSharedPointId + 1
+    end
+
+    for _, member in ipairs(members) do
+        if member.point.sharedPointId and member.point.sharedPointId ~= sharedPointId then
+            self:reassignSharedPointGroup(member.point.sharedPointId, sharedPointId)
+        end
+        member.point.sharedPointId = sharedPointId
+    end
+    self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
+    self:rebuildIntersections()
+
+    return {
+        sharedPointId = sharedPointId,
+        routeId = members[1].route.id,
+        pointIndex = members[1].pointIndex,
+    }
+end
+
+function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
+    if not intersection or #intersection.outputEndpointIds <= 1 then
+        return false
+    end
+    return distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y)
+        <= INTERSECTION_SELECTOR_CLICK_RADIUS * INTERSECTION_SELECTOR_CLICK_RADIUS
+end
+
+function mapEditor:setIntersectionControlType(intersection, controlType)
+    if not intersection or not controlType then
+        return false
+    end
+    if intersection.unsupported then
+        self:showStatus("Junctions currently support up to five inputs and five outputs.")
+        return false
+    end
+    if intersection.controlType == controlType then
+        return false
+    end
+
+    intersection.controlType = controlType
+    if intersection.controlType == "relay" then
+        local outputCount = #(intersection.outputEndpointIds or {})
+        if outputCount > 0 then
+            intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
+        end
+    elseif intersection.controlType == "crossbar" then
+        local outputCount = #(intersection.outputEndpointIds or {})
+        if outputCount > 0 then
+            intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
+        end
+    end
+
+    self:refreshValidation(self.currentMapName)
+    self:showStatus("Intersection switched to " .. self:getControlName(intersection.controlType) .. ".")
+    return true
+end
+
 function mapEditor:cycleIntersection(intersection)
     if intersection.unsupported then
         self:showStatus("Junctions currently support up to five inputs and five outputs.")
@@ -2691,19 +3079,7 @@ function mapEditor:cycleIntersection(intersection)
         nextIndex = 1
     end
 
-    intersection.controlType = CONTROL_ORDER[nextIndex]
-    if intersection.controlType == "relay" then
-        local outputCount = #(intersection.outputEndpointIds or {})
-        if outputCount > 0 then
-            intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
-        end
-    elseif intersection.controlType == "crossbar" then
-        local outputCount = #(intersection.outputEndpointIds or {})
-        if outputCount > 0 then
-            intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
-        end
-    end
-    self:showStatus("Intersection switched to " .. self:getControlName(intersection.controlType) .. ".")
+    self:setIntersectionControlType(intersection, CONTROL_ORDER[nextIndex])
 end
 
 function mapEditor:cycleIntersectionOutput(intersection, direction)
@@ -2978,6 +3354,53 @@ function mapEditor:handleColorPickerClick(x, y, button)
         return false
     end
 
+    if layout.kind == "junction_radial" then
+        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+        if not intersection then
+            self:closeColorPicker()
+            return true
+        end
+
+        local insideRoot = not layout.branch
+            and distanceSquared(x, y, layout.root.x, layout.root.y) <= layout.root.radius * layout.root.radius
+        local insideSubmenu = layout.submenu
+            and distanceSquared(x, y, layout.submenu.x, layout.submenu.y) <= layout.submenu.radius * layout.submenu.radius
+
+        if not insideRoot and not insideSubmenu then
+            self:closeColorPicker()
+            return false
+        end
+
+        if insideRoot and not layout.branch then
+            local selectedBranch = self:getJunctionPickerRootHover(x, y)
+            if selectedBranch == "disconnect" and #self:getColorPickerOptions() == 0 then
+                selectedBranch = nil
+            end
+            if selectedBranch then
+                self.colorPicker.branch = selectedBranch
+                self.colorPicker.hoverBranch = nil
+                self.colorPicker.hoverOptionIndex = nil
+            end
+            return true
+        end
+
+        if layout.submenu then
+            local hitEntry = self:getJunctionPickerOptionHit(layout.submenu, x, y)
+            if hitEntry then
+                if layout.submenu.branch == "disconnect" then
+                    self:splitSharedJunctionColor(intersection, hitEntry.option.id, x, y)
+                else
+                    self:setIntersectionControlType(intersection, hitEntry.option.controlType)
+                    self:closeColorPicker()
+                end
+                return true
+            end
+        end
+
+        self:updateJunctionPickerHover(x, y)
+        return true
+    end
+
     if not pointInRect(x, y, layout.rect) then
         self:closeColorPicker()
         return false
@@ -2996,7 +3419,7 @@ function mapEditor:handleColorPickerClick(x, y, button)
                 return true
             end
 
-            if self.colorPicker.mode == "junction_split" then
+            if self.colorPicker.mode == "junction" then
                 local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
                 if not intersection then
                     self:closeColorPicker()
@@ -3461,20 +3884,13 @@ function mapEditor:mousepressed(x, y, button)
         end
 
         local hitIntersection = self:findIntersectionHit(x, y)
-        if hitIntersection
-            and #hitIntersection.outputEndpointIds > 1
-            and distanceSquared(x, y, hitIntersection.x, hitIntersection.y + 36) <= 16 * 16 then
+        if self:isIntersectionOutputSelectorHit(hitIntersection, x, y) then
             self:cycleIntersectionOutput(hitIntersection, -1)
             return true
         end
         if hitIntersection then
-            local sharedGroup = self:getSharedPointGroupForIntersection(hitIntersection)
-            if sharedGroup and #sharedGroup.colorIds > 1 then
-                self:openSharedJunctionColorPicker(hitIntersection)
-                return true
-            end
-        end
-        if hitIntersection and self:cycleIntersectionPassCount(hitIntersection, 1) then
+            self:openJunctionPicker(hitIntersection)
+            self:updateJunctionPickerHover(x, y)
             return true
         end
 
@@ -3544,10 +3960,29 @@ function mapEditor:mousepressed(x, y, button)
 
     local hitIntersection = self:findIntersectionHit(x, y)
     if hitIntersection then
-        if #hitIntersection.outputEndpointIds > 1 and distanceSquared(x, y, hitIntersection.x, hitIntersection.y + 36) <= 16 * 16 then
+        if self:isIntersectionOutputSelectorHit(hitIntersection, x, y) then
             self:cycleIntersectionOutput(hitIntersection, 1)
         else
-            self:cycleIntersection(hitIntersection)
+            self.drag = {
+                kind = "intersection",
+                intersectionId = hitIntersection.id,
+                intersectionSnapshot = {
+                    id = hitIntersection.id,
+                    x = hitIntersection.x,
+                    y = hitIntersection.y,
+                    routeIds = copyArray(hitIntersection.routeIds),
+                },
+                sharedPointId = nil,
+                routeId = nil,
+                pointIndex = nil,
+                startMouseX = x,
+                startMouseY = y,
+                moved = false,
+                isMagnet = false,
+                magnetKind = nil,
+            }
+            self:closeColorPicker()
+            self:closeRouteTypePicker()
         end
         return true
     end
@@ -3631,6 +4066,10 @@ function mapEditor:mousemoved(x, y)
         return true
     end
 
+    if self.colorPicker and self.colorPicker.mode == "junction" then
+        self:updateJunctionPickerHover(x, y)
+    end
+
     if not self.drag then
         return false
     end
@@ -3685,6 +4124,10 @@ function mapEditor:mousereleased(x, y, button)
                 self:mergeBendPointInto(route, self.drag.pointIndex, targetRoute, targetPointIndex)
             end
         end
+    end
+
+    if self.drag.kind == "intersection" and self.drag.moved then
+        self:showStatus("Junction moved.")
     end
 
     self.drag = nil
@@ -4094,16 +4537,7 @@ function mapEditor:drawIntersection(intersection)
         return
     end
 
-    local fillColor = {
-        direct = { 0.34, 0.84, 0.98 },
-        delayed = { 0.99, 0.78, 0.32 },
-        pump = { 0.93, 0.22, 0.84 },
-        spring = { 0.4, 0.96, 0.74 },
-        relay = { 0.56, 0.72, 0.98 },
-        trip = { 0.98, 0.6, 0.28 },
-        crossbar = { 0.92, 0.38, 0.68 },
-    }
-    local color = fillColor[intersection.controlType] or fillColor.direct
+    local color = CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct
 
     graphics.setColor(0.08, 0.1, 0.13, 1)
     graphics.circle("fill", intersection.x, intersection.y, radius + 6)
@@ -4122,11 +4556,11 @@ function mapEditor:drawIntersection(intersection)
     )
 
     if #intersection.outputEndpointIds > 1 and intersection.controlType ~= "relay" and intersection.controlType ~= "crossbar" then
-        local selectorY = intersection.y + 36
+        local selectorY = intersection.y + INTERSECTION_SELECTOR_OFFSET_Y
         graphics.setColor(0.08, 0.1, 0.13, 1)
-        graphics.circle("fill", intersection.x, selectorY, 15)
+        graphics.circle("fill", intersection.x, selectorY, INTERSECTION_SELECTOR_DRAW_RADIUS)
         graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.circle("line", intersection.x, selectorY, 15)
+        graphics.circle("line", intersection.x, selectorY, INTERSECTION_SELECTOR_DRAW_RADIUS)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.printf(
             tostring(intersection.activeOutputIndex or 1),
@@ -4189,6 +4623,184 @@ function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numb
     return currentY, renderedCount
 end
 
+function mapEditor:drawEditorStaticJunctionIcon(image, centerX, centerY, size, scaleMultiplier, alpha)
+    if not image then
+        return false
+    end
+
+    local imageWidth, imageHeight = image:getDimensions()
+    local scale = math.min((size * scaleMultiplier) / imageWidth, (size * scaleMultiplier) / imageHeight)
+    love.graphics.setColor(1, 1, 1, alpha or 1)
+    love.graphics.draw(
+        image,
+        centerX,
+        centerY,
+        0,
+        scale,
+        scale,
+        imageWidth * 0.5,
+        imageHeight * 0.5
+    )
+    return true
+end
+
+function mapEditor:drawEditorHourglassIcon(centerX, centerY, size, color)
+    local graphics = love.graphics
+    local halfWidth = size * 0.34
+    local halfHeight = size * 0.46
+    local neckWidth = size * 0.08
+
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.setColor(color[1], color[2], color[3], 1)
+    graphics.polygon(
+        "fill",
+        -halfWidth, -halfHeight,
+        halfWidth, -halfHeight,
+        neckWidth, 0,
+        -neckWidth, 0
+    )
+    graphics.polygon(
+        "fill",
+        -neckWidth, 0,
+        neckWidth, 0,
+        halfWidth, halfHeight,
+        -halfWidth, halfHeight
+    )
+    graphics.setLineWidth(2)
+    graphics.setColor(0.05, 0.06, 0.08, 0.96)
+    graphics.line(-halfWidth, -halfHeight, halfWidth, -halfHeight)
+    graphics.line(-halfWidth, halfHeight, halfWidth, halfHeight)
+    graphics.line(-halfWidth, -halfHeight, -neckWidth, 0, -halfWidth, halfHeight)
+    graphics.line(halfWidth, -halfHeight, neckWidth, 0, halfWidth, halfHeight)
+    graphics.pop()
+end
+
+function mapEditor:drawEditorControlIcon(controlType, centerX, centerY, size)
+    self:ensureEditorJunctionIcons()
+
+    if controlType == "direct" then
+        if self:drawEditorStaticJunctionIcon(self.editorDirectImage, centerX, centerY, size, 1.4, 0.98) then
+            return
+        end
+    elseif controlType == "delayed" then
+        self:drawEditorHourglassIcon(centerX, centerY, size, { 0.99, 0.77, 0.32 })
+        return
+    elseif controlType == "pump" then
+        if self:drawEditorStaticJunctionIcon(self.editorChargeImage, centerX, centerY, size, 1.32, 0.98) then
+            return
+        end
+    elseif controlType == "spring" then
+        if self:drawEditorStaticJunctionIcon(self.editorSpringImage, centerX, centerY, size, 1.18, 0.98) then
+            return
+        end
+    elseif controlType == "relay" then
+        if self:drawEditorStaticJunctionIcon(self.editorRelayImage, centerX, centerY, size, 1.42, 0.98) then
+            return
+        end
+    elseif controlType == "trip" then
+        if self:drawEditorStaticJunctionIcon(self.editorTripImage, centerX, centerY, size, 1.36, 0.98) then
+            return
+        end
+    elseif controlType == "crossbar" then
+        if self:drawEditorStaticJunctionIcon(self.editorCrossImage, centerX, centerY, size, 1.4, 0.98) then
+            return
+        end
+    end
+
+    love.graphics.setColor(0.05, 0.06, 0.08, 1)
+    love.graphics.printf(
+        self:getControlLabel(controlType),
+        centerX - size,
+        centerY - 8,
+        size * 2,
+        "center"
+    )
+end
+
+function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
+    local graphics = love.graphics
+    local root = layout.root
+    local leftColor = #colorOptions > 0 and { 0.82, 0.86, 0.9, 0.92 } or { 0.24, 0.28, 0.32, 0.82 }
+    local rightColor = CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct
+    local hoverBranch = layout.hoverBranch
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.94)
+    graphics.circle("fill", root.x, root.y, root.radius + 6)
+
+    graphics.setColor(leftColor[1], leftColor[2], leftColor[3], hoverBranch == "disconnect" and 0.32 or 0.18)
+    graphics.arc("fill", "pie", root.x, root.y, root.radius, math.pi * 0.5, math.pi * 1.5)
+    graphics.setColor(rightColor[1], rightColor[2], rightColor[3], hoverBranch == "junctions" and 0.38 or 0.22)
+    graphics.arc("fill", "pie", root.x, root.y, root.radius, -math.pi * 0.5, math.pi * 0.5)
+
+    graphics.setColor(0.97, 0.98, 1, 0.86)
+    graphics.setLineWidth(2)
+    graphics.circle("line", root.x, root.y, root.radius)
+    graphics.line(root.x, root.y - root.radius + 4, root.x, root.y + root.radius - 4)
+
+    local colorCount = math.min(3, #colorOptions)
+    for colorIndex = 1, colorCount do
+        local option = colorOptions[colorIndex]
+        local dotY = root.y + (colorIndex - (colorCount + 1) * 0.5) * (JUNCTION_MENU_SWATCH_RADIUS * 2 + 4)
+        graphics.setColor(0.05, 0.06, 0.08, 1)
+        graphics.circle("fill", root.x - root.radius * 0.36, dotY, JUNCTION_MENU_SWATCH_RADIUS + 3)
+        graphics.setColor(option.color[1], option.color[2], option.color[3], 1)
+        graphics.circle("fill", root.x - root.radius * 0.36, dotY, JUNCTION_MENU_SWATCH_RADIUS)
+    end
+
+    self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.33, root.y, JUNCTION_MENU_ICON_SIZE)
+end
+
+function mapEditor:drawJunctionMenuSubmenu(layout, intersection)
+    local graphics = love.graphics
+    local submenu = layout.submenu
+    if not submenu then
+        return
+    end
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.94)
+    graphics.circle("fill", submenu.x, submenu.y, submenu.radius + 6)
+    graphics.setColor(0.97, 0.98, 1, 0.86)
+    graphics.setLineWidth(2)
+    graphics.circle("line", submenu.x, submenu.y, submenu.radius)
+    graphics.setColor(0.12, 0.14, 0.18, 0.92)
+    graphics.circle("fill", submenu.x, submenu.y, submenu.innerRadius - 4)
+
+    if #submenu.entries == 0 then
+        return
+    end
+
+    for _, entry in ipairs(submenu.entries) do
+        local isHovered = self.colorPicker.hoverOptionIndex == entry.index
+        local color = nil
+        local iconSize = submenu.branch == "junctions" and JUNCTION_MENU_TYPE_ICON_SIZE or JUNCTION_MENU_ICON_SIZE
+        if submenu.branch == "disconnect" then
+            color = entry.option.color
+        else
+            color = CONTROL_FILL_COLORS[entry.option.controlType] or CONTROL_FILL_COLORS.direct
+        end
+
+        graphics.setColor(color[1], color[2], color[3], isHovered and 0.44 or 0.26)
+        graphics.arc("fill", "pie", submenu.x, submenu.y, submenu.outerRadius, entry.startAngle, entry.endAngle)
+        graphics.setColor(0.05, 0.06, 0.08, 1)
+        graphics.arc("line", "open", submenu.x, submenu.y, submenu.outerRadius, entry.startAngle, entry.endAngle)
+
+        if submenu.branch == "disconnect" then
+            graphics.setColor(0.05, 0.06, 0.08, 1)
+            graphics.circle("fill", entry.centerX, entry.centerY, JUNCTION_MENU_SWATCH_RADIUS + 3)
+            graphics.setColor(color[1], color[2], color[3], 1)
+            graphics.circle("fill", entry.centerX, entry.centerY, JUNCTION_MENU_SWATCH_RADIUS)
+        else
+            self:drawEditorControlIcon(entry.option.controlType, entry.centerX, entry.centerY, iconSize)
+            if entry.option.controlType == intersection.controlType then
+                graphics.setColor(0.97, 0.98, 1, 1)
+                graphics.setLineWidth(2)
+                graphics.circle("line", entry.centerX, entry.centerY, iconSize + 6)
+            end
+        end
+    end
+end
+
 function mapEditor:drawColorPicker(game)
     local layout = self:getColorPickerLayout()
     if not layout then
@@ -4197,6 +4809,21 @@ function mapEditor:drawColorPicker(game)
 
     local graphics = love.graphics
     local lookup = self:getColorPickerSelectionLookup()
+
+    if layout.kind == "junction_radial" then
+        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+        if not intersection then
+            return
+        end
+
+        local colorOptions = self:getColorPickerOptions()
+        if layout.branch then
+            self:drawJunctionMenuSubmenu(layout, intersection)
+        else
+            self:drawJunctionMenuRoot(layout, intersection, colorOptions)
+        end
+        return
+    end
 
     graphics.setColor(0.08, 0.1, 0.14, 0.98)
     graphics.rectangle("fill", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
