@@ -812,6 +812,38 @@ function world:doesEdgeAcceptGoalColor(inputEdge, outputEdge, goalColor)
     return outputEdge and nearestColorId(outputEdge.color) == goalColor or false
 end
 
+function world:getReachableOutputEdgesForInput(junction, inputEdgeId)
+    if not junction or not inputEdgeId or #((junction and junction.outputs) or {}) <= 0 then
+        return {}
+    end
+
+    local inputIndex = nil
+    for candidateIndex, inputEdge in ipairs(junction.inputs or {}) do
+        if inputEdge.id == inputEdgeId then
+            inputIndex = candidateIndex
+            break
+        end
+    end
+
+    if not inputIndex then
+        return {}
+    end
+
+    local controlType = junction.control and junction.control.type or "direct"
+    if controlType == "relay" then
+        local relayOutput = junction.outputs[clamp(inputIndex, 1, #junction.outputs)]
+        return relayOutput and { relayOutput } or {}
+    end
+
+    if controlType == "crossbar" then
+        local mirroredOutputIndex = clamp(#junction.outputs - inputIndex + 1, 1, #junction.outputs)
+        local crossbarOutput = junction.outputs[mirroredOutputIndex]
+        return crossbarOutput and { crossbarOutput } or {}
+    end
+
+    return junction.outputs
+end
+
 function world:buildMinimumDistanceLookup()
     self.minimumDistanceByTrainId = {}
 
@@ -859,7 +891,7 @@ function world:buildMinimumDistanceLookup()
                 end
 
                 local junction = self.junctions[currentEdge.targetId]
-                for _, outputEdge in ipairs(junction and junction.outputs or {}) do
+                for _, outputEdge in ipairs(self:getReachableOutputEdgesForInput(junction, currentEdge.id)) do
                     if self:doesEdgeAcceptGoalColor(currentEdge, outputEdge, goalColor) then
                         local nextDistance = current.distance + outputEdge.path.length
                         if outputEdge.targetType == "exit" then
