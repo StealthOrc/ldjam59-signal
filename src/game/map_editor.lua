@@ -928,12 +928,8 @@ function mapEditor:getValidationListLayout(font)
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
     local panelBottom = self:getSaveButtonRect().y - 16
-    local listTop = self.sidePanel.y + 224
+    local listTop = self.sidePanel.y + 196
     local listBottom = panelBottom - 12
-
-    if self:getSelectedRoute() then
-        listBottom = listBottom - 94
-    end
 
     local listHeight = math.max(72, listBottom - listTop)
     local listRect = {
@@ -5121,7 +5117,7 @@ function mapEditor:drawDefaultSidePanel(game)
     local panelX = validationLayout.panelX
     local panelWidth = validationLayout.panelWidth
     local panelBottom = validationLayout.panelBottom
-    local currentY = self.sidePanel.y + 104
+    local currentY = self.sidePanel.y + 76
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.97, 0.98, 1, 1)
@@ -5218,24 +5214,6 @@ function mapEditor:drawDefaultSidePanel(game)
         currentY = validationLayout.listRect.y + validationLayout.listRect.h + 18
     end
 
-    local selectedRoute = self:getSelectedRoute()
-    if selectedRoute and currentY + 56 < panelBottom then
-        local startEndpoint = self:getRouteStartEndpoint(selectedRoute)
-        local endEndpoint = self:getRouteEndEndpoint(selectedRoute)
-        local startColors = table.concat(lookupToSortedIds(startEndpoint and startEndpoint.colors or {}), ", ")
-        local endColors = table.concat(lookupToSortedIds(endEndpoint and endEndpoint.colors or {}), ", ")
-        graphics.setColor(selectedRoute.color[1], selectedRoute.color[2], selectedRoute.color[3], 1)
-        graphics.printf("Selected route: " .. (selectedRoute.label or selectedRoute.id), panelX, currentY, panelWidth)
-        currentY = currentY + 24
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf(
-            "Road styles: " .. self:summarizeRouteRoadTypes(selectedRoute) .. "\nStart magnet: " .. startColors .. "\nExit magnet: " .. endColors,
-            panelX,
-            currentY,
-            panelWidth
-        )
-    end
-
     if self.statusText then
         graphics.setColor(0.48, 0.92, 0.62, 1)
         graphics.printf(self.statusText, panelX, panelBottom - 42, panelWidth)
@@ -5299,10 +5277,6 @@ function mapEditor:draw(game)
         love.graphics.setFont(game.fonts.title)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.print("Map Editor", self.sidePanel.x + 18, self.sidePanel.y + 20)
-
-        love.graphics.setFont(game.fonts.small)
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf("Esc returns to the main menu", self.sidePanel.x + 18, self.sidePanel.y + 64, self.sidePanel.w - 36)
         self:drawDefaultSidePanel(game)
     end
 
