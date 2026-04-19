@@ -70,6 +70,7 @@ local LEVEL_SELECT_MARKETPLACE_STATUS_DISABLED = "disabled"
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING = "Loading online maps..."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH = "Type a map name, UUID, code, or creator to search."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED = "The online maps could not be loaded."
+local ONLINE_WRITE_TIMEOUT_SECONDS = 5
 local LEVEL_SELECT_ACTION_STATUS_INFO = "info"
 local LEVEL_SELECT_ACTION_STATUS_SUCCESS = "success"
 local LEVEL_SELECT_ACTION_STATUS_ERROR = "error"
@@ -101,17 +102,27 @@ end
 
 local function findLevelSelectIndex(game, maps)
     local fallbackIndex = #maps > 0 and 1 or nil
+    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
 
     for index, descriptor in ipairs(maps or {}) do
         if descriptor.id == game.levelSelectSelectedId then
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return index
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            game.levelSelectSelectedId = descriptor.id
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
             return index
         end
     end
 
     if fallbackIndex then
         game.levelSelectSelectedId = maps[fallbackIndex].id
+        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
+        game.levelSelectSelectedMapUuid = nil
     end
 
     return fallbackIndex
@@ -144,6 +155,14 @@ end
 
 local function trimLastUtf8Character(value)
     return (value or ""):gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
+end
+
+local function getProfilePlayerUuid(profile)
+    if type(profile) ~= "table" then
+        return ""
+    end
+
+    return tostring(profile.player_uuid or profile.playerId or profile.playerUuid or "")
 end
 
 local function deepCopy(value)
@@ -276,6 +295,7 @@ function Game.new()
     self.currentRunOrigin = nil
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
+    self.levelSelectSelectedMapUuid = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
     self.levelSelectVisualIndex = nil
@@ -310,6 +330,14 @@ function Game.new()
     self.activeMarketplaceRequestId = nil
     self.activeMarketplaceRequestStartedAt = nil
     self.activeMarketplaceRequestScopeKey = nil
+    self.remoteWriteRequestSequence = 0
+    self.activeFavoriteMapRequestId = nil
+    self.activeFavoriteMapRequestStartedAt = nil
+    self.activeFavoriteMapMapUuid = nil
+    self.activeUploadMapRequestId = nil
+    self.activeUploadMapRequestStartedAt = nil
+    self.activeScoreSubmitRequestId = nil
+    self.activeScoreSubmitRequestStartedAt = nil
     self.resultsSummary = nil
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
@@ -720,7 +748,7 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     local submittedEntry = {
         display_name = response.display_name or self.profile.playerDisplayName or "Unknown",
         map_uuid = mapUuid,
-        player_uuid = response.player_uuid or self.profile.playerId or "",
+        player_uuid = response.player_uuid or getProfilePlayerUuid(self.profile),
         rank = tonumber(response.rank) or nil,
         score = tonumber(response.score or 0) or 0,
         updated_at = response.updated_at,
@@ -836,7 +864,7 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
             apiBaseUrl = onlineConfig.apiBaseUrl,
             limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
             mapUuid = mapUuid,
-            playerUuid = self.profile and self.profile.playerId or nil,
+            player_uuid = getProfilePlayerUuid(self.profile),
         },
     }))
 end
@@ -933,10 +961,88 @@ function Game:beginMarketplaceFetch(onlineConfig, scopeDetails)
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
             mode = scopeDetails.fetchMode,
+            player_uuid = getProfilePlayerUuid(self.profile),
             query = scopeDetails.query,
             limit = LEVEL_SELECT_MARKETPLACE_REMOTE_LIMIT,
         },
     }))
+end
+
+function Game:beginFavoriteMapRequest(onlineConfig, mapUuid)
+    if self.activeFavoriteMapRequestId ~= nil then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeFavoriteMapRequestId = self.remoteWriteRequestSequence
+    self.activeFavoriteMapRequestStartedAt = getNowSeconds()
+    self.activeFavoriteMapMapUuid = mapUuid
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "favorite_map",
+        requestId = self.activeFavoriteMapRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            hmacSecret = onlineConfig.hmacSecret,
+            mapUuid = mapUuid,
+            mode = "favorite_map",
+            player_uuid = getProfilePlayerUuid(self.profile),
+        },
+    }))
+    return true
+end
+
+function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
+    if self.activeUploadMapRequestId ~= nil then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeUploadMapRequestId = self.remoteWriteRequestSequence
+    self.activeUploadMapRequestStartedAt = getNowSeconds()
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "upload_map",
+        requestId = self.activeUploadMapRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            creator_uuid = getProfilePlayerUuid(self.profile),
+            hmacSecret = onlineConfig.hmacSecret,
+            map = deepCopy(mapData.level),
+            mapName = mapData.name or selectedMap.displayName or selectedMap.name,
+            mapUuid = mapData.mapUuid or selectedMap.mapUuid,
+            mode = "upload_map",
+        },
+    }))
+    return true
+end
+
+function Game:beginScoreSubmitRequest(onlineConfig, summary)
+    if self.activeScoreSubmitRequestId ~= nil then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
+    self.activeScoreSubmitRequestStartedAt = getNowSeconds()
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "score_submit",
+        requestId = self.activeScoreSubmitRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            hmacSecret = onlineConfig.hmacSecret,
+            mapUuid = summary.mapUuid,
+            mode = "score_submit",
+            playerDisplayName = self.profile.playerDisplayName,
+            player_uuid = getProfilePlayerUuid(self.profile),
+            score = summary.finalScore or 0,
+        },
+    }))
+    return true
 end
 
 function Game:applyMarketplaceFetchResult(response, scopeKey)
@@ -991,11 +1097,15 @@ function Game:updateLeaderboardFetchState()
     local activePreviewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
     local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid)
     local marketplaceScopeKey = self.activeMarketplaceRequestScopeKey
+    local activeFavoriteMapUuid = self.activeFavoriteMapMapUuid
 
     if self.leaderboardWorkerThread and (
         self.activeLeaderboardRequestId ~= nil
         or self.activeLevelSelectPreviewRequestId ~= nil
         or self.activeMarketplaceRequestId ~= nil
+        or self.activeFavoriteMapRequestId ~= nil
+        or self.activeUploadMapRequestId ~= nil
+        or self.activeScoreSubmitRequestId ~= nil
     ) then
         local threadError = self.leaderboardWorkerThread:getError()
         if threadError then
@@ -1040,6 +1150,28 @@ function Game:updateLeaderboardFetchState()
                     self:setMarketplaceState(marketplaceScopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_ERROR, threadError)
                 end
                 self.activeMarketplaceRequestScopeKey = nil
+            end
+
+            if self.activeFavoriteMapRequestId ~= nil then
+                self.activeFavoriteMapRequestId = nil
+                self.activeFavoriteMapRequestStartedAt = nil
+                self.activeFavoriteMapMapUuid = nil
+                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, threadError)
+            end
+
+            if self.activeUploadMapRequestId ~= nil then
+                self.activeUploadMapRequestId = nil
+                self.activeUploadMapRequestStartedAt = nil
+                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, threadError)
+            end
+
+            if self.activeScoreSubmitRequestId ~= nil then
+                self.activeScoreSubmitRequestId = nil
+                self.activeScoreSubmitRequestStartedAt = nil
+                self.resultsOnlineState = {
+                    status = "error",
+                    message = threadError,
+                }
             end
 
             self.leaderboardWorkerThread = nil
@@ -1103,6 +1235,37 @@ function Game:updateLeaderboardFetchState()
         end
     end
 
+    if self.activeFavoriteMapRequestId ~= nil and self.activeFavoriteMapRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeFavoriteMapRequestStartedAt
+        if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
+            self.activeFavoriteMapRequestId = nil
+            self.activeFavoriteMapRequestStartedAt = nil
+            self.activeFavoriteMapMapUuid = nil
+            self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The like request timed out.")
+        end
+    end
+
+    if self.activeUploadMapRequestId ~= nil and self.activeUploadMapRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeUploadMapRequestStartedAt
+        if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
+            self.activeUploadMapRequestId = nil
+            self.activeUploadMapRequestStartedAt = nil
+            self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The map upload timed out.")
+        end
+    end
+
+    if self.activeScoreSubmitRequestId ~= nil and self.activeScoreSubmitRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeScoreSubmitRequestStartedAt
+        if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
+            self.activeScoreSubmitRequestId = nil
+            self.activeScoreSubmitRequestStartedAt = nil
+            self.resultsOnlineState = {
+                status = "error",
+                message = "The score upload timed out.",
+            }
+        end
+    end
+
     while true do
         local encodedResponse = self.leaderboardResponseChannel:pop()
         if not encodedResponse then
@@ -1127,6 +1290,66 @@ function Game:updateLeaderboardFetchState()
             self.activeMarketplaceRequestStartedAt = nil
             self.activeMarketplaceRequestScopeKey = nil
             self:applyMarketplaceFetchResult(decodedResponse, responseScopeKey)
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "favorite_map" and decodedResponse.requestId == self.activeFavoriteMapRequestId then
+            local mapUuid = self.activeFavoriteMapMapUuid
+            self.activeFavoriteMapRequestId = nil
+            self.activeFavoriteMapRequestStartedAt = nil
+            self.activeFavoriteMapMapUuid = nil
+            if decodedResponse.ok and type(decodedResponse.payload) == "table" then
+                local favoriteCount = tonumber(decodedResponse.payload.favorite_count or 0) or 0
+                local likedByPlayer = decodedResponse.payload.liked_by_player == true
+                self:updateMarketplaceFavoriteState(decodedResponse.payload.map_uuid or mapUuid, favoriteCount, likedByPlayer)
+                if decodedResponse.payload.accepted == true then
+                    self:setLevelSelectActionState(
+                        LEVEL_SELECT_ACTION_STATUS_SUCCESS,
+                        string.format("Map liked. It now has %d vote(s).", favoriteCount)
+                    )
+                else
+                    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, "You already liked this map.")
+                end
+            else
+                self:setLevelSelectActionState(
+                    LEVEL_SELECT_ACTION_STATUS_ERROR,
+                    decodedResponse.error or "The like request failed."
+                )
+            end
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "upload_map" and decodedResponse.requestId == self.activeUploadMapRequestId then
+            self.activeUploadMapRequestId = nil
+            self.activeUploadMapRequestStartedAt = nil
+            if decodedResponse.ok and type(decodedResponse.payload) == "table" then
+                local identifier = tostring(decodedResponse.payload.internal_identifier or "")
+                local successMessage = identifier ~= ""
+                    and string.format("Map uploaded. Code: %s", identifier)
+                    or "Map uploaded successfully."
+                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_SUCCESS, successMessage)
+            else
+                local statusCode = tonumber(decodedResponse.status)
+                local failureMessage = decodedResponse.error or "The map upload failed."
+                if statusCode then
+                    failureMessage = string.format("Map upload failed (HTTP %d): %s", statusCode, tostring(failureMessage))
+                end
+                self:setLevelSelectActionState(
+                    LEVEL_SELECT_ACTION_STATUS_ERROR,
+                    failureMessage
+                )
+            end
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "score_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
+            self.activeScoreSubmitRequestId = nil
+            self.activeScoreSubmitRequestStartedAt = nil
+            if decodedResponse.ok and type(decodedResponse.payload) == "table" then
+                self.resultsOnlineState = {
+                    status = decodedResponse.status == 202 and "kept" or "submitted",
+                    message = decodedResponse.status == 202
+                        and "Score was valid, but your online best for this map is already higher."
+                        or "Score uploaded successfully.",
+                }
+                self:updateLevelSelectPreviewCacheFromSubmit(decodedResponse.payload)
+            else
+                self.resultsOnlineState = {
+                    status = "error",
+                    message = decodedResponse.error or "The score upload failed.",
+                }
+            end
         end
     end
 
@@ -1289,28 +1512,11 @@ function Game:submitResultsScore()
     end
 
     local summary = self.resultsSummary or {}
-    local response, submitError, statusCode = leaderboardClient.submitScore({
-        playerUuid = self.profile.playerId,
-        playerDisplayName = self.profile.playerDisplayName,
-        score = summary.finalScore or 0,
-        mapUuid = summary.mapUuid,
-    }, onlineConfig)
-
-    if submitError then
-        self.resultsOnlineState = {
-            status = "error",
-            message = submitError,
-        }
-        return
-    end
-
     self.resultsOnlineState = {
-        status = statusCode == 202 and "kept" or "submitted",
-        message = statusCode == 202
-            and "Score was valid, but your online best for this map is already higher."
-            or "Score uploaded successfully.",
+        status = "pending",
+        message = "Uploading score...",
     }
-    self:updateLevelSelectPreviewCacheFromSubmit(response)
+    self:beginScoreSubmitRequest(onlineConfig, summary)
 end
 
 function Game:canUploadMapDescriptor(mapDescriptor)
@@ -1410,23 +1616,8 @@ function Game:uploadSelectedMap()
         return
     end
 
-    local response, uploadError = leaderboardClient.uploadMap({
-        mapUuid = mapData.mapUuid or selectedMap.mapUuid,
-        mapName = mapData.name or selectedMap.displayName or selectedMap.name,
-        creatorUuid = self.profile and self.profile.playerId or "",
-        map = deepCopy(mapData.level),
-    }, onlineConfig)
-
-    if uploadError then
-        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, uploadError)
-        return
-    end
-
-    local identifier = type(response) == "table" and tostring(response.internal_identifier or "") or ""
-    local successMessage = identifier ~= ""
-        and string.format("Map uploaded. Code: %s", identifier)
-        or "Map uploaded successfully."
-    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_SUCCESS, successMessage)
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, "Uploading map...")
+    self:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
 end
 
 function Game:downloadMarketplaceMap(mapDescriptor)
@@ -1451,6 +1642,7 @@ function Game:downloadMarketplaceMap(mapDescriptor)
             creatorDisplayName = tostring(sourceEntry.creator_display_name or ""),
             favoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0,
             internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
+            likedByPlayer = sourceEntry.liked_by_player == true,
             mapCategory = tostring(sourceEntry.map_category or ""),
         },
     }
@@ -1475,6 +1667,80 @@ function Game:downloadMarketplaceMap(mapDescriptor)
         LEVEL_SELECT_ACTION_STATUS_SUCCESS,
         string.format("%s was saved to your local maps.", importedDescriptor.displayName or importedDescriptor.name or "Map")
     )
+end
+
+function Game:updateMarketplaceFavoriteState(mapUuid, favoriteCount, likedByPlayer)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        return
+    end
+
+    local resolvedFavoriteCount = tonumber(favoriteCount or 0) or 0
+    local resolvedLikedByPlayer = likedByPlayer == true
+    for _, cacheEntry in pairs(self.marketplaceCacheByScope) do
+        local payload = type(cacheEntry) == "table" and cacheEntry.payload or nil
+        local entries = type(payload) == "table" and payload.entries or nil
+        if type(entries) == "table" then
+            for _, entry in ipairs(entries) do
+                if tostring(entry.map_uuid or "") == resolvedMapUuid then
+                    entry.favorite_count = resolvedFavoriteCount
+                    entry.liked_by_player = resolvedLikedByPlayer
+                end
+            end
+        end
+    end
+end
+
+function Game:favoriteMarketplaceMap(mapDescriptor)
+    local selectedMap = mapDescriptor or self:getSelectedLevelMap()
+    local sourceEntry = selectedMap and selectedMap.remoteSourceEntry or nil
+    if type(sourceEntry) ~= "table" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected online map could not be liked."
+        )
+        return
+    end
+
+    local mapUuid = tostring(sourceEntry.map_uuid or selectedMap.mapUuid or "")
+    if mapUuid == "" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected online map is missing its map UUID."
+        )
+        return
+    end
+
+    if sourceEntry.liked_by_player == true then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "You already liked this map."
+        )
+        return
+    end
+
+    local onlineConfig = self:getActiveOnlineConfig()
+    if not onlineConfig.isConfigured then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        return
+    end
+
+    if self.activeFavoriteMapRequestId ~= nil then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "Please wait for the current like request."
+        )
+        return
+    end
+
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_INFO,
+        "Saving like..."
+    )
+    self:beginFavoriteMapRequest(onlineConfig, mapUuid)
 end
 
 function Game:refreshMarketplaceData()
@@ -1657,18 +1923,28 @@ end
 function Game:getSelectedLevelMap()
     local maps = self:getLevelSelectMaps()
     local fallback = nil
+    local selectedMapUuid = tostring(self.levelSelectSelectedMapUuid or "")
 
     for _, descriptor in ipairs(maps) do
         fallback = fallback or descriptor
         if descriptor.id == self.levelSelectSelectedId then
+            self.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return descriptor
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            self.levelSelectSelectedId = descriptor.id
+            self.levelSelectSelectedMapUuid = descriptor.mapUuid
             return descriptor
         end
     end
 
     if fallback then
         self.levelSelectSelectedId = fallback.id
+        self.levelSelectSelectedMapUuid = fallback.mapUuid
     else
         self.levelSelectSelectedId = nil
+        self.levelSelectSelectedMapUuid = nil
     end
 
     return fallback
@@ -1690,6 +1966,7 @@ end
 
 function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
+    self.levelSelectSelectedMapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
     self.levelSelectScroll = 0
     self:clearLevelSelectActionState()
     self:clearLevelSelectLeaderboardFlip()
@@ -1847,6 +2124,7 @@ function Game:moveLevelSelectSelection(direction)
     end
 
     self.levelSelectSelectedId = maps[nextIndex].id
+    self.levelSelectSelectedMapUuid = maps[nextIndex].mapUuid
     self:clearLevelSelectLeaderboardFlip()
     return maps[nextIndex]
 end
@@ -1875,6 +2153,7 @@ function Game:toggleLevelSelectLeaderboardFlip(mapDescriptor)
     end
 
     self.levelSelectSelectedId = mapDescriptor.id
+    self.levelSelectSelectedMapUuid = mapDescriptor.mapUuid
     self.levelSelectScroll = 0
     self.levelSelectLeaderboardFlipMapUuid = mapUuid
     local openStateOptions = levelSelectPreviewLogic.buildOpenStateOptions(self:isLevelSelectPreviewCacheFresh(mapUuid))
@@ -2446,6 +2725,8 @@ function Game:mousepressed(x, y, button)
         elseif hit.kind == "download_map" then
             self:setLevelSelectSelection(hit.map)
             self:downloadMarketplaceMap(hit.map)
+        elseif hit.kind == "favorite_map" then
+            self:favoriteMarketplaceMap(hit.map)
         elseif hit.kind == "refresh_marketplace" then
             self:refreshMarketplaceData()
         elseif hit.kind == "upload_map" then
