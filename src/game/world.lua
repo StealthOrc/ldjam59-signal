@@ -1401,6 +1401,9 @@ function world:updateTrain(train, dt)
             local junction = self.junctions[currentEdge.targetId]
             local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
             if not junction or not activeInput or activeInput.id ~= currentEdge.id then
+                if overflow > 0 then
+                    train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+                end
                 local edgePrefix = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
                 train.headDistance = edgePrefix + currentEdge.path.length
                 train.currentSpeed = 0
@@ -1410,6 +1413,9 @@ function world:updateTrain(train, dt)
                 break
             end
         elseif currentEdge.targetType == "exit" then
+            if overflow > 0 then
+                train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+            end
             self:beginTrainExit(train)
             break
         else
