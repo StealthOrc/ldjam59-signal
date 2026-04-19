@@ -79,6 +79,7 @@ function Game.new()
     self.levelSelectScroll = 0
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -223,6 +224,7 @@ function Game:openMenu()
     self.levelSelectFilterHoverId = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = nil
     self:refreshMaps()
 end
 
@@ -233,6 +235,7 @@ function Game:openLevelSelect()
     self.levelSelectFilterHoverId = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = nil
     self:refreshMaps()
     local preferredMap = self.currentMapDescriptor
     if preferredMap then
@@ -254,6 +257,7 @@ function Game:openEditorBlank()
     self.levelSelectIssue = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = nil
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -269,6 +273,7 @@ function Game:openEditorMap(mapDescriptor)
     self.levelSelectIssue = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = nil
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
 end
@@ -297,6 +302,7 @@ function Game:startMap(mapDescriptor)
     self.levelSelectIssue = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
+    self.playPhase = "prepare"
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -312,6 +318,19 @@ end
 
 function Game:isRunLocked()
     return self.levelComplete or self.failureReason ~= nil
+end
+
+function Game:isPreparingRun()
+    return self.screen == "play" and self.playPhase == "prepare"
+end
+
+function Game:startPlayPhase()
+    if not self.world or self.playPhase ~= "prepare" then
+        return false
+    end
+
+    self.playPhase = "play"
+    return true
 end
 
 function Game:openResults()
@@ -341,6 +360,10 @@ function Game:update(dt)
     end
 
     if self.screen == "results" or self:isRunLocked() then
+        return
+    end
+
+    if self.playPhase ~= "play" then
         return
     end
 
@@ -616,6 +639,11 @@ function Game:mousepressed(x, y, button)
 
     if ui.getPlayBackHit(self, viewportX, viewportY) then
         self:openMenu()
+        return
+    end
+
+    if button == 1 and ui.getPlayStartHit(self, viewportX, viewportY) then
+        self:startPlayPhase()
         return
     end
 
