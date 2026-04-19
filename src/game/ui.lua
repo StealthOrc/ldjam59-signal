@@ -202,7 +202,7 @@ local function angleBetweenPoints(a, b)
     return angle
 end
 
-local function drawButton(rect, label, fillColor, strokeColor, font)
+local function drawButton(rect, label, fillColor, strokeColor, font, isDisabled)
     local graphics = love.graphics
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
@@ -210,7 +210,11 @@ local function drawButton(rect, label, fillColor, strokeColor, font)
     graphics.setLineWidth(2)
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
     love.graphics.setFont(font)
-    graphics.setColor(0.97, 0.98, 1, 1)
+    if isDisabled then
+        graphics.setColor(0.54, 0.58, 0.62, 1)
+    else
+        graphics.setColor(0.97, 0.98, 1, 1)
+    end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5 + 0.5), rect.w, "center")
     graphics.setLineWidth(1)
 end
@@ -1970,6 +1974,9 @@ function ui.getLevelSelectHit(game, x, y, button)
 
     local modeButtonRect = getLevelSelectModeButtonRect(game)
     if modeButtonRect and pointInRect(x, y, modeButtonRect) then
+        if modeButtonRect.id == "toggle_mode" and game.levelSelectMode ~= "marketplace" and not game:isOnlineMapsAvailable() then
+            return nil
+        end
         return { kind = "toggle_mode" }
     end
 
@@ -2701,6 +2708,7 @@ function ui.drawLevelSelect(game)
         local fillColor = { 0.1, 0.12, 0.15, 0.98 }
         local strokeColor = { 0.24, 0.3, 0.36, 1 }
         local font = game.fonts.body
+        local isDisabled = false
 
         if buttonRect.id == "open_map" and selectedMap then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
@@ -2712,8 +2720,14 @@ function ui.drawLevelSelect(game)
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.56, 0.72, 0.98, 1 }
         elseif buttonRect.id == "toggle_mode" then
-            fillColor = { 0.12, 0.17, 0.2, 0.98 }
-            strokeColor = { 0.56, 0.72, 0.98, 1 }
+            if game.levelSelectMode ~= "marketplace" and not game:isOnlineMapsAvailable() then
+                fillColor = { 0.08, 0.1, 0.12, 0.98 }
+                strokeColor = { 0.2, 0.24, 0.28, 1 }
+                isDisabled = true
+            else
+                fillColor = { 0.12, 0.17, 0.2, 0.98 }
+                strokeColor = { 0.56, 0.72, 0.98, 1 }
+            end
             font = game.fonts.small
         elseif buttonRect.id == "upload_map" then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
@@ -2726,7 +2740,7 @@ function ui.drawLevelSelect(game)
             strokeColor = { 0.56, 0.72, 0.98, 1 }
         end
 
-        drawButton(buttonRect, buttonRect.label, fillColor, strokeColor, font)
+        drawButton(buttonRect, buttonRect.label, fillColor, strokeColor, font, isDisabled)
     end
 
     if game.levelSelectActionState and game.levelSelectActionState.message then
