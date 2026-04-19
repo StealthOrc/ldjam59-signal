@@ -315,7 +315,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.carriageLength = 34
     self.carriageGap = 12
     self.carriageCount = 4
-    self.exitPadding = 220
+    self.exitFadeDuration = 0.25
     self.crossingRadius = 40
     self.junctionTrackClearance = self.crossingRadius + 4
     self.collisionPoint = nil
@@ -737,9 +737,7 @@ function world:buildMinimumDistanceLookup()
             end
         end
 
-        if bestDistance then
-            bestDistance = bestDistance + self.exitPadding + getTailClearanceDistance(train.wagonCount, self.carriageLength, self.carriageGap)
-        else
+        if not bestDistance then
             bestDistance = 0
         end
 
@@ -789,9 +787,12 @@ function world:initializeLevel()
                 spawned = spawned,
                 completed = false,
                 completedAt = nil,
+                clearedAt = nil,
                 deliveredCorrectly = false,
                 deliveredLate = false,
                 failedWrongDestination = false,
+                exiting = false,
+                exitFadeRemaining = 0,
                 actualDistance = 0,
                 minimumDistance = 0,
             }
@@ -829,14 +830,57 @@ function world:spawnTrain(train)
     train.occupiedEdgeIds = { train.startEdgeId }
     train.headDistance = train.spawnProgress or 0
     train.currentSpeed = 0
+    train.exiting = false
+    train.exitFadeRemaining = 0
+    train.clearedAt = nil
+end
+
+function world:isTrainCleared(train)
+    return train.completed or train.exiting
+end
+
+function world:beginTrainExit(train)
+    if not train or train.completed or train.exiting then
+        return
+    end
+
+    local occupiedEdges = self:getOccupiedEdges(train)
+    local currentEdge = occupiedEdges[#occupiedEdges]
+    if currentEdge then
+        local edgePrefix = self:getDistanceOnOccupiedEdges(occupiedEdges) - currentEdge.path.length
+        train.headDistance = edgePrefix + currentEdge.path.length
+        self:trimTrainOccupiedEdges(train, occupiedEdges)
+    end
+
+    train.currentSpeed = 0
+    train.exiting = true
+    train.exitFadeRemaining = self.exitFadeDuration
+    train.clearedAt = self.elapsedTime
 end
 
 function world:completeTrain(train)
+    if train.completed then
+        return
+    end
+
     train.completed = true
+    train.exiting = false
+    train.exitFadeRemaining = 0
     train.currentSpeed = 0
-    train.completedAt = self.elapsedTime
+    train.completedAt = train.clearedAt or self.elapsedTime
     train.deliveredCorrectly = not train.failedWrongDestination
     train.deliveredLate = train.deliveredCorrectly and train.deadline ~= nil and train.completedAt > train.deadline
+end
+
+function world:updateTrainExit(train, dt)
+    if not train.exiting or train.completed then
+        return
+    end
+
+    train.exitFadeRemaining = math.max(0, (train.exitFadeRemaining or 0) - dt)
+    if train.exitFadeRemaining <= 0 then
+        self:completeTrain(train)
+    end
 end
 
 function world:doesOutputAcceptTrain(train, junction, outputEdge)
@@ -1158,7 +1202,7 @@ end
 
 function world:getDesiredLeadDistance(train)
     local currentEdge = self.edges[train.edgeId]
-    if not currentEdge or train.completed or currentEdge.targetType ~= "junction" then
+    if not currentEdge or self:isTrainCleared(train) or currentEdge.targetType ~= "junction" then
         return nil
     end
 
@@ -1206,7 +1250,7 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
 end
 
 function world:updateTrain(train, dt)
-    if train.completed or not train.spawned then
+    if self:isTrainCleared(train) or not train.spawned then
         return
     end
 
@@ -1252,7 +1296,7 @@ function world:updateTrain(train, dt)
     train.headDistance = previousLength + nextProgress
     self:trimTrainOccupiedEdges(train)
 
-    while not train.completed do
+    while not self:isTrainCleared(train) do
         currentEdge = self.edges[train.edgeId]
         if not currentEdge then
             train.completed = true
@@ -1277,16 +1321,12 @@ function world:updateTrain(train, dt)
             if not self:advanceTrainToNextEdge(train, junction, overflow) then
                 break
             end
+        elseif currentEdge.targetType == "exit" then
+            self:beginTrainExit(train)
+            break
         else
             break
         end
-    end
-
-    local occupiedEdges = self:getOccupiedEdges(train)
-    local tailDistance = (train.headDistance or 0) - ((train.wagonCount or self.carriageCount) - 1) * (self.carriageLength + self.carriageGap)
-    local occupiedLength = self:getDistanceOnOccupiedEdges(occupiedEdges)
-    if currentEdge and currentEdge.targetType == "exit" and tailDistance > occupiedLength + self.exitPadding then
-        self:completeTrain(train)
     end
 end
 
@@ -1295,7 +1335,7 @@ function world:getTrainCarriagePositions(train)
     local carriageSpacing = self.carriageLength + self.carriageGap
     local occupiedEdges = self:getOccupiedEdges(train)
 
-    if train.completed or not train.spawned or #occupiedEdges == 0 then
+    if (train.completed and not train.exiting) or not train.spawned or #occupiedEdges == 0 then
         return positions
     end
 
@@ -1320,21 +1360,25 @@ function world:updateCollisionState()
 
     for firstIndex = 1, #self.trains - 1 do
         local firstTrain = self.trains[firstIndex]
-        local firstCars = self:getTrainCarriagePositions(firstTrain)
+        if not self:isTrainCleared(firstTrain) then
+            local firstCars = self:getTrainCarriagePositions(firstTrain)
 
-        for secondIndex = firstIndex + 1, #self.trains do
-            local secondTrain = self.trains[secondIndex]
-            local secondCars = self:getTrainCarriagePositions(secondTrain)
+            for secondIndex = firstIndex + 1, #self.trains do
+                local secondTrain = self.trains[secondIndex]
+                if not self:isTrainCleared(secondTrain) then
+                    local secondCars = self:getTrainCarriagePositions(secondTrain)
 
-            for _, firstCar in ipairs(firstCars) do
-                for _, secondCar in ipairs(secondCars) do
-                    if distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
-                        self.failureReason = "collision"
-                        self.collisionPoint = {
-                            x = (firstCar.x + secondCar.x) * 0.5,
-                            y = (firstCar.y + secondCar.y) * 0.5,
-                        }
-                        return
+                    for _, firstCar in ipairs(firstCars) do
+                        for _, secondCar in ipairs(secondCars) do
+                            if distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
+                                self.failureReason = "collision"
+                                self.collisionPoint = {
+                                    x = (firstCar.x + secondCar.x) * 0.5,
+                                    y = (firstCar.y + secondCar.y) * 0.5,
+                                }
+                                return
+                            end
+                        end
                     end
                 end
             end
@@ -1344,7 +1388,7 @@ end
 
 function world:updateDeadlineState()
     for _, train in ipairs(self.trains) do
-        if not train.completed and train.deadline and self.elapsedTime > train.deadline then
+        if not self:isTrainCleared(train) and train.deadline and self.elapsedTime > train.deadline then
             self.failureTrain = train
         end
     end
@@ -1367,7 +1411,7 @@ function world:update(dt)
 
     for _, train in ipairs(self.trains) do
         local trainDt = dt
-        if not train.spawned and not train.completed then
+        if not train.spawned and not self:isTrainCleared(train) then
             if self.elapsedTime >= (train.spawnTime or 0) then
                 self:spawnTrain(train)
                 trainDt = self.elapsedTime - math.max(previousElapsed, train.spawnTime or 0)
@@ -1379,6 +1423,8 @@ function world:update(dt)
         if trainDt and trainDt > 0 then
             self:updateTrain(train, trainDt)
         end
+
+        self:updateTrainExit(train, dt)
     end
 
     self:updateCollisionState()
@@ -1408,7 +1454,7 @@ end
 function world:countCompletedTrains()
     local completedCount = 0
     for _, train in ipairs(self.trains) do
-        if train.completed then
+        if self:isTrainCleared(train) then
             completedCount = completedCount + 1
         end
     end
@@ -1488,7 +1534,7 @@ end
 function world:getNextQueuedTrain()
     local bestTrain = nil
     for _, train in ipairs(self.trains) do
-        if not train.spawned and not train.completed then
+        if not train.spawned and not self:isTrainCleared(train) then
             if not bestTrain or (train.spawnTime or 0) < (bestTrain.spawnTime or 0) then
                 bestTrain = train
             end
@@ -1500,7 +1546,7 @@ end
 function world:getNearestPendingDeadline()
     local bestTrain = nil
     for _, train in ipairs(self.trains) do
-        if not train.completed and train.deadline then
+        if not self:isTrainCleared(train) and train.deadline then
             if not bestTrain or train.deadline < bestTrain.deadline then
                 bestTrain = train
             end
@@ -1939,7 +1985,7 @@ function world:drawTrackSignal(junction, inputIndex)
 end
 
 function world:drawTrain(train)
-    if train.completed then
+    if train.completed and not train.exiting then
         return
     end
 
@@ -1947,6 +1993,15 @@ function world:drawTrain(train)
     local carriages = self:getTrainCarriagePositions(train)
     local width = self.carriageLength
     local height = 18
+    local alpha = 1
+
+    if train.exiting and self.exitFadeDuration > 0 then
+        alpha = clamp((train.exitFadeRemaining or 0) / self.exitFadeDuration, 0, 1)
+    end
+
+    if alpha <= 0 then
+        return
+    end
 
     for carriageIndex = #carriages, 1, -1 do
         local carriage = carriages[carriageIndex]
@@ -1954,11 +2009,11 @@ function world:drawTrain(train)
         graphics.push()
         graphics.translate(carriage.x, carriage.y)
         graphics.rotate(carriage.angle)
-        graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95)
+        graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95 * alpha)
         graphics.rectangle("fill", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(train.color[1], train.color[2], train.color[3], 1)
+        graphics.setColor(train.color[1], train.color[2], train.color[3], alpha)
         graphics.rectangle("line", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(0.94, 0.96, 0.98, 0.9)
+        graphics.setColor(0.94, 0.96, 0.98, 0.9 * alpha)
         graphics.rectangle("fill", -width * 0.22, -height * 0.28, width * 0.44, height * 0.56, 3, 3)
         graphics.pop()
     end
