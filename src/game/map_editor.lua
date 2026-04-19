@@ -943,14 +943,83 @@ function mapEditor:openSequencerColorPicker(trainId, fieldName, anchorX, anchorY
     }
 end
 
+function mapEditor:getColorPickerOptions()
+    if not self.colorPicker then
+        return {}
+    end
+
+    if self.colorPicker.mode == "sequencer" then
+        return COLOR_OPTIONS
+    end
+
+    local lookup = {}
+    if self.colorPicker.mode == "route" then
+        local route = self:getSelectedRoute()
+        local endpoint = route and route.id == self.colorPicker.routeId
+            and (self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route))
+            or nil
+        lookup = endpoint and endpoint.colors or {}
+    elseif self.colorPicker.mode == "junction_split" then
+        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+        local group = intersection and self:getSharedPointGroupForIntersection(intersection) or nil
+        lookup = group and group.colorLookup or {}
+    end
+
+    local options = {}
+    for _, option in ipairs(COLOR_OPTIONS) do
+        if lookup[option.id] then
+            options[#options + 1] = option
+        end
+    end
+    return options
+end
+
+function mapEditor:getColorPickerSelectionLookup()
+    local lookup = {}
+    if not self.colorPicker then
+        return lookup
+    end
+
+    if self.colorPicker.mode == "route" then
+        local route = self:getSelectedRoute()
+        if not route or route.id ~= self.colorPicker.routeId then
+            return lookup
+        end
+        local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
+        return endpoint and endpoint.colors or {}
+    elseif self.colorPicker.mode == "junction_split" then
+        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+        local group = intersection and self:getSharedPointGroupForIntersection(intersection) or nil
+        return group and group.colorLookup or lookup
+    elseif self.colorPicker.mode == "sequencer" then
+        local train = self:getTrainById(self.colorPicker.trainId)
+        if not train then
+            return lookup
+        end
+        lookup[train[self.colorPicker.fieldName]] = true
+        return lookup
+    end
+
+    return lookup
+end
+
 function mapEditor:getColorPickerLayout()
     if not self.colorPicker then
         return nil
     end
 
+    local options = self:getColorPickerOptions()
+    if #options == 0 then
+        return nil
+    end
+
+    local columns = math.min(3, math.max(1, #options))
+    local swatchSize = 34
+    local gap = 10
+    local rows = math.ceil(#options / columns)
     local rect = {
-        w = 154,
-        h = 110,
+        w = 32 + columns * swatchSize + math.max(0, columns - 1) * gap,
+        h = 32 + rows * swatchSize + math.max(0, rows - 1) * gap,
     }
     rect.x = clamp(
         self.colorPicker.anchorX + 18,
@@ -964,13 +1033,10 @@ function mapEditor:getColorPickerLayout()
     )
 
     local swatches = {}
-    local columns = 3
-    local swatchSize = 34
-    local gap = 10
     local startX = rect.x + 16
     local startY = rect.y + 16
 
-    for index, option in ipairs(COLOR_OPTIONS) do
+    for index, option in ipairs(options) do
         local column = (index - 1) % columns
         local row = math.floor((index - 1) / columns)
         swatches[#swatches + 1] = {
@@ -2172,7 +2238,7 @@ function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
     self:showStatus((magnetKind == "start" and "Start" or "Exit") .. " magnet colors updated.")
 end
 
-function mapEditor:splitEndpointColor(route, magnetKind, colorId)
+function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, startMouseY)
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint or not endpoint.colors[colorId] or countLookupEntries(endpoint.colors) <= 1 then
         self:showStatus("That color cannot be split from this magnet.")
@@ -2199,8 +2265,8 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId)
         kind = "point",
         routeId = route.id,
         pointIndex = self.selectedPointIndex,
-        startMouseX = newEndpoint.x,
-        startMouseY = newEndpoint.y,
+        startMouseX = startMouseX or newEndpoint.x,
+        startMouseY = startMouseY or newEndpoint.y,
         moved = true,
         isMagnet = true,
         magnetKind = magnetKind,
@@ -2427,11 +2493,13 @@ function mapEditor:handleColorPickerClick(x, y, button)
                 return true
             end
 
-            if button == 2 then
-                self:splitEndpointColor(route, self.colorPicker.magnetKind, swatch.option.id)
-            else
-                self:toggleMagnetColor(route, self.colorPicker.magnetKind, swatch.option.id)
+            local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
+            local lookup = endpoint and endpoint.colors or {}
+            if not lookup[swatch.option.id] then
+                self:showStatus("Choose one of the colors already merged into this magnet.")
+                return true
             end
+            self:splitEndpointColor(route, self.colorPicker.magnetKind, swatch.option.id, x, y)
             return true
         end
     end
@@ -2727,6 +2795,15 @@ function mapEditor:mousepressed(x, y, button)
     end
 
     if button == 2 then
+        local route, pointIndex, magnetKind = self:findPointHit(x, y)
+        if route and magnetKind then
+            self.selectedRouteId = route.id
+            self.selectedPointIndex = pointIndex
+            self:openColorPicker(route, magnetKind)
+            self:showStatus((magnetKind == "start" and "Start" or "Exit") .. " magnet split picker opened.")
+            return true
+        end
+
         local hitIntersection = self:findIntersectionHit(x, y)
         if hitIntersection
             and #hitIntersection.outputEndpointIds > 1
@@ -2902,9 +2979,6 @@ function mapEditor:mousereleased(x, y, button)
         else
             self:showStatus("Route created. Drag any segment to add a bend point.")
         end
-    elseif route and self.drag.kind == "point" and self.drag.isMagnet and not self.drag.moved then
-        self:openColorPicker(route, self.drag.magnetKind)
-        self:showStatus((self.drag.magnetKind == "start" and "Start" or "Exit") .. " magnet color picker opened.")
     elseif route and self.drag.kind == "point" and self.drag.isMagnet then
         local currentEndpoint = self.drag.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
         local target = currentEndpoint and self:findEndpointAt(x, y, currentEndpoint.kind, currentEndpoint.id) or nil
@@ -3299,29 +3373,7 @@ function mapEditor:drawColorPicker(game)
     end
 
     local graphics = love.graphics
-    local lookup = {}
-
-    if self.colorPicker.mode == "route" then
-        local route = self:getSelectedRoute()
-        if not route or route.id ~= self.colorPicker.routeId then
-            return
-        end
-        local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
-        lookup = endpoint and endpoint.colors or {}
-    elseif self.colorPicker.mode == "junction_split" then
-        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
-        local group = intersection and self:getSharedPointGroupForIntersection(intersection) or nil
-        if not group then
-            return
-        end
-        lookup = group.colorLookup or {}
-    elseif self.colorPicker.mode == "sequencer" then
-        local train = self:getTrainById(self.colorPicker.trainId)
-        if not train then
-            return
-        end
-        lookup[train[self.colorPicker.fieldName]] = true
-    end
+    local lookup = self:getColorPickerSelectionLookup()
 
     graphics.setColor(0.08, 0.1, 0.14, 0.98)
     graphics.rectangle("fill", layout.rect.x, layout.rect.y, layout.rect.w, layout.rect.h, 16, 16)
