@@ -80,7 +80,7 @@ local function serializeValue(value, indent)
     return table.concat(lines, "\n")
 end
 
-local function normalizePlayerId(value)
+local function normalizePlayerUuid(value)
     if type(value) ~= "string" then
         return ""
     end
@@ -94,15 +94,23 @@ local function normalizePlayerId(value)
 end
 
 local function sanitizeProfile(profile)
+    local resolvedPlayerUuid = normalizePlayerUuid(profile.player_uuid)
+    if resolvedPlayerUuid == "" then
+        resolvedPlayerUuid = normalizePlayerUuid(profile.playerId)
+    end
+    if resolvedPlayerUuid == "" then
+        resolvedPlayerUuid = normalizePlayerUuid(profile.playerUuid)
+    end
+
     local sanitized = {
         version = 1,
-        playerId = normalizePlayerId(profile.playerId),
+        player_uuid = resolvedPlayerUuid,
         playerDisplayName = type(profile.playerDisplayName) == "string" and profile.playerDisplayName or "",
         debugMode = profile.debugMode == true,
     }
 
-    if sanitized.playerId == "" then
-        sanitized.playerId = uuid.generatePlayerId()
+    if sanitized.player_uuid == "" then
+        sanitized.player_uuid = uuid.generatePlayerUuid()
     end
 
     return sanitized
@@ -135,7 +143,9 @@ function profileStorage.load()
 
     local sanitized = sanitizeProfile(loadedProfile or {})
     local needsSave = loadedProfile == nil
-        or loadedProfile.playerId ~= sanitized.playerId
+        or loadedProfile.player_uuid ~= sanitized.player_uuid
+        or loadedProfile.playerId ~= nil
+        or loadedProfile.playerUuid ~= nil
         or loadedProfile.playerDisplayName ~= sanitized.playerDisplayName
         or loadedProfile.debugMode ~= sanitized.debugMode
 

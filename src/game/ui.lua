@@ -34,10 +34,32 @@ local MARKETPLACE_LAYOUT = {
     cardIndicatorInset = 14,
     cardIndicatorH = 28,
     cardIndicatorRadius = 14,
+    favoriteButtonH = 30,
+    favoriteButtonCornerRadius = 12,
+    favoriteButtonHeartRadius = 5,
+    favoriteButtonHeartInsetX = 18,
+    favoriteButtonHeartInsetY = 9,
+    favoriteButtonInset = 14,
+    favoriteButtonMinH = 24,
+    favoriteButtonMinW = 68,
+    favoriteButtonOutlineWidth = 2,
+    favoriteButtonTextInset = 34,
+    favoriteButtonW = 86,
+    favoriteLift = 14,
+    favoriteSpacing = 10,
     titleMetaTop = 48,
 }
 local MARKETPLACE_REMOTE_SOURCE = "remote"
 local MARKETPLACE_REMOTE_CATEGORY_USERS = "users"
+
+local MARKETPLACE_FAVORITE_COLORS = {
+    likedFill = { 0.42, 0.16, 0.22, 0.98 },
+    likedLine = { 0.98, 0.48, 0.62, 1 },
+    likedText = { 1, 0.94, 0.97, 1 },
+    unlikedFill = { 0.1, 0.14, 0.19, 0.96 },
+    unlikedLine = { 0.56, 0.72, 0.98, 1 },
+    unlikedText = { 0.94, 0.96, 1, 1 },
+}
 
 local PREVIEW_COLORS = {
     background = { 0.06, 0.09, 0.12, 1 },
@@ -177,6 +199,23 @@ end
 
 local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function safeUiText(value, fallback)
+    local text = tostring(value or "")
+    if text == "" then
+        return fallback or ""
+    end
+
+    if utf8 and utf8.len then
+        local isValidUtf8 = pcall(utf8.len, text)
+        if isValidUtf8 then
+            return text
+        end
+    end
+
+    -- Keep output ASCII-only when input bytes are invalid UTF-8.
+    return text:gsub("[^\r\n\t -~]", "?")
 end
 
 local function clamp(value, minValue, maxValue)
@@ -864,17 +903,27 @@ end
 
 local function getSelectedMapIndex(game, maps)
     local fallbackIndex = #maps > 0 and 1 or nil
+    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
 
     for index, descriptor in ipairs(maps or {}) do
         if descriptor.id == game.levelSelectSelectedId then
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return index
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            game.levelSelectSelectedId = descriptor.id
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
             return index
         end
     end
 
     if fallbackIndex then
         game.levelSelectSelectedId = maps[fallbackIndex].id
+        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
+        game.levelSelectSelectedMapUuid = nil
     end
 
     return fallbackIndex
@@ -983,6 +1032,8 @@ local function buildMarketplaceDescriptor(entry)
         source = MARKETPLACE_REMOTE_SOURCE,
         name = displayName,
         displayName = displayName,
+        favoriteCount = tonumber(entry.favorite_count or 0) or 0,
+        likedByPlayer = entry.liked_by_player == true,
         mapKind = normalizeMarketplaceMapKind(entry.map_category),
         savedAt = entry.updated_at,
         hasEditor = false,
@@ -1020,9 +1071,10 @@ local function buildMarketplaceEntries(game)
                 subtitle = string.format("%s  |  %s", kindLabel, controlsSummary),
                 creatorDisplayName = tostring(sourceEntry.creator_display_name or "Unknown"),
                 creatorUuid = tostring(sourceEntry.creator_uuid or ""),
-                favoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0,
+                favoriteCount = descriptor.favoriteCount or 0,
                 internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
-                featuredWeight = tonumber(sourceEntry.favorite_count or 0) or 0,
+                likedByPlayer = descriptor.likedByPlayer == true,
+                featuredWeight = descriptor.favoriteCount or 0,
                 randomWeight = getMarketplaceHash(table.concat({
                     tostring(sourceEntry.map_uuid or ""),
                     tostring(sourceEntry.internal_identifier or ""),
@@ -1481,6 +1533,137 @@ local function getWrappedDistance(index, visualIndex, count)
     return distance
 end
 
+local function getMarketplaceFavoriteButtonRect(rect)
+    if not rect then
+        return nil
+    end
+
+    local buttonScale = rect.scale or 1
+    local buttonWidth = math.max(
+        MARKETPLACE_LAYOUT.favoriteButtonMinW,
+        math.floor(MARKETPLACE_LAYOUT.favoriteButtonW * buttonScale + 0.5)
+    )
+    local buttonHeight = math.max(
+        MARKETPLACE_LAYOUT.favoriteButtonMinH,
+        math.floor(MARKETPLACE_LAYOUT.favoriteButtonH * buttonScale + 0.5)
+    )
+    local inset = math.floor(MARKETPLACE_LAYOUT.favoriteButtonInset * buttonScale + 0.5)
+    return {
+        x = rect.x + math.floor((rect.w - buttonWidth) * 0.5 + 0.5),
+        y = rect.y + rect.h - buttonHeight + MARKETPLACE_LAYOUT.favoriteLift,
+        w = buttonWidth,
+        h = buttonHeight,
+    }
+end
+
+local function getMarketplaceFavoriteHoverId(descriptor)
+    return descriptor and ("favorite:" .. tostring(descriptor.id or "")) or nil
+end
+
+local function getMarketplaceFavoriteLabel(marketplaceEntry)
+    local favoriteCount = tonumber(marketplaceEntry and marketplaceEntry.favoriteCount or 0) or 0
+    return tostring(favoriteCount)
+end
+
+local function getMarketplaceFavoriteContentLayout(rect)
+    local horizontalPadding = math.max(6, math.floor(rect.h * 0.22 + 0.5))
+    local iconBoxW = math.max(14, math.floor(rect.h * 1.15 + 0.5))
+    local iconCenterX = rect.x + horizontalPadding + math.floor(iconBoxW * 0.5 + 0.5)
+    local iconCenterY = rect.y + math.floor(rect.h * 0.5 + 0.5)
+    local textX = rect.x + horizontalPadding + iconBoxW + math.max(4, math.floor(rect.h * 0.16 + 0.5))
+    local textRightInset = math.max(6, math.floor(rect.h * 0.22 + 0.5))
+
+    return {
+        iconCenterX = iconCenterX,
+        iconCenterY = iconCenterY,
+        textX = textX,
+        textRightInset = textRightInset,
+    }
+end
+
+local function drawMarketplaceHeartIcon(rect, isLiked, lineColor, fillColor)
+    local graphics = love.graphics
+    local contentLayout = getMarketplaceFavoriteContentLayout(rect)
+    local radius = math.max(3, math.floor(rect.h * 0.18 + 0.5))
+    local leftCenterX = contentLayout.iconCenterX - math.floor(radius * 0.9 + 0.5)
+    local rightCenterX = contentLayout.iconCenterX + math.floor(radius * 0.9 + 0.5)
+    local topCenterY = contentLayout.iconCenterY - math.floor(radius * 0.25 + 0.5)
+    local bottomY = contentLayout.iconCenterY + math.floor(radius * 1.35 + 0.5)
+    local centerX = contentLayout.iconCenterX
+
+    if isLiked then
+        graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
+        graphics.circle("fill", leftCenterX, topCenterY, radius)
+        graphics.circle("fill", rightCenterX, topCenterY, radius)
+        graphics.polygon(
+            "fill",
+            leftCenterX - radius,
+            topCenterY,
+            rightCenterX + radius,
+            topCenterY,
+            centerX,
+            bottomY
+        )
+    end
+
+    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], lineColor[4] or 1)
+    graphics.setLineWidth(MARKETPLACE_LAYOUT.favoriteButtonOutlineWidth)
+    graphics.circle("line", leftCenterX, topCenterY, radius)
+    graphics.circle("line", rightCenterX, topCenterY, radius)
+    graphics.line(leftCenterX - radius, topCenterY, centerX, bottomY, rightCenterX + radius, topCenterY)
+    graphics.setLineWidth(1)
+end
+
+local function drawMarketplaceFavoriteButton(game, descriptor, rect, marketplaceEntry)
+    if not rect or not marketplaceEntry then
+        return
+    end
+
+    local graphics = love.graphics
+    local hoverId = getMarketplaceFavoriteHoverId(descriptor)
+    local isHovered = game.levelSelectHoverId == hoverId
+    local isLiked = marketplaceEntry.likedByPlayer == true
+    local fillColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedFill or MARKETPLACE_FAVORITE_COLORS.unlikedFill
+    local lineColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedLine or MARKETPLACE_FAVORITE_COLORS.unlikedLine
+    local textColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedText or MARKETPLACE_FAVORITE_COLORS.unlikedText
+
+    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], isHovered and 1 or (fillColor[4] or 1))
+    graphics.rectangle(
+        "fill",
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius
+    )
+    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], isHovered and 1 or (lineColor[4] or 1))
+    graphics.setLineWidth(MARKETPLACE_LAYOUT.favoriteButtonOutlineWidth)
+    graphics.rectangle(
+        "line",
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius
+    )
+    graphics.setLineWidth(1)
+    drawMarketplaceHeartIcon(rect, isLiked, lineColor, fillColor)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(textColor[1], textColor[2], textColor[3], textColor[4] or 1)
+    local contentLayout = getMarketplaceFavoriteContentLayout(rect)
+    local textRightEdge = rect.x + rect.w - contentLayout.textRightInset
+    graphics.printf(
+        getMarketplaceFavoriteLabel(marketplaceEntry),
+        contentLayout.textX,
+        rect.y + math.floor((rect.h - game.fonts.small:getHeight()) * 0.5 + 0.5),
+        math.max(0, textRightEdge - contentLayout.textX),
+        "right"
+    )
+end
+
 local function buildLevelSelectCardRects(game)
     local maps = getLevelSelectMaps(game)
     local selectedIndex = getSelectedMapIndex(game, maps)
@@ -1512,12 +1695,19 @@ local function buildLevelSelectCardRects(game)
                 w = width,
                 h = height,
             }
+            if game.levelSelectMode == "marketplace" and descriptor.source == MARKETPLACE_REMOTE_SOURCE then
+                rects[#rects].favoriteButtonRect = getMarketplaceFavoriteButtonRect(rects[#rects])
+            end
 
             local badgeGap = 12
             local badgeH = 22
             local badgeWidths, badgeTotalWidth = buildCardBadges(game, descriptor, width - 36)
             local badgeBottomPadding = 18
+            local favoriteButtonRect = rects[#rects].favoriteButtonRect
             local badgeY = y + height - badgeH - badgeBottomPadding
+            if favoriteButtonRect then
+                badgeY = favoriteButtonRect.y - badgeH - MARKETPLACE_LAYOUT.favoriteSpacing
+            end
             local previewTop = y + 18
             local previewBottom = badgeY - badgeGap
             rects[#rects].previewRect = {
@@ -1785,7 +1975,8 @@ local function drawLevelSelectLeaderboardBack(game, rect)
             w = contentRect.w,
             h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
         }
-        local isPlayerEntry = tostring(entry.playerUuid or "") == tostring(game.profile and game.profile.playerId or "")
+        local profilePlayerUuid = tostring(game.profile and (game.profile.player_uuid or game.profile.playerId or game.profile.playerUuid) or "")
+        local isPlayerEntry = tostring(entry.playerUuid or "") == profilePlayerUuid
         drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
         rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
         if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows then
@@ -1825,6 +2016,7 @@ end
 local function drawLevelCard(game, rect)
     local graphics = love.graphics
     local descriptor = rect.map
+    local marketplaceEntry = getMarketplaceEntryForDescriptor(game, descriptor)
     local selected = rect.selected
     local cardFill = selected and { 0.09, 0.11, 0.15, 0.98 } or { 0.08, 0.1, 0.13, 0.94 }
     local trim = selected and { 0.45, 0.7, 0.92, 1 } or { 0.24, 0.34, 0.44, 0.95 }
@@ -1848,6 +2040,7 @@ local function drawLevelCard(game, rect)
         drawLevelSelectLeaderboardBack(game, rect)
     else
         drawMapPreview(descriptor, rect.previewRect)
+        drawMarketplaceFavoriteButton(game, descriptor, rect.favoriteButtonRect, marketplaceEntry)
 
         local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
         drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
@@ -2124,6 +2317,9 @@ function ui.getLevelSelectHit(game, x, y, button)
             end
         end
         for _, rect in ipairs(buildLevelSelectCardRects(game)) do
+            if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
+                return { kind = "favorite_map", map = rect.map }
+            end
             if pointInRect(x, y, rect) then
                 return { kind = "select_map", map = rect.map }
             end
@@ -2182,6 +2378,11 @@ function ui.getLevelSelectHoverId(game, x, y)
                 if pointInRect(x, y, uiControls.segmentRect(tabsRect, index, #tabSegments)) then
                     return segment.id
                 end
+            end
+        end
+        for _, rect in ipairs(buildLevelSelectCardRects(game)) do
+            if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
+                return getMarketplaceFavoriteHoverId(rect.map)
             end
         end
         return nil
@@ -2881,7 +3082,7 @@ function ui.drawLevelSelect(game)
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(statusColor[1], statusColor[2], statusColor[3], statusColor[4] or 1)
         graphics.printf(
-            actionStatus.message,
+            safeUiText(actionStatus.message, "Status message unavailable."),
             0,
             bottomBarRect.y - 26,
             game.viewport.w,
@@ -2907,7 +3108,7 @@ function ui.drawLevelSelect(game)
 
         love.graphics.setFont(game.fonts.body)
         graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf(issue.map.name, overlay.panel.x + 24, overlay.panel.y + 74, overlay.panel.w - 48, "center")
+        graphics.printf(safeUiText(issue.map and issue.map.name, "Untitled Map"), overlay.panel.x + 24, overlay.panel.y + 74, overlay.panel.w - 48, "center")
 
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(0.84, 0.88, 0.92, 1)
