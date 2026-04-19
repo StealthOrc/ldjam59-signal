@@ -11,6 +11,14 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+$envFileName = ".env"
+$buildEnvFileName = "build.env"
+$envKeys = @(
+    "API_KEY",
+    "API_BASE_URL",
+    "HMAC_SECRET"
+)
+
 $projectRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($projectRoot)) {
     $projectRoot = (Get-Location).Path
@@ -27,6 +35,7 @@ $loveFile = Join-Path $buildDir ($buildName + ".love")
 $exeFile = Join-Path $buildDir ($buildName + ".exe")
 $zipFile = Join-Path $OutputRoot ($buildName + "_windows.zip")
 $loveExe = Join-Path $LoveRoot "love.exe"
+$projectEnvFile = Join-Path $projectRoot $envFileName
 
 if (-not (Test-Path -LiteralPath $loveExe)) {
     throw "LOVE executable not found at '$loveExe'."
@@ -144,6 +153,31 @@ function Create-ZipFromDirectory {
     }
 }
 
+function Get-BuildEnvContent {
+    param(
+        [string]$ProjectEnvFilePath
+    )
+
+    if (Test-Path -LiteralPath $ProjectEnvFilePath) {
+        return Get-Content -LiteralPath $ProjectEnvFilePath -Raw
+    }
+
+    $envLines = New-Object System.Collections.Generic.List[string]
+
+    foreach ($envKey in $envKeys) {
+        $envValue = [Environment]::GetEnvironmentVariable($envKey)
+        if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+            [void]$envLines.Add(($envKey + "=" + $envValue))
+        }
+    }
+
+    if ($envLines.Count -eq 0) {
+        throw "No build environment source was found. Create '$envFileName' in the project root or set one of these process environment variables: $($envKeys -join ', ')."
+    }
+
+    return ($envLines -join [Environment]::NewLine) + [Environment]::NewLine
+}
+
 if (Test-Path -LiteralPath $buildDir) {
     Remove-Item -LiteralPath $buildDir -Recurse -Force
 }
@@ -188,6 +222,11 @@ foreach ($file in $filesToStage) {
 
     Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
 }
+
+$buildEnvContent = Get-BuildEnvContent -ProjectEnvFilePath $projectEnvFile
+$stageEnvFile = Join-Path $stageDir $buildEnvFileName
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($stageEnvFile, $buildEnvContent, $utf8WithoutBom)
 
 $zipArchive = [System.IO.Compression.ZipFile]::Open($loveFile, [System.IO.Compression.ZipArchiveMode]::Create)
 try {

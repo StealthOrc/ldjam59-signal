@@ -6,7 +6,6 @@ local REQUEST_KIND_FETCH = "fetch"
 local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
 local CURL_STATUS_PREFIX = "__STATUS__"
-local DEFAULT_API_BASE_URL = "https://signal-leaderboard.just2dev-signal.workers.dev"
 local DEFAULT_LEADERBOARD_LIMIT = 50
 local DEFAULT_PREVIEW_LIMIT = 5
 local DEFAULT_MARKETPLACE_LIMIT = 10
@@ -44,7 +43,19 @@ local function splitCurlOutput(output)
 end
 
 local function normalizeBaseUrl(baseUrl)
-    return tostring(baseUrl or DEFAULT_API_BASE_URL):gsub("/+$", "")
+    return tostring(baseUrl or ""):gsub("/+$", "")
+end
+
+local function validateConfig(config)
+    if tostring(config.apiKey or "") == "" then
+        return nil, "API_KEY is missing."
+    end
+
+    if normalizeBaseUrl(config.apiBaseUrl) == "" then
+        return nil, "API_BASE_URL is missing."
+    end
+
+    return true
 end
 
 local function urlEncode(value)
@@ -123,6 +134,11 @@ local function fetchJson(uri, apiKey)
 end
 
 local function fetchLeaderboardEntries(config)
+    local _, validationError = validateConfig(config)
+    if validationError then
+        return nil, validationError
+    end
+
     local uri = buildLeaderboardUri(config.apiBaseUrl, config.mapUuid, config.limit)
     return fetchJson(uri, config.apiKey)
 end
@@ -144,6 +160,11 @@ local function extractPlayerPreviewEntry(aroundPayload, playerUuid)
 end
 
 local function fetchLeaderboardPreview(config)
+    local _, validationError = validateConfig(config)
+    if validationError then
+        return nil, validationError
+    end
+
     local mapUuid = tostring(config.mapUuid or "")
     if mapUuid == "" then
         return nil, "Leaderboard preview could not be loaded because the map UUID is missing."
@@ -186,6 +207,11 @@ local function fetchLeaderboardPreview(config)
 end
 
 local function fetchMarketplaceEntries(config)
+    local _, validationError = validateConfig(config)
+    if validationError then
+        return nil, validationError
+    end
+
     local mode = tostring(config.mode or MARKETPLACE_MODE_FAVORITES)
     local uri
 
