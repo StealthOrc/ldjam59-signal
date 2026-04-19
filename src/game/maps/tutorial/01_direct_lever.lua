@@ -1,6 +1,5 @@
 return {
     version = 1,
-    mapUuid = "83ea86be-9245-41c3-8ce3-7c1b1b845b7c",
     name = "Map 1: Direct Lever",
     template = true,
     editor = {
