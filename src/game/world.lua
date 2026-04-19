@@ -1164,6 +1164,27 @@ function world:syncCrossbarOutput(junction)
     junction.activeOutputIndex = clamp(#junction.outputs - junction.activeInputIndex + 1, 1, #junction.outputs)
 end
 
+local function isPlayPhaseOnlyControl(controlType)
+    return controlType == "delayed"
+        or controlType == "pump"
+        or controlType == "spring"
+        or controlType == "trip"
+end
+
+function world:canActivateControl(junction, isPreparationPhase)
+    local control = junction.control
+
+    if isPreparationPhase and isPlayPhaseOnlyControl(control.type) then
+        return false
+    end
+
+    if (control.type == "delayed" or control.type == "spring") and control.armed then
+        return false
+    end
+
+    return true
+end
+
 function world:activateControl(junction)
     local control = junction.control
 
@@ -1246,7 +1267,7 @@ function world:isOutputSelectorHit(junction, x, y)
     return distanceSquared(x, y, junction.mergePoint.x, junction.mergePoint.y + 36) <= 15 * 15
 end
 
-function world:handleClick(x, y, button)
+function world:handleClick(x, y, button, isPreparationPhase)
     for _, junction in ipairs(self.junctionOrder) do
         if self:isOutputSelectorHit(junction, x, y) then
             local changed
@@ -1262,7 +1283,7 @@ function world:handleClick(x, y, button)
         end
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
-            if self:activateControl(junction) then
+            if self:canActivateControl(junction, isPreparationPhase) and self:activateControl(junction) then
                 self:registerInteraction()
             end
             return true

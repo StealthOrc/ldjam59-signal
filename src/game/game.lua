@@ -2355,7 +2355,7 @@ function Game:mousepressed(x, y, button)
         return
     end
 
-    self.world:handleClick(viewportX, viewportY, button)
+    self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
 end
 
 function Game:mousemoved(x, y)
