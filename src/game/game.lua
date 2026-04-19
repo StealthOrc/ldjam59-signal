@@ -98,17 +98,27 @@ end
 
 local function findLevelSelectIndex(game, maps)
     local fallbackIndex = #maps > 0 and 1 or nil
+    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
 
     for index, descriptor in ipairs(maps or {}) do
         if descriptor.id == game.levelSelectSelectedId then
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return index
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            game.levelSelectSelectedId = descriptor.id
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
             return index
         end
     end
 
     if fallbackIndex then
         game.levelSelectSelectedId = maps[fallbackIndex].id
+        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
+        game.levelSelectSelectedMapUuid = nil
     end
 
     return fallbackIndex
@@ -141,6 +151,14 @@ end
 
 local function trimLastUtf8Character(value)
     return (value or ""):gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
+end
+
+local function getProfilePlayerUuid(profile)
+    if type(profile) ~= "table" then
+        return ""
+    end
+
+    return tostring(profile.player_uuid or profile.playerId or profile.playerUuid or "")
 end
 
 local function deepCopy(value)
@@ -260,6 +278,7 @@ function Game.new()
     self.currentRunOrigin = nil
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
+    self.levelSelectSelectedMapUuid = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
     self.levelSelectVisualIndex = nil
@@ -663,7 +682,7 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     local submittedEntry = {
         display_name = response.display_name or self.profile.playerDisplayName or "Unknown",
         map_uuid = mapUuid,
-        player_uuid = response.player_uuid or self.profile.playerId or "",
+        player_uuid = response.player_uuid or getProfilePlayerUuid(self.profile),
         rank = tonumber(response.rank) or nil,
         score = tonumber(response.score or 0) or 0,
         updated_at = response.updated_at,
@@ -770,7 +789,7 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
             apiBaseUrl = onlineConfig.apiBaseUrl,
             limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
             mapUuid = mapUuid,
-            playerUuid = self.profile and self.profile.playerId or nil,
+            player_uuid = getProfilePlayerUuid(self.profile),
         },
     }))
 end
@@ -848,7 +867,7 @@ function Game:beginMarketplaceFetch(onlineConfig, scopeDetails)
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
             mode = scopeDetails.fetchMode,
-            playerUuid = self.profile and self.profile.playerId or "",
+            player_uuid = getProfilePlayerUuid(self.profile),
             query = scopeDetails.query,
             limit = LEVEL_SELECT_MARKETPLACE_REMOTE_LIMIT,
         },
@@ -874,7 +893,7 @@ function Game:beginFavoriteMapRequest(onlineConfig, mapUuid)
             hmacSecret = onlineConfig.hmacSecret,
             mapUuid = mapUuid,
             mode = "favorite_map",
-            playerUuid = self.profile and self.profile.playerId or "",
+            player_uuid = getProfilePlayerUuid(self.profile),
         },
     }))
     return true
@@ -895,7 +914,7 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
-            creatorUuid = self.profile and self.profile.playerId or "",
+            creator_uuid = getProfilePlayerUuid(self.profile),
             hmacSecret = onlineConfig.hmacSecret,
             map = deepCopy(mapData.level),
             mapName = mapData.name or selectedMap.displayName or selectedMap.name,
@@ -925,7 +944,7 @@ function Game:beginScoreSubmitRequest(onlineConfig, summary)
             mapUuid = summary.mapUuid,
             mode = "score_submit",
             playerDisplayName = self.profile.playerDisplayName,
-            playerUuid = self.profile.playerId,
+            player_uuid = getProfilePlayerUuid(self.profile),
             score = summary.finalScore or 0,
         },
     }))
@@ -1177,9 +1196,14 @@ function Game:updateLeaderboardFetchState()
                     or "Map uploaded successfully."
                 self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_SUCCESS, successMessage)
             else
+                local statusCode = tonumber(decodedResponse.status)
+                local failureMessage = decodedResponse.error or "The map upload failed."
+                if statusCode then
+                    failureMessage = string.format("Map upload failed (HTTP %d): %s", statusCode, tostring(failureMessage))
+                end
                 self:setLevelSelectActionState(
                     LEVEL_SELECT_ACTION_STATUS_ERROR,
-                    decodedResponse.error or "The map upload failed."
+                    failureMessage
                 )
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "score_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
@@ -1762,18 +1786,28 @@ end
 function Game:getSelectedLevelMap()
     local maps = self:getLevelSelectMaps()
     local fallback = nil
+    local selectedMapUuid = tostring(self.levelSelectSelectedMapUuid or "")
 
     for _, descriptor in ipairs(maps) do
         fallback = fallback or descriptor
         if descriptor.id == self.levelSelectSelectedId then
+            self.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return descriptor
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            self.levelSelectSelectedId = descriptor.id
+            self.levelSelectSelectedMapUuid = descriptor.mapUuid
             return descriptor
         end
     end
 
     if fallback then
         self.levelSelectSelectedId = fallback.id
+        self.levelSelectSelectedMapUuid = fallback.mapUuid
     else
         self.levelSelectSelectedId = nil
+        self.levelSelectSelectedMapUuid = nil
     end
 
     return fallback
@@ -1790,6 +1824,7 @@ end
 
 function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
+    self.levelSelectSelectedMapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
     self.levelSelectScroll = 0
     self:clearLevelSelectActionState()
     self:clearLevelSelectLeaderboardFlip()
@@ -1941,6 +1976,7 @@ function Game:moveLevelSelectSelection(direction)
     end
 
     self.levelSelectSelectedId = maps[nextIndex].id
+    self.levelSelectSelectedMapUuid = maps[nextIndex].mapUuid
     self:clearLevelSelectLeaderboardFlip()
     return maps[nextIndex]
 end
@@ -1969,6 +2005,7 @@ function Game:toggleLevelSelectLeaderboardFlip(mapDescriptor)
     end
 
     self.levelSelectSelectedId = mapDescriptor.id
+    self.levelSelectSelectedMapUuid = mapDescriptor.mapUuid
     self.levelSelectScroll = 0
     self.levelSelectLeaderboardFlipMapUuid = mapUuid
     self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil)
@@ -2525,7 +2562,6 @@ function Game:mousepressed(x, y, button)
             self:setLevelSelectSelection(hit.map)
             self:downloadMarketplaceMap(hit.map)
         elseif hit.kind == "favorite_map" then
-            self:setLevelSelectSelection(hit.map)
             self:favoriteMarketplaceMap(hit.map)
         elseif hit.kind == "refresh_marketplace" then
             self:refreshMarketplaceData()

@@ -337,7 +337,7 @@ local function fetchLeaderboardPreview(config)
         target_rank = nil,
     }
 
-    local playerUuid = tostring(config.playerUuid or "")
+    local playerUuid = tostring(config.player_uuid or config.playerUuid or "")
     if playerUuid == "" then
         return previewPayload
     end
@@ -368,9 +368,9 @@ local function fetchMarketplaceEntries(config)
     local uri
 
     if mode == MARKETPLACE_MODE_SEARCH then
-        uri = buildMarketplaceSearchUri(config.apiBaseUrl, config.query, config.limit, config.playerUuid)
+        uri = buildMarketplaceSearchUri(config.apiBaseUrl, config.query, config.limit, config.player_uuid or config.playerUuid)
     else
-        uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit, config.playerUuid)
+        uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit, config.player_uuid or config.playerUuid)
     end
 
     return fetchJson(uri, config.apiKey)
@@ -382,7 +382,7 @@ local function favoriteMarketplaceMap(config, requestId)
         return nil, "The selected online map is missing its map UUID."
     end
 
-    local playerUuid = tostring(config.playerUuid or "")
+    local playerUuid = tostring(config.player_uuid or config.playerUuid or "")
     if playerUuid == "" then
         return nil, "The current player UUID is missing."
     end
@@ -399,7 +399,7 @@ local function submitScore(config, requestId)
     end
 
     return runJsonPost(config, string.format("/api/maps/%s/score", mapUuid), {
-        player_uuid = tostring(config.playerUuid or ""),
+        player_uuid = tostring(config.player_uuid or config.playerUuid or ""),
         display_name = tostring(config.playerDisplayName or ""),
         score = tonumber(config.score or 0) or 0,
     }, requestId)
@@ -414,7 +414,7 @@ local function uploadMap(config, requestId)
     return runJsonPost(config, "/api/maps", {
         map_uuid = mapUuid,
         map_name = tostring(config.mapName or ""),
-        creator_uuid = tostring(config.creatorUuid or ""),
+        creator_uuid = tostring(config.creator_uuid or config.creatorUuid or ""),
         map = config.map,
     }, requestId)
 end

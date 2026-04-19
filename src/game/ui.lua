@@ -193,6 +193,23 @@ local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+local function safeUiText(value, fallback)
+    local text = tostring(value or "")
+    if text == "" then
+        return fallback or ""
+    end
+
+    if utf8 and utf8.len then
+        local isValidUtf8 = pcall(utf8.len, text)
+        if isValidUtf8 then
+            return text
+        end
+    end
+
+    -- Keep output ASCII-only when input bytes are invalid UTF-8.
+    return text:gsub("[^\r\n\t -~]", "?")
+end
+
 local function clamp(value, minValue, maxValue)
     if value < minValue then
         return minValue
@@ -762,17 +779,27 @@ end
 
 local function getSelectedMapIndex(game, maps)
     local fallbackIndex = #maps > 0 and 1 or nil
+    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
 
     for index, descriptor in ipairs(maps or {}) do
         if descriptor.id == game.levelSelectSelectedId then
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
+            return index
+        end
+
+        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
+            game.levelSelectSelectedId = descriptor.id
+            game.levelSelectSelectedMapUuid = descriptor.mapUuid
             return index
         end
     end
 
     if fallbackIndex then
         game.levelSelectSelectedId = maps[fallbackIndex].id
+        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
+        game.levelSelectSelectedMapUuid = nil
     end
 
     return fallbackIndex
@@ -1414,14 +1441,31 @@ local function getMarketplaceFavoriteLabel(marketplaceEntry)
     return tostring(favoriteCount)
 end
 
+local function getMarketplaceFavoriteContentLayout(rect)
+    local horizontalPadding = math.max(6, math.floor(rect.h * 0.22 + 0.5))
+    local iconBoxW = math.max(14, math.floor(rect.h * 1.15 + 0.5))
+    local iconCenterX = rect.x + horizontalPadding + math.floor(iconBoxW * 0.5 + 0.5)
+    local iconCenterY = rect.y + math.floor(rect.h * 0.5 + 0.5)
+    local textX = rect.x + horizontalPadding + iconBoxW + math.max(4, math.floor(rect.h * 0.16 + 0.5))
+    local textRightInset = math.max(6, math.floor(rect.h * 0.22 + 0.5))
+
+    return {
+        iconCenterX = iconCenterX,
+        iconCenterY = iconCenterY,
+        textX = textX,
+        textRightInset = textRightInset,
+    }
+end
+
 local function drawMarketplaceHeartIcon(rect, isLiked, lineColor, fillColor)
     local graphics = love.graphics
-    local radius = MARKETPLACE_LAYOUT.favoriteButtonHeartRadius
-    local leftCenterX = rect.x + MARKETPLACE_LAYOUT.favoriteButtonHeartInsetX
-    local rightCenterX = leftCenterX + radius * 2
-    local topCenterY = rect.y + MARKETPLACE_LAYOUT.favoriteButtonHeartInsetY + radius
-    local bottomY = rect.y + rect.h - MARKETPLACE_LAYOUT.favoriteButtonHeartInsetY
-    local centerX = leftCenterX + radius
+    local contentLayout = getMarketplaceFavoriteContentLayout(rect)
+    local radius = math.max(3, math.floor(rect.h * 0.18 + 0.5))
+    local leftCenterX = contentLayout.iconCenterX - math.floor(radius * 0.9 + 0.5)
+    local rightCenterX = contentLayout.iconCenterX + math.floor(radius * 0.9 + 0.5)
+    local topCenterY = contentLayout.iconCenterY - math.floor(radius * 0.25 + 0.5)
+    local bottomY = contentLayout.iconCenterY + math.floor(radius * 1.35 + 0.5)
+    local centerX = contentLayout.iconCenterX
 
     if isLiked then
         graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
@@ -1485,12 +1529,14 @@ local function drawMarketplaceFavoriteButton(game, descriptor, rect, marketplace
 
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(textColor[1], textColor[2], textColor[3], textColor[4] or 1)
+    local contentLayout = getMarketplaceFavoriteContentLayout(rect)
+    local textRightEdge = rect.x + rect.w - contentLayout.textRightInset
     graphics.printf(
         getMarketplaceFavoriteLabel(marketplaceEntry),
-        rect.x + MARKETPLACE_LAYOUT.favoriteButtonTextInset,
+        contentLayout.textX,
         rect.y + math.floor((rect.h - game.fonts.small:getHeight()) * 0.5 + 0.5),
-        math.max(0, rect.w - MARKETPLACE_LAYOUT.favoriteButtonTextInset - 8),
-        "left"
+        math.max(0, textRightEdge - contentLayout.textX),
+        "right"
     )
 end
 
@@ -1805,7 +1851,8 @@ local function drawLevelSelectLeaderboardBack(game, rect)
             w = contentRect.w,
             h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
         }
-        local isPlayerEntry = tostring(entry.playerUuid or "") == tostring(game.profile and game.profile.playerId or "")
+        local profilePlayerUuid = tostring(game.profile and (game.profile.player_uuid or game.profile.playerId or game.profile.playerUuid) or "")
+        local isPlayerEntry = tostring(entry.playerUuid or "") == profilePlayerUuid
         drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
         rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
         if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows then
@@ -2896,7 +2943,7 @@ function ui.drawLevelSelect(game)
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(statusColor[1], statusColor[2], statusColor[3], statusColor[4] or 1)
         graphics.printf(
-            actionStatus.message,
+            safeUiText(actionStatus.message, "Status message unavailable."),
             0,
             bottomBarRect.y - 26,
             game.viewport.w,
@@ -2922,7 +2969,7 @@ function ui.drawLevelSelect(game)
 
         love.graphics.setFont(game.fonts.body)
         graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf(issue.map.name, overlay.panel.x + 24, overlay.panel.y + 74, overlay.panel.w - 48, "center")
+        graphics.printf(safeUiText(issue.map and issue.map.name, "Untitled Map"), overlay.panel.x + 24, overlay.panel.y + 74, overlay.panel.w - 48, "center")
 
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(0.84, 0.88, 0.92, 1)

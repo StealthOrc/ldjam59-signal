@@ -213,7 +213,7 @@ function leaderboardClient.submitScore(submission, config)
 
     local endpointPath = string.format("/api/maps/%s/score", mapUuid)
     local payload = {
-        player_uuid = tostring(submission.playerUuid or ""),
+        player_uuid = tostring(submission.player_uuid or submission.playerUuid or ""),
         display_name = tostring(submission.playerDisplayName or ""),
         score = tonumber(submission.score or 0) or 0,
     }
@@ -232,7 +232,7 @@ function leaderboardClient.uploadMap(submission, config)
         return nil, "The map could not be uploaded because the map UUID is missing."
     end
 
-    local creatorUuid = tostring(submission.creatorUuid or "")
+    local creatorUuid = tostring(submission.creator_uuid or submission.creatorUuid or "")
     if creatorUuid == "" then
         return nil, "The map could not be uploaded because the creator UUID is missing."
     end
@@ -267,7 +267,7 @@ function leaderboardClient.favoriteMap(submission, config)
         return nil, "The map could not be liked because the map UUID is missing."
     end
 
-    local playerUuid = tostring(submission.playerUuid or "")
+    local playerUuid = tostring(submission.player_uuid or submission.playerUuid or "")
     if playerUuid == "" then
         return nil, "The map could not be liked because the player UUID is missing."
     end
