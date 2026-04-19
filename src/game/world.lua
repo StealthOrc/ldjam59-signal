@@ -2334,8 +2334,9 @@ local function drawStripedCircleOutline(graphics, centerX, centerY, radius, colo
     end
 end
 
-local function getJunctionInputStyle(junction)
-    local inputTrack = junction.inputs[junction.activeInputIndex]
+local function getJunctionInputStyle(junction, inputIndex)
+    local resolvedInputIndex = clamp(inputIndex or junction.activeInputIndex or 1, 1, math.max(1, #junction.inputs))
+    local inputTrack = junction.inputs[resolvedInputIndex]
     if not inputTrack then
         return { 0.4, 0.4, 0.4 }, nil
     end
@@ -2343,35 +2344,43 @@ local function getJunctionInputStyle(junction)
     return inputTrack.color or { 0.4, 0.4, 0.4 }, buildTrackStripeColors(inputTrack.colors, true)
 end
 
-local function drawJunctionTimerPie(graphics, centerX, centerY, radius, primaryColor, stripeColors, ratio)
+local function drawJunctionTimerPie(graphics, centerX, centerY, radius, primaryColor, stripeColors, ratio, drawOutline, drawBackground)
     local fillRatio = clamp(ratio or 0, 0, 1)
+    local fillAlpha = drawBackground == false and 1 or 0.26
+    local outlineRadius = radius - 0.5
 
-    graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
-    graphics.circle("fill", centerX, centerY, radius)
+    if drawBackground ~= false then
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
+        graphics.circle("fill", centerX, centerY, radius)
+    end
 
     if fillRatio >= 0.999 then
         if stripeColors then
-            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, 0.26)
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, fillAlpha)
         else
-            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.3)
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], fillAlpha)
             graphics.circle("fill", centerX, centerY, radius)
         end
     elseif fillRatio > 0.001 then
         local endAngle = -math.pi * 0.5 + math.pi * 2 * fillRatio
         if stripeColors then
-            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, endAngle, stripeColors, 0.26)
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, endAngle, stripeColors, fillAlpha)
         else
-            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.3)
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], fillAlpha)
             graphics.arc("fill", centerX, centerY, radius, -math.pi * 0.5, endAngle)
         end
     end
 
+    if drawOutline == false then
+        return
+    end
+
     if stripeColors then
-        drawStripedCircleOutline(graphics, centerX, centerY, radius + 1.5, stripeColors, 0.96, 3)
+        drawStripedCircleOutline(graphics, centerX, centerY, outlineRadius, stripeColors, 0.96, 3)
     else
         graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.92)
         graphics.setLineWidth(3)
-        graphics.circle("line", centerX, centerY, radius + 1.5)
+        graphics.circle("line", centerX, centerY, outlineRadius)
     end
 end
 
@@ -2623,7 +2632,7 @@ local function withIconScale(graphics, centerX, centerY, iconScale, drawFn)
 end
 
 local function getControlBubbleLayout(junction)
-    local bubbleRadius = junction.crossingRadius - 2
+    local bubbleRadius = junction.crossingRadius - 4
     local bubbleX = junction.mergePoint.x
     local bubbleY = junction.mergePoint.y
 
@@ -2735,8 +2744,13 @@ function world:drawControlOverlay(junction)
 
     if control.type == "pump" then
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
+        local previewInputIndex = junction.activeInputIndex + 1
+        if previewInputIndex > #junction.inputs then
+            previewInputIndex = 1
+        end
+        local previewColor, previewStripeColors = getJunctionInputStyle(junction, previewInputIndex)
         local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
-        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
+        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, previewColor, previewStripeColors, ratio, false, false)
         withIconScale(graphics, centerX, centerY, iconScale, function()
             if not drawStaticJunctionIcon(graphics, self.chargeImage, centerX, centerY, innerRadius, 1.34, 0.98) then
                 love.graphics.setColor(0.05, 0.06, 0.08, 1)
