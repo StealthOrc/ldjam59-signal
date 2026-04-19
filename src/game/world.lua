@@ -437,15 +437,33 @@ function world.new(viewportW, viewportH, levelSource)
     self.elapsedTime = 0
     self.failureTrain = nil
     self.interactionCount = 0
+    self.chargeImage = nil
+    self.crossImage = nil
+    self.directImage = nil
+    self.relayImage = nil
     self.springImage = nil
+    self.tripImage = nil
 
-    if love and love.graphics and love.filesystem and love.filesystem.getInfo("assets/spring.png", "file") then
-        local ok, image = pcall(love.graphics.newImage, "assets/spring.png")
+    local function loadOptionalImage(path)
+        if not (love and love.graphics and love.filesystem and love.filesystem.getInfo(path, "file")) then
+            return nil
+        end
+
+        local ok, image = pcall(love.graphics.newImage, path)
         if ok and image then
             image:setFilter("linear", "linear")
-            self.springImage = image
+            return image
         end
+
+        return nil
     end
+
+    self.chargeImage = loadOptionalImage("assets/Charge.png")
+    self.crossImage = loadOptionalImage("assets/cross.png")
+    self.directImage = loadOptionalImage("assets/direct.png")
+    self.relayImage = loadOptionalImage("assets/relay.png")
+    self.springImage = loadOptionalImage("assets/spring.png")
+    self.tripImage = loadOptionalImage("assets/trip.png")
 
     self.level = self:normalizeLevel(levelSource or {})
 
@@ -2210,6 +2228,80 @@ local function drawTimerPie(graphics, centerX, centerY, radius, color, ratio)
     graphics.circle("line", centerX, centerY, radius + 1.5)
 end
 
+local function drawStripedSector(graphics, centerX, centerY, radius, startAngle, endAngle, colors, alpha)
+    local palette = colors or {}
+    if #palette == 0 or endAngle <= startAngle then
+        return
+    end
+
+    local totalAngle = endAngle - startAngle
+    local segmentAngle = totalAngle / #palette
+
+    for index, stripeColor in ipairs(palette) do
+        local segmentStart = startAngle + segmentAngle * (index - 1)
+        local segmentEnd = startAngle + segmentAngle * index
+        graphics.setColor(stripeColor[1], stripeColor[2], stripeColor[3], alpha)
+        graphics.arc("fill", centerX, centerY, radius, segmentStart, segmentEnd)
+    end
+end
+
+local function drawStripedCircleOutline(graphics, centerX, centerY, radius, colors, alpha, lineWidth)
+    local palette = colors or {}
+    if #palette == 0 then
+        return
+    end
+
+    local segmentAngle = (math.pi * 2) / #palette
+    graphics.setLineWidth(lineWidth or 3)
+    for index, stripeColor in ipairs(palette) do
+        local segmentStart = -math.pi * 0.5 + segmentAngle * (index - 1)
+        local segmentEnd = -math.pi * 0.5 + segmentAngle * index
+        graphics.setColor(stripeColor[1], stripeColor[2], stripeColor[3], alpha)
+        graphics.arc("line", centerX, centerY, radius, segmentStart, segmentEnd)
+    end
+end
+
+local function getJunctionInputStyle(junction)
+    local inputTrack = junction.inputs[junction.activeInputIndex]
+    if not inputTrack then
+        return { 0.4, 0.4, 0.4 }, nil
+    end
+
+    return inputTrack.color or { 0.4, 0.4, 0.4 }, buildTrackStripeColors(inputTrack.colors, true)
+end
+
+local function drawJunctionTimerPie(graphics, centerX, centerY, radius, primaryColor, stripeColors, ratio)
+    local fillRatio = clamp(ratio or 0, 0, 1)
+
+    graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
+    graphics.circle("fill", centerX, centerY, radius)
+
+    if fillRatio >= 0.999 then
+        if stripeColors then
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, 0.26)
+        else
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.3)
+            graphics.circle("fill", centerX, centerY, radius)
+        end
+    elseif fillRatio > 0.001 then
+        local endAngle = -math.pi * 0.5 + math.pi * 2 * fillRatio
+        if stripeColors then
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, endAngle, stripeColors, 0.26)
+        else
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.3)
+            graphics.arc("fill", centerX, centerY, radius, -math.pi * 0.5, endAngle)
+        end
+    end
+
+    if stripeColors then
+        drawStripedCircleOutline(graphics, centerX, centerY, radius + 1.5, stripeColors, 0.96, 3)
+    else
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.92)
+        graphics.setLineWidth(3)
+        graphics.circle("line", centerX, centerY, radius + 1.5)
+    end
+end
+
 local function drawHourglassIcon(graphics, centerX, centerY, size, progress, color)
     local clampedProgress = clamp(progress or 0, 0, 1)
     local halfWidth = size * 0.48
@@ -2403,10 +2495,55 @@ local function drawSpringIcon(graphics, springImage, centerX, centerY, size, com
     graphics.pop()
 end
 
+local function drawRelayIcon(graphics, relayImage, centerX, centerY, size, flashAlpha)
+    if relayImage then
+        local imageWidth, imageHeight = relayImage:getDimensions()
+        local baseScale = math.min((size * 1.45) / imageWidth, (size * 1.45) / imageHeight)
+        local pulseScale = 1 + flashAlpha * 0.06
+
+        graphics.setColor(1, 1, 1, 0.96)
+        graphics.draw(
+            relayImage,
+            centerX,
+            centerY,
+            0,
+            baseScale * pulseScale,
+            baseScale * pulseScale,
+            imageWidth * 0.5,
+            imageHeight * 0.5
+        )
+        return
+    end
+
+    graphics.setColor(0.05, 0.06, 0.08, 1)
+    graphics.printf("R", centerX - size * 0.4, centerY - size * 0.24, size * 0.8, "center")
+end
+
+local function drawStaticJunctionIcon(graphics, image, centerX, centerY, size, scaleMultiplier, alpha)
+    if not image then
+        return false
+    end
+
+    local imageWidth, imageHeight = image:getDimensions()
+    local scale = math.min((size * scaleMultiplier) / imageWidth, (size * scaleMultiplier) / imageHeight)
+    graphics.setColor(1, 1, 1, alpha or 1)
+    graphics.draw(
+        image,
+        centerX,
+        centerY,
+        0,
+        scale,
+        scale,
+        imageWidth * 0.5,
+        imageHeight * 0.5
+    )
+    return true
+end
+
 local function getControlBubbleLayout(junction)
-    local bubbleRadius = math.max(22, junction.crossingRadius * 0.62)
-    local bubbleX = junction.mergePoint.x + junction.crossingRadius + bubbleRadius + 12
-    local bubbleY = junction.mergePoint.y - junction.crossingRadius * 0.18
+    local bubbleRadius = junction.crossingRadius - 2
+    local bubbleX = junction.mergePoint.x
+    local bubbleY = junction.mergePoint.y
 
     return bubbleX, bubbleY, bubbleRadius
 end
@@ -2436,85 +2573,98 @@ local function drawControlBubble(graphics, junction, ringColor)
         graphics.line(startX, startY, endX, endY)
     end
 
-    graphics.setColor(0.05, 0.06, 0.08, 0.96)
-    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius + 4)
+    graphics.setColor(0.05, 0.06, 0.08, 0.9)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius)
 
-    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.15)
-    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius + 8)
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.12)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius)
 
-    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.92)
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.88)
     graphics.setLineWidth(3)
-    graphics.circle("line", bubbleX, bubbleY, bubbleRadius + 4)
+    graphics.circle("line", bubbleX, bubbleY, bubbleRadius)
 
     return bubbleX, bubbleY, bubbleRadius
+end
+
+local function drawJunctionCircle(graphics, junction, primaryColor, stripeColors)
+    local centerX, centerY, radius = getControlBubbleLayout(junction)
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.9)
+    graphics.circle("fill", centerX, centerY, radius)
+
+    if stripeColors then
+        drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, 0.14)
+        drawStripedCircleOutline(graphics, centerX, centerY, radius, stripeColors, 0.92, 3)
+    else
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
+        graphics.circle("fill", centerX, centerY, radius)
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.88)
+        graphics.setLineWidth(3)
+        graphics.circle("line", centerX, centerY, radius)
+    end
+
+    return centerX, centerY, radius
 end
 
 function world:drawControlOverlay(junction)
     local graphics = love.graphics
     local control = junction.control
+    local inputColor, inputStripeColors = getJunctionInputStyle(junction)
+
+    if control.type == "direct" then
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
+        if not drawStaticJunctionIcon(graphics, self.directImage, centerX, centerY, innerRadius, 1.42, 0.98) then
+            local activeInput = junction.inputs[junction.activeInputIndex]
+
+            graphics.setLineWidth(6)
+            graphics.setColor(0.05, 0.06, 0.08, 0.98)
+            graphics.line(centerX - innerRadius * 0.34, centerY + innerRadius * 0.2, centerX + innerRadius * 0.02, centerY - innerRadius * 0.12)
+            graphics.circle("fill", centerX + innerRadius * 0.18, centerY - innerRadius * 0.28, innerRadius * 0.15)
+
+            if activeInput and #activeInput.path.points >= 2 then
+                local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
+
+                graphics.push()
+                graphics.translate(centerX, centerY)
+                graphics.rotate(angle)
+                graphics.setLineWidth(4)
+                graphics.setColor(0.05, 0.06, 0.08, 0.9)
+                graphics.line(0, -innerRadius * 0.48, 0, -innerRadius * 0.2)
+                graphics.pop()
+            end
+        end
+        return
+    end
 
     if control.type == "delayed" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.99, 0.77, 0.32 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local ratio = getTimerRatio(control.armed, control.remainingDelay, control.delay)
         local progress = control.delay > 0 and (1 - ratio) or 0
 
-        drawTimerPie(graphics, centerX, centerY, innerRadius, { 0.99, 0.77, 0.32 }, ratio)
+        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
         drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
         return
     end
 
     if control.type == "pump" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.95, 0.12, 0.88 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
-        local startAngle = math.pi * 1.16
-        local endAngle = math.pi * 1.84
-        local outerRadius = innerRadius + 12
-        local cutoutRadius = innerRadius + 1
-        local railRadius = (outerRadius + cutoutRadius) * 0.5
-        local capRadius = (outerRadius - cutoutRadius) * 0.5
-        local fillEndAngle = startAngle + (endAngle - startAngle) * ratio
-
-        local function drawPumpBand(segmentStart, segmentEnd, color)
-            local segmentStartCapX = centerX + math.cos(segmentStart) * railRadius
-            local segmentStartCapY = centerY + math.sin(segmentStart) * railRadius
-            local segmentEndCapX = centerX + math.cos(segmentEnd) * railRadius
-            local segmentEndCapY = centerY + math.sin(segmentEnd) * railRadius
-
-            graphics.stencil(function()
-                graphics.arc("fill", centerX, centerY, outerRadius, segmentStart, segmentEnd)
-                graphics.circle("fill", segmentStartCapX, segmentStartCapY, capRadius)
-                graphics.circle("fill", segmentEndCapX, segmentEndCapY, capRadius)
-            end, "replace", 1)
-
-            graphics.stencil(function()
-                graphics.arc("fill", centerX, centerY, cutoutRadius, segmentStart, segmentEnd)
-            end, "replace", 0, true)
-
-            graphics.setStencilTest("greater", 0)
-            graphics.setColor(color[1], color[2], color[3], color[4])
-            graphics.circle("fill", centerX, centerY, outerRadius + capRadius)
-            graphics.setStencilTest()
+        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
+        if not drawStaticJunctionIcon(graphics, self.chargeImage, centerX, centerY, innerRadius, 1.34, 0.98) then
+            love.graphics.setColor(0.05, 0.06, 0.08, 1)
+            love.graphics.printf(
+                string.format("%d%%", math.floor(ratio * 100 + 0.5)),
+                centerX - 24,
+                centerY - 9,
+                48,
+                "center"
+            )
         end
-
-        drawPumpBand(startAngle, endAngle, { 0.86, 0.16, 0.82, 0.22 })
-
-        if ratio > 0 then
-            drawPumpBand(startAngle, fillEndAngle, { 0.95, 0.12, 0.88, 1 })
-        end
-
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            string.format("%d%%", math.floor(ratio * 100 + 0.5)),
-            centerX - 24,
-            centerY - 9,
-            48,
-            "center"
-        )
         return
     end
 
     if control.type == "spring" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.4, 0.96, 0.74 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local ratio = getTimerRatio(control.armed, control.remainingHold, control.holdTime)
         local compression = 0
         local releaseProgress = nil
@@ -2526,72 +2676,61 @@ function world:drawControlOverlay(junction)
             releaseProgress = 1 - (control.releaseTimer / SPRING_RELEASE_DURATION)
         end
 
-        drawTimerPie(graphics, centerX, centerY, innerRadius, { 0.4, 0.96, 0.74 }, ratio)
+        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
         drawSpringIcon(graphics, self.springImage, centerX, centerY, innerRadius * 0.8, compression, releaseProgress, { 0.4, 0.96, 0.74 })
         return
     end
 
     if control.type == "relay" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.56, 0.72, 0.98 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / RELAY_FLASH_DURATION) or 0
 
-        graphics.setColor(0.56, 0.72, 0.98, 0.16 + flashAlpha * 0.18)
+        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        graphics.setColor(0.56, 0.72, 0.98, 1)
-        graphics.setLineWidth(4)
-        graphics.circle("line", centerX, centerY, innerRadius + 3)
-
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
-            centerX - 28,
-            centerY - 9,
-            56,
-            "center"
-        )
+        drawRelayIcon(graphics, self.relayImage, centerX, centerY, innerRadius * 0.84, flashAlpha)
         return
     end
 
     if control.type == "trip" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.98, 0.6, 0.28 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / TRIP_FLASH_DURATION) or 0
 
-        graphics.setColor(0.98, 0.6, 0.28, 0.16 + flashAlpha * 0.18)
+        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        graphics.setColor(0.98, 0.6, 0.28, 1)
-        graphics.setLineWidth(4)
-        graphics.circle("line", centerX, centerY, innerRadius + 3)
-
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
-            centerX - 18,
-            centerY - 9,
-            36,
-            "center"
-        )
+        if not drawStaticJunctionIcon(graphics, self.tripImage, centerX, centerY, innerRadius, 1.4, 0.98) then
+            love.graphics.setColor(0.05, 0.06, 0.08, 1)
+            love.graphics.printf(
+                control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
+                centerX - 18,
+                centerY - 9,
+                36,
+                "center"
+            )
+        end
         return
     end
 
     if control.type == "crossbar" then
-        local centerX, centerY, innerRadius = drawControlBubble(graphics, junction, { 0.92, 0.38, 0.68 })
+        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local flashAlpha = control.flashTimer > 0 and (control.flashTimer / CROSSBAR_FLASH_DURATION) or 0
 
-        graphics.setColor(0.92, 0.38, 0.68, 0.16 + flashAlpha * 0.18)
+        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        graphics.setColor(0.92, 0.38, 0.68, 1)
-        graphics.setLineWidth(4)
-        graphics.arc("line", centerX, centerY, innerRadius + 4, math.pi * 0.15, math.pi * 0.85)
-        graphics.arc("line", centerX, centerY, innerRadius + 4, math.pi * 1.15, math.pi * 1.85)
+        if not drawStaticJunctionIcon(graphics, self.crossImage, centerX, centerY, innerRadius, 1.42, 0.98) then
+            graphics.setLineWidth(4)
+            graphics.setColor(0.05, 0.06, 0.08, 0.96)
+            graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 0.15, math.pi * 0.85)
+            graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 1.15, math.pi * 1.85)
 
-        love.graphics.setColor(0.05, 0.06, 0.08, 1)
-        love.graphics.printf(
-            string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
-            centerX - 28,
-            centerY - 9,
-            56,
-            "center"
-        )
+            love.graphics.setColor(0.05, 0.06, 0.08, 1)
+            love.graphics.printf(
+                string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
+                centerX - 28,
+                centerY - 9,
+                56,
+                "center"
+            )
+        end
     end
 end
 
@@ -2663,38 +2802,18 @@ function world:drawCrossing(junction)
     local activeInput = junction.inputs[junction.activeInputIndex]
     local activeOutputColor = self:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local activeInputColor = activeInput and activeInput.color or activeOutputColor
-    local pulse = 0.75 + 0.22 * math.sin(love.timer.getTime() * 4.2)
-    local outerRadius = junction.crossingRadius + pulse * 4
-    local panelPadding = 2
-    local panelRadius = junction.crossingRadius + panelPadding
-    local plateInset = 8
-    local plateWidth = 16
     local x = junction.mergePoint.x
     local y = junction.mergePoint.y
-
-    self:drawActiveRouteIndicator(junction, activeInput, activeOutputColor)
+    local inputStripeColors = activeInput and buildTrackStripeColors(activeInput.colors, true) or nil
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
-    graphics.circle("fill", x, y, panelRadius)
+    graphics.circle("fill", x, y, junction.crossingRadius)
 
-    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.18)
-    graphics.circle("fill", x, y, outerRadius)
-
-    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 1)
-    graphics.setLineWidth(3)
-    graphics.circle("line", x, y, junction.crossingRadius)
-
-    if activeInput and #activeInput.path.points >= 2 then
-        local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
-
-        graphics.push()
-        graphics.translate(x, y)
-        graphics.rotate(angle)
-        graphics.setColor(0.96, 0.97, 0.99, 0.95)
-        graphics.rectangle("fill", -plateWidth * 0.5, -(junction.crossingRadius - plateInset), plateWidth, panelRadius + 4, 6, 6)
-        graphics.setColor(activeInput.color[1], activeInput.color[2], activeInput.color[3], 1)
-        graphics.circle("fill", 0, -28, 11)
-        graphics.pop()
+    if inputStripeColors then
+        drawStripedSector(graphics, x, y, junction.crossingRadius + 4, -math.pi * 0.5, math.pi * 1.5, inputStripeColors, 0.12)
+    else
+        graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.12)
+        graphics.circle("fill", x, y, junction.crossingRadius + 4)
     end
 
     if #junction.outputs > 1 and junction.control.type ~= "relay" and junction.control.type ~= "crossbar" then
