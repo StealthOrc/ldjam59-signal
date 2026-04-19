@@ -389,6 +389,7 @@ local function favoriteMarketplaceMap(config, requestId)
     end
 
     return runJsonPost(config, string.format("/api/maps/%s/favorites", mapUuid), {
+        liked = config.liked == true,
         player_uuid = playerUuid,
     }, requestId)
 end
