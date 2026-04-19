@@ -16,6 +16,10 @@ local DEFAULT_TRAIN_WAGONS = 4
 local LEGACY_TRAIN_SPEED = 168
 local DEFAULT_ROAD_TYPE = roadTypes.DEFAULT_ID
 local ROAD_TYPE_OPTIONS = roadTypes.getOrderedOptions()
+local PANEL_BUTTON_SIDE_MARGIN = 18
+local PANEL_BUTTON_HEIGHT = 38
+local PANEL_BUTTON_GAP = 12
+local PANEL_BUTTON_BOTTOM_MARGIN = 22
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -118,6 +122,20 @@ local function pointInRect(x, y, rect)
         and x <= rect.x + rect.w
         and y >= rect.y
         and y <= rect.y + rect.h
+end
+
+local function encodeUrlPath(path)
+    return tostring(path or ""):gsub("\\", "/"):gsub("([^%w%-%._~/:])", function(character)
+        return string.format("%%%02X", string.byte(character))
+    end)
+end
+
+local function buildFileUrl(path)
+    local normalizedPath = tostring(path or ""):gsub("\\", "/")
+    if normalizedPath:match("^[A-Za-z]:") then
+        normalizedPath = "/" .. normalizedPath
+    end
+    return "file://" .. encodeUrlPath(normalizedPath)
 end
 
 local function distanceSquared(ax, ay, bx, by)
@@ -431,6 +449,7 @@ function mapEditor.new(viewportW, viewportH, level)
     self.sourceInfo = nil
     self.lastSavedDescriptor = nil
     self.pendingPlaytestDescriptor = nil
+    self.pendingOpenBlankMap = false
     self.loadedMapPayload = nil
     self.lastValidationError = nil
     self.validationErrors = {}
@@ -834,6 +853,18 @@ function mapEditor:consumePlaytestRequest()
     return descriptor
 end
 
+function mapEditor:requestOpenBlankMap()
+    self.pendingOpenBlankMap = true
+    self:closeDialog()
+    return true
+end
+
+function mapEditor:consumeOpenBlankMapRequest()
+    local isPending = self.pendingOpenBlankMap
+    self.pendingOpenBlankMap = false
+    return isPending
+end
+
 function mapEditor:createRoute(points, color, id, label, colorId, startColors, endColors, startEndpointId, endEndpointId, segmentRoadTypes)
     local routeId = id or ("route_" .. self.nextRouteId)
     local resolvedColorId = colorId or nearestColorId(color)
@@ -874,52 +905,64 @@ function mapEditor:createRoute(points, color, id, label, colorId, startColors, e
 end
 
 function mapEditor:getSaveButtonRect()
+    local fullWidth = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2
+    local buttonWidth = (fullWidth - PANEL_BUTTON_GAP) * 0.5
     return {
-        x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 260,
-        w = self.sidePanel.w - 36,
-        h = 38,
+        x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
+        y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 4 + PANEL_BUTTON_GAP * 3),
+        w = buttonWidth,
+        h = PANEL_BUTTON_HEIGHT,
     }
 end
 
 function mapEditor:getOpenButtonRect()
+    local saveRect = self:getSaveButtonRect()
     return {
-        x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 210,
-        w = self.sidePanel.w - 36,
-        h = 38,
+        x = saveRect.x + saveRect.w + PANEL_BUTTON_GAP,
+        y = saveRect.y,
+        w = saveRect.w,
+        h = saveRect.h,
     }
 end
 
 function mapEditor:getPlayTestButtonRect()
     return {
-        x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 160,
-        w = self.sidePanel.w - 36,
-        h = 38,
+        x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
+        y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 5 + PANEL_BUTTON_GAP * 4),
+        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        h = PANEL_BUTTON_HEIGHT,
     }
 end
 
 function mapEditor:getSequencerButtonRect()
     return {
-        x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 110,
-        w = self.sidePanel.w - 36,
-        h = 38,
+        x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
+        y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 3 + PANEL_BUTTON_GAP * 2),
+        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        h = PANEL_BUTTON_HEIGHT,
     }
 end
 
 function mapEditor:getResetButtonRect()
     return {
-        x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 60,
-        w = self.sidePanel.w - 36,
-        h = 38,
+        x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
+        y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 2 + PANEL_BUTTON_GAP),
+        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        h = PANEL_BUTTON_HEIGHT,
     }
 end
 
 function mapEditor:getSequencerBackButtonRect()
-    return self:getResetButtonRect()
+    return self:getOpenUserMapsButtonRect()
+end
+
+function mapEditor:getOpenUserMapsButtonRect()
+    return {
+        x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
+        y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT),
+        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        h = PANEL_BUTTON_HEIGHT,
+    }
 end
 
 function mapEditor:getSequencerAddButtonRect()
@@ -1280,12 +1323,43 @@ function mapEditor:openOpenDialog()
     }
 end
 
+function mapEditor:openResetDialog()
+    self.dialog = {
+        type = "confirm_reset",
+    }
+end
+
 function mapEditor:getDialogRect()
     return {
         x = self.viewport.w * 0.5 - 260,
         y = self.viewport.h * 0.5 - 180,
         w = 520,
         h = 360,
+    }
+end
+
+function mapEditor:getConfirmResetDialogButtons()
+    local rect = self:getDialogRect()
+    local buttonWidth = 180
+    local buttonHeight = 42
+    local gap = 18
+    local totalWidth = buttonWidth * 2 + gap
+    local startX = rect.x + (rect.w - totalWidth) * 0.5
+    local y = rect.y + rect.h - 84
+
+    return {
+        confirm = {
+            x = startX,
+            y = y,
+            w = buttonWidth,
+            h = buttonHeight,
+        },
+        cancel = {
+            x = startX + buttonWidth + gap,
+            y = y,
+            w = buttonWidth,
+            h = buttonHeight,
+        },
     }
 end
 
@@ -1386,6 +1460,23 @@ function mapEditor:openDialogMap(savedMap)
     end
 
     self:resetFromMap(loadedMap, savedMap)
+    return true
+end
+
+function mapEditor:openUserMapsFolder()
+    local saveDirectory = mapStorage.getSaveDirectory()
+    if not (love and love.system and love.system.openURL) then
+        self:showStatus("Opening the user maps folder is not supported here.")
+        return false
+    end
+
+    local ok, result = pcall(love.system.openURL, buildFileUrl(saveDirectory))
+    if not ok or result == false then
+        self:showStatus("The user maps folder could not be opened.")
+        return false
+    end
+
+    self:showStatus("Opened the user maps folder.")
     return true
 end
 
@@ -3139,7 +3230,7 @@ function mapEditor:handleDialogClick(x, y)
     local rect = self:getDialogRect()
     if not pointInRect(x, y, rect) then
         self:closeDialog()
-        return false
+        return true
     end
 
     if self.dialog.type == "open" then
@@ -3159,6 +3250,17 @@ function mapEditor:handleDialogClick(x, y)
                 return true
             end
         end
+    elseif self.dialog.type == "confirm_reset" then
+        local buttons = self:getConfirmResetDialogButtons()
+        if pointInRect(x, y, buttons.confirm) then
+            self:requestOpenBlankMap()
+            return true
+        end
+        if pointInRect(x, y, buttons.cancel) then
+            self:closeDialog()
+            self:showStatus("Reset cancelled.")
+            return true
+        end
     end
 
     return true
@@ -3167,8 +3269,9 @@ end
 function mapEditor:keypressed(key)
     if key == "escape" then
         if self.dialog then
+            local dialogType = self.dialog.type
             self:closeDialog()
-            self:showStatus("Dialog closed.")
+            self:showStatus(dialogType == "confirm_reset" and "Reset cancelled." or "Dialog closed.")
             return true
         end
         if self.activeTextField then
@@ -3250,6 +3353,18 @@ function mapEditor:keypressed(key)
             end
         end
 
+        if self.dialog.type == "confirm_reset" then
+            if key == "return" or key == "kpenter" or key == "y" then
+                self:requestOpenBlankMap()
+                return true
+            end
+            if key == "n" then
+                self:closeDialog()
+                self:showStatus("Reset cancelled.")
+                return true
+            end
+        end
+
         return true
     end
 
@@ -3299,8 +3414,7 @@ function mapEditor:keypressed(key)
 
     if key == "r" then
         self:commitTextField()
-        self:resetFromMap(self.loadedMapPayload, self.sourceInfo)
-        self:showStatus("Editor reset to the current map.")
+        self:openResetDialog()
         return true
     end
 
@@ -3402,8 +3516,12 @@ function mapEditor:mousepressed(x, y, button)
     end
 
     if pointInRect(x, y, self:getResetButtonRect()) then
-        self:resetFromMap(self.loadedMapPayload, self.sourceInfo)
-        self:showStatus("Editor reset to the current map.")
+        self:openResetDialog()
+        return true
+    end
+
+    if pointInRect(x, y, self:getOpenUserMapsButtonRect()) then
+        self:openUserMapsFolder()
         return true
     end
 
@@ -4229,6 +4347,26 @@ function mapEditor:drawDialog(game)
         return
     end
 
+    if self.dialog.type == "confirm_reset" then
+        graphics.printf("Reset Map", rect.x, rect.y + 20, rect.w, "center")
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf(
+            "Discard the current map without saving and open a new blank map?\nAny unsaved changes will be lost.",
+            rect.x + 32,
+            rect.y + 102,
+            rect.w - 64,
+            "center"
+        )
+        local buttons = self:getConfirmResetDialogButtons()
+        love.graphics.setFont(game.fonts.small)
+        self:drawPanelButton(buttons.confirm, "Open Blank Map", { 0.99, 0.78, 0.32 })
+        self:drawPanelButton(buttons.cancel, "Cancel", { 0.33, 0.8, 0.98 })
+        graphics.setColor(0.72, 0.78, 0.84, 1)
+        graphics.printf("Enter confirms. Esc or N cancels.", rect.x + 24, rect.y + rect.h - 126, rect.w - 48, "center")
+        return
+    end
+
     graphics.printf("Open Map", rect.x, rect.y + 20, rect.w, "center")
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
@@ -4433,7 +4571,7 @@ function mapEditor:drawDefaultSidePanel(game)
     local graphics = love.graphics
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
-    local panelBottom = self:getSaveButtonRect().y - 16
+    local panelBottom = self:getPlayTestButtonRect().y - 16
     local currentY = self.sidePanel.y + 104
 
     love.graphics.setFont(game.fonts.body)
@@ -4510,11 +4648,12 @@ function mapEditor:drawDefaultSidePanel(game)
     end
 
     love.graphics.setFont(game.fonts.small)
+    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
-    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
-    self:drawPanelButton(self:getSequencerButtonRect(), "Sequencer (C)", { 0.48, 0.92, 0.62 })
-    self:drawPanelButton(self:getResetButtonRect(), "Reset To Map (R)", { 0.99, 0.78, 0.32 })
+    self:drawPanelButton(self:getSequencerButtonRect(), "Train Sequencer (C)", { 0.48, 0.92, 0.62 })
+    self:drawPanelButton(self:getResetButtonRect(), "Reset (R)", { 0.99, 0.78, 0.32 })
+    self:drawPanelButton(self:getOpenUserMapsButtonRect(), "Open User Maps Folder", { 0.98, 0.82, 0.34 })
 end
 
 function mapEditor:draw(game)

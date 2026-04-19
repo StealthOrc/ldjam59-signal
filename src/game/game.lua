@@ -1997,6 +1997,15 @@ function Game:processEditorPlaytestRequest()
     end
 end
 
+function Game:processEditorOpenBlankRequest()
+    if not self.editor:consumeOpenBlankMapRequest() then
+        return false
+    end
+
+    self:openEditorBlank()
+    return true
+end
+
 function Game:navigateBackFromRun()
     if self.currentRunOrigin == "editor" and self.currentMapDescriptor then
         if self:openEditorMap(self.currentMapDescriptor) then
@@ -2054,6 +2063,9 @@ function Game:update(dt)
 
     if self.screen == "editor" then
         self.editor:update(dt)
+        if self:processEditorOpenBlankRequest() then
+            return
+        end
         self:processEditorPlaytestRequest()
         return
     end
