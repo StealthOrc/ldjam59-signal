@@ -109,6 +109,22 @@ local LEADERBOARD_LAYOUT = {
     filterBadgeMaxWidth = 460,
 }
 
+local LEVEL_SELECT_LEADERBOARD_CARD = {
+    inset = 18,
+    titleTop = 20,
+    maxRows = 5,
+    rowTop = 56,
+    rowHeight = 24,
+    rowGap = 6,
+    rowRadius = 10,
+    rowPaddingX = 10,
+    rankWidth = 32,
+    scoreWidth = 76,
+    pinnedGap = 12,
+    statusPaddingX = 20,
+    statusWidthMargin = 40,
+}
+
 local function pointInRect(x, y, rect)
     return x >= rect.x
         and x <= rect.x + rect.w
@@ -1110,6 +1126,113 @@ local function drawLevelSelectTitleBar(game, selectedMap)
     graphics.printf(getMapKindLabel(selectedMap), barRect.x + 30, barRect.y + 48, barRect.w - 60, "center")
 end
 
+local function isLevelSelectLeaderboardCardFlipped(game, rect)
+    local mapUuid = rect and rect.map and rect.map.mapUuid or nil
+    return rect
+        and rect.selected
+        and mapUuid
+        and mapUuid ~= ""
+        and game.levelSelectLeaderboardFlipMapUuid == mapUuid
+end
+
+local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
+    local graphics = love.graphics
+    local fillColor = isHighlighted and { 0.16, 0.28, 0.38, 0.98 } or { 0.08, 0.11, 0.15, 0.96 }
+    local lineColor = isHighlighted and { 0.48, 0.72, 0.92, 1 } or { 0.24, 0.32, 0.4, 1 }
+
+    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
+    graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius)
+    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], lineColor[4])
+    graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(
+        tostring(entry.rank or "-"),
+        rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
+        rowRect.y + 4,
+        LEVEL_SELECT_LEADERBOARD_CARD.rankWidth,
+        "left"
+    )
+
+    local nameX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX + LEVEL_SELECT_LEADERBOARD_CARD.rankWidth
+    local nameWidth = rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.rankWidth - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - (LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX * 2)
+    graphics.printf(
+        tostring(entry.playerDisplayName or "Unknown"),
+        nameX,
+        rowRect.y + 4,
+        math.max(0, nameWidth),
+        "left"
+    )
+
+    graphics.printf(
+        formatScore(entry.score or 0),
+        rowRect.x + rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
+        rowRect.y + 4,
+        LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth,
+        "right"
+    )
+end
+
+local function drawLevelSelectLeaderboardBack(game, rect)
+    local graphics = love.graphics
+    local contentRect = {
+        x = rect.x + LEVEL_SELECT_LEADERBOARD_CARD.inset,
+        y = rect.y + LEVEL_SELECT_LEADERBOARD_CARD.inset,
+        w = rect.w - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
+        h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
+    }
+    local previewState = game:getLevelSelectPreviewDisplayState(rect.map.mapUuid)
+    local topEntries = previewState.topEntries or {}
+    local pinnedPlayerEntry = previewState.pinnedPlayerEntry
+    local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
+    graphics.printf("Leaderboard", contentRect.x, contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.titleTop, contentRect.w, "center")
+
+    for index, entry in ipairs(topEntries) do
+        local rowRect = {
+            x = contentRect.x,
+            y = rowY,
+            w = contentRect.w,
+            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+        }
+        local isPlayerEntry = tostring(entry.playerUuid or "") == tostring(game.profile and game.profile.playerId or "")
+        drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
+        rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
+        if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows then
+            break
+        end
+    end
+
+    if pinnedPlayerEntry then
+        local pinnedRowRect = {
+            x = contentRect.x,
+            y = contentRect.y + contentRect.h - LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+            w = contentRect.w,
+            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+        }
+        drawLevelSelectLeaderboardRow(game, pinnedRowRect, pinnedPlayerEntry, true)
+    elseif previewState.isLoading and #topEntries == 0 then
+        drawLoadingSpinner(
+            contentRect.x + math.floor(contentRect.w * 0.5 + 0.5),
+            contentRect.y + math.floor(contentRect.h * 0.56 + 0.5),
+            { 0.48, 0.92, 0.62, 1 }
+        )
+    elseif previewState.message then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+        graphics.printf(
+            previewState.message,
+            contentRect.x + LEVEL_SELECT_LEADERBOARD_CARD.statusPaddingX,
+            contentRect.y + math.floor(contentRect.h * 0.52 + 0.5),
+            math.max(0, contentRect.w - LEVEL_SELECT_LEADERBOARD_CARD.statusWidthMargin),
+            "center"
+        )
+    end
+end
+
 local function drawLevelCard(game, rect)
     local graphics = love.graphics
     local descriptor = rect.map
@@ -1132,10 +1255,14 @@ local function drawLevelCard(game, rect)
         graphics.rectangle("line", rect.x - 6, rect.y - 6, rect.w + 12, rect.h + 12, 22, 22)
     end
 
-    drawMapPreview(descriptor, rect.previewRect)
+    if isLevelSelectLeaderboardCardFlipped(game, rect) then
+        drawLevelSelectLeaderboardBack(game, rect)
+    else
+        drawMapPreview(descriptor, rect.previewRect)
 
-    local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
-    drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
+        local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
+        drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
+    end
 end
 
 local function drawLevelSelectEmptyState(game, filterId)
@@ -1322,7 +1449,7 @@ function ui.getLeaderboardMapHitAt(game, x, y)
     return nil
 end
 
-function ui.getLevelSelectHit(game, x, y)
+function ui.getLevelSelectHit(game, x, y, button)
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
         if pointInRect(x, y, overlay.edit) then
@@ -1366,6 +1493,9 @@ function ui.getLevelSelectHit(game, x, y)
 
     for _, rect in ipairs(cardRects) do
         if pointInRect(x, y, rect) then
+            if button == 2 and rect.selected then
+                return { kind = "toggle_leaderboard_card", map = rect.map }
+            end
             if rect.selected then
                 return { kind = "open_map", map = rect.map }
             end

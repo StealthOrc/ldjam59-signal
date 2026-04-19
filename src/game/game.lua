@@ -3,6 +3,7 @@ local mapEditor = require("src.game.map_editor")
 local mapStorage = require("src.game.map_storage")
 local profileStorage = require("src.game.profile_storage")
 local leaderboardClient = require("src.game.leaderboard_client")
+local leaderboardPreviewCache = require("src.game.leaderboard_preview_cache")
 local world = require("src.game.world")
 local ui = require("src.game.ui")
 local json = require("src.game.json")
@@ -29,6 +30,16 @@ local LEADERBOARD_MESSAGE_EMPTY = "No entries were found for this leaderboard ye
 local LEADERBOARD_MESSAGE_FETCH_FAILED = "The leaderboard could not be loaded."
 local LEADERBOARD_MESSAGE_NO_DATA = "No data right now."
 local LEADERBOARD_MAP_NAME_UNKNOWN = "Unknown Map"
+local LEVEL_SELECT_PREVIEW_ENTRY_LIMIT = 5
+local LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS = 60
+local LEVEL_SELECT_PREVIEW_FETCH_TIMEOUT_SECONDS = 5
+local LEVEL_SELECT_PREVIEW_STATUS_IDLE = "idle"
+local LEVEL_SELECT_PREVIEW_STATUS_LOADING = "loading"
+local LEVEL_SELECT_PREVIEW_STATUS_READY = "ready"
+local LEVEL_SELECT_PREVIEW_STATUS_ERROR = "error"
+local LEVEL_SELECT_PREVIEW_MESSAGE_LOADING = "Loading leaderboard..."
+local LEVEL_SELECT_PREVIEW_MESSAGE_EMPTY = "No scores yet."
+local LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA = "No local leaderboard data."
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -36,6 +47,14 @@ local function getNowSeconds()
     end
 
     return os.clock()
+end
+
+local function getNowUnixSeconds()
+    if os and os.time then
+        return os.time()
+    end
+
+    return math.floor(getNowSeconds())
 end
 
 local function drainChannel(channel)
@@ -94,6 +113,22 @@ local function trimLastUtf8Character(value)
     return (value or ""):gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
 end
 
+local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    return {
+        playerDisplayName = entry.display_name or entry.playerDisplayName or "Unknown",
+        playerUuid = entry.player_uuid or entry.playerUuid or "",
+        mapCount = tonumber(entry.map_count) or 0,
+        score = tonumber(entry.score or 0) or 0,
+        rank = tonumber(entry.rank) or fallbackRank or 0,
+        mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
+        updatedAt = entry.updated_at or entry.updatedAt,
+    }
+end
+
 local function normalizeLeaderboardEntries(payload)
     local normalized = {}
 
@@ -107,16 +142,11 @@ local function normalizeLeaderboardEntries(payload)
         return normalized
     end
 
-    for _, entry in ipairs(sourceEntries) do
-        normalized[#normalized + 1] = {
-            playerDisplayName = entry.display_name or entry.playerDisplayName or "Unknown",
-            playerUuid = entry.player_uuid or entry.playerUuid or "",
-            mapCount = tonumber(entry.map_count) or 0,
-            score = tonumber(entry.score or 0) or 0,
-            rank = tonumber(entry.rank) or (#normalized + 1),
-            mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
-            updatedAt = entry.updated_at or entry.updatedAt,
-        }
+    for index, entry in ipairs(sourceEntries) do
+        local normalizedEntry = normalizeLeaderboardEntry(entry, fallbackMapUuid, index)
+        if normalizedEntry then
+            normalized[#normalized + 1] = normalizedEntry
+        end
     end
 
     return normalized
@@ -191,6 +221,18 @@ function Game.new()
     self.levelSelectFilterHoverId = nil
     self.levelSelectVisualIndex = nil
     self.levelSelectScroll = 0
+    self.levelSelectLeaderboardFlipMapUuid = nil
+    self.levelSelectPreviewCacheByMap = leaderboardPreviewCache.load()
+    self.levelSelectPreviewNextFetchAtByMap = {}
+    self.levelSelectPreviewState = {
+        mapUuid = nil,
+        status = LEVEL_SELECT_PREVIEW_STATUS_IDLE,
+        message = nil,
+    }
+    self.levelSelectPreviewRequestSequence = 0
+    self.activeLevelSelectPreviewRequestId = nil
+    self.activeLevelSelectPreviewRequestStartedAt = nil
+    self.activeLevelSelectPreviewRequestMapUuid = nil
     self.resultsSummary = nil
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
@@ -302,6 +344,190 @@ function Game:getActiveOnlineConfig()
     return resolvedConfig
 end
 
+function Game:setLevelSelectPreviewState(mapUuid, status, message)
+    self.levelSelectPreviewState = {
+        mapUuid = mapUuid,
+        status = status or LEVEL_SELECT_PREVIEW_STATUS_IDLE,
+        message = message,
+    }
+end
+
+function Game:getLevelSelectPreviewCacheEntry(mapUuid)
+    if not mapUuid or mapUuid == "" then
+        return nil
+    end
+
+    local entry = self.levelSelectPreviewCacheByMap[mapUuid]
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    return entry
+end
+
+function Game:setLevelSelectPreviewCacheEntry(mapUuid, entry)
+    if not mapUuid or mapUuid == "" then
+        return
+    end
+
+    if type(entry) == "table" then
+        self.levelSelectPreviewCacheByMap[mapUuid] = entry
+    else
+        self.levelSelectPreviewCacheByMap[mapUuid] = nil
+    end
+
+    leaderboardPreviewCache.save(self.levelSelectPreviewCacheByMap)
+end
+
+function Game:isLevelSelectPreviewCacheFresh(mapUuid)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    local fetchedAt = cacheEntry and tonumber(cacheEntry.fetched_at) or nil
+    if not fetchedAt then
+        return false
+    end
+
+    return (getNowUnixSeconds() - fetchedAt) < LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+end
+
+function Game:isLevelSelectPreviewFetchAllowed(mapUuid)
+    if not mapUuid or mapUuid == "" then
+        return false
+    end
+
+    return getNowUnixSeconds() >= (self.levelSelectPreviewNextFetchAtByMap[mapUuid] or 0)
+end
+
+function Game:getActiveLevelSelectPreviewMapUuid()
+    if self.screen ~= "level_select" then
+        return nil
+    end
+
+    local selectedMap = self:getSelectedLevelMap()
+    local mapUuid = selectedMap and selectedMap.mapUuid or nil
+    if mapUuid and mapUuid ~= "" and self.levelSelectLeaderboardFlipMapUuid == mapUuid then
+        return mapUuid
+    end
+
+    return nil
+end
+
+function Game:clearLevelSelectLeaderboardFlip()
+    self.levelSelectLeaderboardFlipMapUuid = nil
+    self:setLevelSelectPreviewState(nil, LEVEL_SELECT_PREVIEW_STATUS_IDLE, nil)
+end
+
+function Game:getLevelSelectPreviewDisplayState(mapUuid)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    local topEntries = normalizeLeaderboardEntries({
+        entries = cacheEntry and cacheEntry.top_entries or {},
+        map_uuid = mapUuid,
+    })
+    local playerEntry = normalizeLeaderboardEntry(cacheEntry and cacheEntry.player_entry or nil, mapUuid)
+
+    for _, entry in ipairs(topEntries) do
+        entry.mapName = self:getMapNameByUuid(entry.mapUuid)
+    end
+    if playerEntry then
+        playerEntry.mapName = self:getMapNameByUuid(playerEntry.mapUuid)
+    end
+
+    local pinnedPlayerEntry = nil
+    if playerEntry then
+        local isAlreadyVisible = false
+        for _, entry in ipairs(topEntries) do
+            if entry.playerUuid == playerEntry.playerUuid then
+                isAlreadyVisible = true
+                break
+            end
+        end
+
+        if not isAlreadyVisible then
+            pinnedPlayerEntry = playerEntry
+        end
+    end
+
+    local previewState = self.levelSelectPreviewState or {}
+    local hasCache = cacheEntry ~= nil
+    local hasVisibleEntries = #topEntries > 0 or pinnedPlayerEntry ~= nil
+    local isLoading = self.activeLevelSelectPreviewRequestId ~= nil and self.activeLevelSelectPreviewRequestMapUuid == mapUuid
+    local shouldShowSpinner = isLoading or (previewState.mapUuid == mapUuid and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_LOADING and not hasCache)
+    local message = nil
+
+    if shouldShowSpinner and not hasCache then
+        message = LEVEL_SELECT_PREVIEW_MESSAGE_LOADING
+    elseif hasCache and not hasVisibleEntries and not playerEntry then
+        message = LEVEL_SELECT_PREVIEW_MESSAGE_EMPTY
+    elseif previewState.mapUuid == mapUuid and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_ERROR and not hasCache then
+        message = previewState.message or LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA
+    end
+
+    return {
+        topEntries = topEntries,
+        pinnedPlayerEntry = pinnedPlayerEntry,
+        hasCache = hasCache,
+        isLoading = shouldShowSpinner,
+        message = message,
+    }
+end
+
+function Game:updateLevelSelectPreviewCacheFromSubmit(response)
+    if type(response) ~= "table" then
+        return
+    end
+
+    local mapUuid = tostring(response.map_uuid or (self.resultsSummary and self.resultsSummary.mapUuid) or "")
+    if mapUuid == "" then
+        return
+    end
+
+    local submittedEntry = {
+        display_name = response.display_name or self.profile.playerDisplayName or "Unknown",
+        map_uuid = mapUuid,
+        player_uuid = response.player_uuid or self.profile.playerId or "",
+        rank = tonumber(response.rank) or nil,
+        score = tonumber(response.score or 0) or 0,
+        updated_at = response.updated_at,
+    }
+
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid) or {
+        map_uuid = mapUuid,
+        top_entries = {},
+        player_entry = nil,
+        target_rank = nil,
+        fetched_at = getNowUnixSeconds(),
+    }
+
+    local topEntries = {}
+    for _, entry in ipairs(cacheEntry.top_entries or {}) do
+        if type(entry) == "table" and tostring(entry.player_uuid or entry.playerUuid or "") ~= submittedEntry.player_uuid then
+            topEntries[#topEntries + 1] = entry
+        end
+    end
+
+    if submittedEntry.rank and submittedEntry.rank <= LEVEL_SELECT_PREVIEW_ENTRY_LIMIT then
+        topEntries[#topEntries + 1] = submittedEntry
+        table.sort(topEntries, function(a, b)
+            local aRank = tonumber(a.rank) or math.huge
+            local bRank = tonumber(b.rank) or math.huge
+            if aRank ~= bRank then
+                return aRank < bRank
+            end
+
+            return tostring(a.player_uuid or "") < tostring(b.player_uuid or "")
+        end)
+
+        while #topEntries > LEVEL_SELECT_PREVIEW_ENTRY_LIMIT do
+            table.remove(topEntries)
+        end
+    end
+
+    cacheEntry.top_entries = topEntries
+    cacheEntry.player_entry = submittedEntry
+    cacheEntry.target_rank = submittedEntry.rank
+    cacheEntry.fetched_at = getNowUnixSeconds()
+    self:setLevelSelectPreviewCacheEntry(mapUuid, cacheEntry)
+end
+
 function Game:ensureLeaderboardWorker()
     local existingThread = self.leaderboardWorkerThread
     if existingThread and existingThread:isRunning() and not existingThread:getError() then
@@ -345,6 +571,30 @@ function Game:beginLeaderboardFetch(onlineConfig)
     }))
 end
 
+function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
+    if self.activeLevelSelectPreviewRequestId ~= nil or not mapUuid or mapUuid == "" then
+        return
+    end
+
+    self:ensureLeaderboardWorker()
+    self.levelSelectPreviewRequestSequence = self.levelSelectPreviewRequestSequence + 1
+    self.activeLevelSelectPreviewRequestId = self.levelSelectPreviewRequestSequence
+    self.activeLevelSelectPreviewRequestStartedAt = getNowSeconds()
+    self.activeLevelSelectPreviewRequestMapUuid = mapUuid
+    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil)
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "preview",
+        requestId = self.activeLevelSelectPreviewRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
+            mapUuid = mapUuid,
+            playerUuid = self.profile and self.profile.playerId or nil,
+        },
+    }))
+end
+
 function Game:applyLeaderboardFetchResult(response)
     local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
     local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
@@ -370,25 +620,73 @@ function Game:applyLeaderboardFetchResult(response)
     end
 end
 
+function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
+    if not mapUuid or mapUuid == "" then
+        return
+    end
+
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    if response.ok and type(response.payload) == "table" then
+        local fetchedAt = getNowUnixSeconds()
+        self:setLevelSelectPreviewCacheEntry(mapUuid, {
+            map_uuid = mapUuid,
+            top_entries = type(response.payload.top_entries) == "table" and response.payload.top_entries or {},
+            player_entry = type(response.payload.player_entry) == "table" and response.payload.player_entry or nil,
+            target_rank = tonumber(response.payload.target_rank) or nil,
+            fetched_at = fetchedAt,
+        })
+        self.levelSelectPreviewNextFetchAtByMap[mapUuid] = fetchedAt + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+        self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
+        return
+    end
+
+    self.levelSelectPreviewNextFetchAtByMap[mapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+    if cacheEntry then
+        self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
+        return
+    end
+
+    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
+end
+
 function Game:updateLeaderboardFetchState()
     local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
     local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
+    local activePreviewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
+    local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid)
 
-    if self.leaderboardWorkerThread and self.activeLeaderboardRequestId ~= nil then
+    if self.leaderboardWorkerThread and (self.activeLeaderboardRequestId ~= nil or self.activeLevelSelectPreviewRequestId ~= nil) then
         local threadError = self.leaderboardWorkerThread:getError()
         if threadError then
-            self.activeLeaderboardRequestId = nil
-            self.activeLeaderboardRequestStartedAt = nil
-            self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
-            if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
-                self.leaderboardState = self:buildLeaderboardState(
-                    LEADERBOARD_STATUS_ERROR,
-                    threadError,
-                    cacheEntry.payload,
-                    cacheEntry.fetchedAt
-                )
+            if self.activeLeaderboardRequestId ~= nil then
+                self.activeLeaderboardRequestId = nil
+                self.activeLeaderboardRequestStartedAt = nil
+                self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
+                if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
+                    self.leaderboardState = self:buildLeaderboardState(
+                        LEADERBOARD_STATUS_ERROR,
+                        threadError,
+                        cacheEntry.payload,
+                        cacheEntry.fetchedAt
+                    )
+                end
+                self.activeLeaderboardRequestScopeKey = nil
             end
-            self.activeLeaderboardRequestScopeKey = nil
+
+            if self.activeLevelSelectPreviewRequestId ~= nil then
+                self.activeLevelSelectPreviewRequestId = nil
+                self.activeLevelSelectPreviewRequestStartedAt = nil
+                if activePreviewMapUuid and activePreviewMapUuid ~= "" then
+                    self.levelSelectPreviewNextFetchAtByMap[activePreviewMapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+                    if previewCacheEntry then
+                        self:setLevelSelectPreviewState(activePreviewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
+                    else
+                        self:setLevelSelectPreviewState(activePreviewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
+                    end
+                end
+                self.activeLevelSelectPreviewRequestMapUuid = nil
+            end
+
             self.leaderboardWorkerThread = nil
             return
         end
@@ -414,6 +712,24 @@ function Game:updateLeaderboardFetchState()
         end
     end
 
+    if self.activeLevelSelectPreviewRequestId ~= nil and self.activeLevelSelectPreviewRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeLevelSelectPreviewRequestStartedAt
+        if elapsedSeconds >= LEVEL_SELECT_PREVIEW_FETCH_TIMEOUT_SECONDS then
+            local previewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
+            self.activeLevelSelectPreviewRequestId = nil
+            self.activeLevelSelectPreviewRequestStartedAt = nil
+            if previewMapUuid and previewMapUuid ~= "" then
+                self.levelSelectPreviewNextFetchAtByMap[previewMapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+                if self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
+                    self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
+                else
+                    self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
+                end
+            end
+            self.activeLevelSelectPreviewRequestMapUuid = nil
+        end
+    end
+
     while true do
         local encodedResponse = self.leaderboardResponseChannel:pop()
         if not encodedResponse then
@@ -421,11 +737,17 @@ function Game:updateLeaderboardFetchState()
         end
 
         local decodedResponse = json.decode(encodedResponse)
-        if type(decodedResponse) == "table" and decodedResponse.requestId == self.activeLeaderboardRequestId then
+        if type(decodedResponse) == "table" and decodedResponse.kind == "fetch" and decodedResponse.requestId == self.activeLeaderboardRequestId then
             self.activeLeaderboardRequestId = nil
             self.activeLeaderboardRequestStartedAt = nil
             self:applyLeaderboardFetchResult(decodedResponse)
             self.activeLeaderboardRequestScopeKey = nil
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "preview" and decodedResponse.requestId == self.activeLevelSelectPreviewRequestId then
+            local previewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
+            self.activeLevelSelectPreviewRequestId = nil
+            self.activeLevelSelectPreviewRequestStartedAt = nil
+            self.activeLevelSelectPreviewRequestMapUuid = nil
+            self:applyLevelSelectPreviewFetchResult(decodedResponse, previewMapUuid)
         end
     end
 
@@ -442,6 +764,18 @@ function Game:updateLeaderboardFetchState()
         end
 
         self:beginLeaderboardFetch(onlineConfig)
+    end
+
+    local previewMapUuid = self:getActiveLevelSelectPreviewMapUuid()
+    if previewMapUuid and self.activeLevelSelectPreviewRequestId == nil and not self:isLevelSelectPreviewCacheFresh(previewMapUuid) and self:isLevelSelectPreviewFetchAllowed(previewMapUuid) then
+        local onlineConfig = self:getActiveOnlineConfig()
+        if onlineConfig.isConfigured then
+            self:beginLevelSelectPreviewFetch(onlineConfig, previewMapUuid)
+        elseif self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
+            self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
+        else
+            self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
+        end
     end
 end
 
@@ -558,6 +892,7 @@ function Game:submitResultsScore()
             and "Score was valid, but your online best for this map is already higher."
             or "Score uploaded successfully.",
     }
+    self:updateLevelSelectPreviewCacheFromSubmit(response)
 end
 
 function Game:refreshLeaderboard()
@@ -728,6 +1063,7 @@ end
 function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
     self.levelSelectScroll = 0
+    self:clearLevelSelectLeaderboardFlip()
 end
 
 function Game:resetLevelSelectVisualIndex()
@@ -741,6 +1077,7 @@ function Game:setLevelSelectFilter(filterId)
     self:getSelectedLevelMap()
     self:resetLevelSelectVisualIndex()
     self.levelSelectScroll = 0
+    self:clearLevelSelectLeaderboardFlip()
 end
 
 function Game:updateLevelSelectAnimation(dt)
@@ -770,6 +1107,7 @@ function Game:moveLevelSelectSelection(direction)
     if #maps == 0 then
         self.levelSelectSelectedId = nil
         self.levelSelectScroll = 0
+        self:clearLevelSelectLeaderboardFlip()
         return nil
     end
 
@@ -789,6 +1127,7 @@ function Game:moveLevelSelectSelection(direction)
     end
 
     self.levelSelectSelectedId = maps[nextIndex].id
+    self:clearLevelSelectLeaderboardFlip()
     return maps[nextIndex]
 end
 
@@ -802,6 +1141,23 @@ function Game:scrollLevelSelect(delta)
     for _ = 1, steps do
         self:moveLevelSelectSelection(direction)
     end
+end
+
+function Game:toggleLevelSelectLeaderboardFlip(mapDescriptor)
+    local mapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
+    if not mapUuid or mapUuid == "" then
+        return
+    end
+
+    if self.levelSelectLeaderboardFlipMapUuid == mapUuid then
+        self:clearLevelSelectLeaderboardFlip()
+        return
+    end
+
+    self.levelSelectSelectedId = mapDescriptor.id
+    self.levelSelectScroll = 0
+    self.levelSelectLeaderboardFlipMapUuid = mapUuid
+    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil)
 end
 
 function Game:getBuiltinShortcutMap(index)
@@ -836,6 +1192,7 @@ function Game:openLevelSelect()
     self.levelSelectIssue = nil
     self.levelSelectFilter = "all"
     self.levelSelectFilterHoverId = nil
+    self:clearLevelSelectLeaderboardFlip()
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self:refreshMaps()
@@ -1253,7 +1610,7 @@ function Game:mousepressed(x, y, button)
     end
 
     if self.screen == "level_select" then
-        local hit = ui.getLevelSelectHit(self, viewportX, viewportY)
+        local hit = ui.getLevelSelectHit(self, viewportX, viewportY, button)
         if not hit then
             return
         end
@@ -1270,6 +1627,8 @@ function Game:mousepressed(x, y, button)
             return
         elseif hit.kind == "select_map" then
             self:setLevelSelectSelection(hit.map)
+        elseif hit.kind == "toggle_leaderboard_card" then
+            self:toggleLevelSelectLeaderboardFlip(hit.map)
         elseif hit.kind == "open_map" then
             self:setLevelSelectSelection(hit.map)
             local ok, startError, mapData = self:startMap(hit.map)
