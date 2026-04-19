@@ -132,6 +132,23 @@ local function formatColorLabel(colorId)
     return colorId:sub(1, 1):upper() .. colorId:sub(2)
 end
 
+local function appendUnique(list, lookup, value)
+    if value and not lookup[value] then
+        lookup[value] = true
+        list[#list + 1] = value
+    end
+end
+
+local function compareScheduledTrains(firstTrain, secondTrain)
+    local firstSpawn = firstTrain.spawnTime or 0
+    local secondSpawn = secondTrain.spawnTime or 0
+    if math.abs(firstSpawn - secondSpawn) > 0.0001 then
+        return firstSpawn < secondSpawn
+    end
+
+    return tostring(firstTrain.id or "") < tostring(secondTrain.id or "")
+end
+
 local function denormalizePoints(points, viewportW, viewportH)
     local denormalized = {}
 
@@ -821,6 +838,7 @@ function world:initializeLevel()
                 completed = false,
                 completedAt = nil,
                 clearedAt = nil,
+                clearingExitEdgeId = nil,
                 deliveredCorrectly = false,
                 deliveredLate = false,
                 failedWrongDestination = false,
@@ -866,6 +884,7 @@ function world:spawnTrain(train)
     train.exiting = false
     train.exitFadeRemaining = 0
     train.clearedAt = nil
+    train.clearingExitEdgeId = nil
 end
 
 function world:isTrainCleared(train)
@@ -889,6 +908,7 @@ function world:beginTrainExit(train)
     train.exiting = true
     train.exitFadeRemaining = self.exitFadeDuration
     train.clearedAt = self.elapsedTime
+    train.clearingExitEdgeId = train.clearingExitEdgeId or (currentEdge and currentEdge.id or nil)
 end
 
 function world:completeTrain(train)
@@ -1273,6 +1293,9 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
     train.edgeId = outputEdge.id
     train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
     self:trimTrainOccupiedEdges(train)
+    if outputEdge.targetType == "exit" then
+        train.clearingExitEdgeId = outputEdge.id
+    end
 
     if junction.control.type == "trip" and junction.control.remainingTrips > 0 and not junction.control.pendingResetTrainId then
         junction.control.pendingResetTrainId = train.id
@@ -1562,6 +1585,111 @@ end
 
 function world:getCurrentScore()
     return self:getRunSummary().finalScore
+end
+
+function world:getInputEdgeGroups()
+    local groupsByEdgeId = {}
+    local orderedGroups = {}
+
+    for _, junction in ipairs(self.junctionOrder or {}) do
+        for _, inputEdge in ipairs(junction.inputs or {}) do
+            if not groupsByEdgeId[inputEdge.id] then
+                groupsByEdgeId[inputEdge.id] = {
+                    edge = inputEdge,
+                    trains = {},
+                }
+                orderedGroups[#orderedGroups + 1] = groupsByEdgeId[inputEdge.id]
+            end
+        end
+    end
+
+    for _, train in ipairs(self.trains or {}) do
+        local inputEdgeId = train.startEdgeId or train.edgeId
+        local group = groupsByEdgeId[inputEdgeId]
+        if group then
+            group.trains[#group.trains + 1] = train
+        end
+    end
+
+    for _, group in ipairs(orderedGroups) do
+        table.sort(group.trains, compareScheduledTrains)
+    end
+
+    return orderedGroups
+end
+
+function world:getNextPendingTrainForInputEdge(edgeId)
+    local nextTrain = nil
+
+    for _, train in ipairs(self.trains or {}) do
+        local inputEdgeId = train.startEdgeId or train.edgeId
+        if inputEdgeId == edgeId and not train.spawned and not self:isTrainCleared(train) then
+            if not nextTrain or compareScheduledTrains(train, nextTrain) then
+                nextTrain = train
+            end
+        end
+    end
+
+    return nextTrain
+end
+
+function world:getOutputAcceptedGoalColors(outputEdge)
+    local colors = {}
+    local lookup = {}
+
+    for _, colorId in ipairs(outputEdge and outputEdge.colors or {}) do
+        appendUnique(colors, lookup, colorId)
+    end
+
+    if outputEdge and outputEdge.adoptInputColor then
+        local sourceJunction = self.junctions[outputEdge.sourceId]
+        for _, inputEdge in ipairs(sourceJunction and sourceJunction.inputs or {}) do
+            for _, colorId in ipairs(inputEdge.colors or {}) do
+                appendUnique(colors, lookup, colorId)
+            end
+        end
+    end
+
+    if #colors == 0 and outputEdge then
+        appendUnique(colors, lookup, nearestColorId(outputEdge.color))
+    end
+
+    return colors
+end
+
+function world:getOutputBadgeGroups()
+    local orderedGroups = {}
+
+    for _, junction in ipairs(self.junctionOrder or {}) do
+        for _, outputEdge in ipairs(junction.outputs or {}) do
+            local acceptedColors = self:getOutputAcceptedGoalColors(outputEdge)
+            local acceptedLookup = {}
+            for _, colorId in ipairs(acceptedColors) do
+                acceptedLookup[colorId] = true
+            end
+
+            local expectedCount = 0
+            local deliveredCount = 0
+            for _, train in ipairs(self.trains or {}) do
+                local goalColor = train.goalColor or train.trainColor
+                if acceptedLookup[goalColor] then
+                    expectedCount = expectedCount + 1
+                end
+                if train.clearingExitEdgeId == outputEdge.id and self:isTrainCleared(train) then
+                    deliveredCount = deliveredCount + 1
+                end
+            end
+
+            orderedGroups[#orderedGroups + 1] = {
+                edge = outputEdge,
+                expectedCount = expectedCount,
+                deliveredCount = deliveredCount,
+                acceptedColors = acceptedColors,
+            }
+        end
+    end
+
+    return orderedGroups
 end
 
 function world:getNextQueuedTrain()
