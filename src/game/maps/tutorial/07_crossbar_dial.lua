@@ -1,6 +1,5 @@
 return {
     version = 1,
-    mapUuid = "e806cef3-7f32-482d-a367-acaa5e470545",
     name = "Map 7: Crossbar Dial",
     previewDescription = "The active input is always routed to the mirrored exit.",
     template = true,

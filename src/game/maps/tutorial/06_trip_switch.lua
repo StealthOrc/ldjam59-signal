@@ -1,6 +1,5 @@
 return {
     version = 1,
-    mapUuid = "e042a65d-e425-40e0-8c36-43a4acd0d69b",
     name = "Map 6: Trip Switch",
     previewDescription = "One click arms the next passing train only.",
     template = true,

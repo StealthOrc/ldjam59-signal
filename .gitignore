@@ -43,11 +43,6 @@ dist/
 
 # Local tooling metadata
 .codex/
-.env
-
-# Local environment secrets
-.env
-.env.*
 
 *claude
 
@@ -59,4 +54,3 @@ settings.json
 /AGENTS.md
 .idea
 *idea/
-.env

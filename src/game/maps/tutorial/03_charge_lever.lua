@@ -1,6 +1,5 @@
 return {
     version = 1,
-    mapUuid = "95eac4e5-4297-4a36-a113-231debbeca96",
     name = "Map 3: Charge Lever",
     template = true,
     editor = {

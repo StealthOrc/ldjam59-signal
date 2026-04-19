@@ -61,68 +61,14 @@ local PLAY_OVERLAY = {
     sectionGap = 14,
 }
 
-local MENU_LAYOUT = {
-    buttonWidth = 320,
-    buttonHeight = 56,
-    buttonGap = 16,
-    firstButtonY = 248,
-    debugMarginX = 36,
-    debugMarginY = 36,
-    debugWidth = 240,
-    debugHeight = 48,
-    footerY = 654,
-}
-
-local LEADERBOARD_LOADING = {
-    spinnerRadius = 18,
-    spinnerThickness = 4,
-    spinnerArcLength = math.pi * 1.35,
-    spinnerSpeed = 3.2,
-    emptyStateYOffset = 180,
-    emptySpinnerYOffset = 34,
-    emptyTextYOffset = 68,
-}
-
-local LEADERBOARD_LAYOUT = {
-    panelX = 36,
-    panelY = 100,
-    panelMargin = 72,
-    contentPadding = 28,
-    titlePadding = 24,
-    headerY = 116,
-    rowYOffset = 28,
-    rowHeight = 34,
+local PLAY_HEADER = {
+    x = 22,
+    y = 20,
+    paddingX = 18,
+    paddingY = 12,
+    titleGap = 14,
     rowGap = 8,
-    rowRadius = 10,
-    rankWidth = 40,
-    mapGap = 28,
-    mapWidth = 260,
-    playerXOffset = 52,
-    playerRightPadding = 36,
-    scoreWidth = 120,
-    tooltipWidth = 360,
-    tooltipHeight = 62,
-    tooltipOffsetY = 18,
-    filterBadgeY = 74,
-    filterBadgeHeight = 28,
-    filterBadgePaddingX = 16,
-    filterBadgeMaxWidth = 460,
-}
-
-local LEVEL_SELECT_LEADERBOARD_CARD = {
-    inset = 18,
-    titleTop = 20,
-    maxRows = 5,
-    rowTop = 56,
-    rowHeight = 24,
-    rowGap = 6,
-    rowRadius = 10,
-    rowPaddingX = 10,
-    rankWidth = 32,
-    scoreWidth = 76,
-    pinnedGap = 12,
-    statusPaddingX = 20,
-    statusWidthMargin = 40,
+    radius = 18,
 }
 
 local function pointInRect(x, y, rect)
@@ -134,6 +80,37 @@ end
 
 local function lerp(a, b, t)
     return a + ((b - a) * t)
+end
+
+local function clamp(value, minValue, maxValue)
+    if value < minValue then
+        return minValue
+    end
+    if value > maxValue then
+        return maxValue
+    end
+    return value
+end
+
+local function angleBetweenPoints(a, b)
+    local dx = (b and b.x or 0) - (a and a.x or 0)
+    local dy = (b and b.y or 0) - (a and a.y or 0)
+    if math.atan2 then
+        return math.atan2(dy, dx)
+    end
+
+    if dx == 0 then
+        if dy >= 0 then
+            return math.pi * 0.5
+        end
+        return -math.pi * 0.5
+    end
+
+    local angle = math.atan(dy / dx)
+    if dx < 0 then
+        angle = angle + math.pi
+    end
+    return angle
 end
 
 local function drawButton(rect, label, fillColor, strokeColor, font)
@@ -179,143 +156,6 @@ local function drawMetalPanel(rect, innerAlpha)
     graphics.setColor(PANEL_COLORS.panelInnerLine[1], PANEL_COLORS.panelInnerLine[2], PANEL_COLORS.panelInnerLine[3], PANEL_COLORS.panelInnerLine[4])
     graphics.rectangle("line", rect.x + 4, rect.y + 4, rect.w - 8, rect.h - 8, 17, 17)
     graphics.setLineWidth(1)
-end
-
-local function drawLoadingSpinner(centerX, centerY, color)
-    local graphics = love.graphics
-    local tint = color or { 0.48, 0.92, 0.62, 1 }
-    local startAngle = (love.timer.getTime() or 0) * LEADERBOARD_LOADING.spinnerSpeed
-    local endAngle = startAngle + LEADERBOARD_LOADING.spinnerArcLength
-
-    graphics.setColor(tint[1], tint[2], tint[3], tint[4] or 1)
-    graphics.setLineWidth(LEADERBOARD_LOADING.spinnerThickness)
-    graphics.arc("line", "open", centerX, centerY, LEADERBOARD_LOADING.spinnerRadius, startAngle, endAngle)
-    graphics.setLineWidth(1)
-end
-
-local function getLeaderboardPanelRect(game)
-    return {
-        x = LEADERBOARD_LAYOUT.panelX,
-        y = LEADERBOARD_LAYOUT.panelY,
-        w = game.viewport.w - LEADERBOARD_LAYOUT.panelMargin,
-        h = game.viewport.h - 148,
-    }
-end
-
-local function shouldShowLeaderboardMapColumn(game)
-    local state = game.leaderboardState or {}
-    return state.scope == "global"
-end
-
-local function getLeaderboardContentLayout(game)
-    local panel = getLeaderboardPanelRect(game)
-    local contentX = panel.x + LEADERBOARD_LAYOUT.contentPadding
-    local contentW = panel.w - (LEADERBOARD_LAYOUT.contentPadding * 2)
-    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
-    local mapX = scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap
-    local playerX = contentX + LEADERBOARD_LAYOUT.playerXOffset
-    local playerRightEdge = shouldShowLeaderboardMapColumn(game)
-        and (mapX - LEADERBOARD_LAYOUT.mapGap)
-        or scoreX
-    local playerWidth = playerRightEdge - playerX - LEADERBOARD_LAYOUT.playerRightPadding
-
-    return {
-        panel = panel,
-        contentX = contentX,
-        contentW = contentW,
-        mapX = mapX,
-        scoreX = scoreX,
-        playerX = playerX,
-        playerWidth = playerWidth,
-    }
-end
-
-local function getLeaderboardFilterBadgeRect(game)
-    local panel = getLeaderboardPanelRect(game)
-    local filterText = game.leaderboardMapUuid
-        and string.format("Current Map: %s", game:getMapNameByUuid(game.leaderboardMapUuid))
-        or "All Maps"
-    local badgeWidth = math.min(
-        LEADERBOARD_LAYOUT.filterBadgeMaxWidth,
-        game.fonts.small:getWidth(filterText) + (LEADERBOARD_LAYOUT.filterBadgePaddingX * 2)
-    )
-
-    return {
-        x = panel.x + math.floor((panel.w - badgeWidth) * 0.5 + 0.5),
-        y = panel.y + LEADERBOARD_LAYOUT.filterBadgeY,
-        w = badgeWidth,
-        h = LEADERBOARD_LAYOUT.filterBadgeHeight,
-        text = filterText,
-    }
-end
-
-local function buildLeaderboardRowRects(game, entries)
-    local layout = getLeaderboardContentLayout(game)
-    local rects = {}
-    local maxEntries = math.min(12, #(entries or {}))
-    local rowY = layout.panel.y + LEADERBOARD_LAYOUT.headerY + LEADERBOARD_LAYOUT.rowYOffset
-
-    for index = 1, maxEntries do
-        local entry = entries[index]
-        local rowRect = {
-            entry = entry,
-            row = {
-                x = layout.contentX,
-                y = rowY - 6,
-                w = layout.contentW,
-                h = LEADERBOARD_LAYOUT.rowHeight,
-            },
-            player = {
-                x = layout.playerX,
-                y = rowY,
-                w = layout.playerWidth,
-                h = game.fonts.small:getHeight() + 8,
-            },
-            map = shouldShowLeaderboardMapColumn(game) and {
-                x = layout.mapX,
-                y = rowY,
-                w = LEADERBOARD_LAYOUT.mapWidth,
-                h = game.fonts.small:getHeight() + 8,
-            } or nil,
-        }
-
-        rects[#rects + 1] = rowRect
-        rowY = rowY + LEADERBOARD_LAYOUT.rowHeight + LEADERBOARD_LAYOUT.rowGap
-    end
-
-    return rects
-end
-
-local function drawLeaderboardTooltip(game, hoverInfo)
-    if not hoverInfo or not hoverInfo.text or hoverInfo.text == "" then
-        return
-    end
-
-    local graphics = love.graphics
-    local tooltipX = math.min(game.viewport.w - LEADERBOARD_LAYOUT.tooltipWidth - 24, math.max(24, hoverInfo.x - (LEADERBOARD_LAYOUT.tooltipWidth * 0.5)))
-    local tooltipY = math.min(game.viewport.h - LEADERBOARD_LAYOUT.tooltipHeight - 24, hoverInfo.y + LEADERBOARD_LAYOUT.tooltipOffsetY)
-
-    graphics.setColor(0.06, 0.08, 0.12, 0.98)
-    graphics.rectangle("fill", tooltipX, tooltipY, LEADERBOARD_LAYOUT.tooltipWidth, LEADERBOARD_LAYOUT.tooltipHeight, 14, 14)
-    graphics.setColor(0.32, 0.42, 0.52, 1)
-    graphics.rectangle("line", tooltipX, tooltipY, LEADERBOARD_LAYOUT.tooltipWidth, LEADERBOARD_LAYOUT.tooltipHeight, 14, 14)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf(hoverInfo.label, tooltipX + 16, tooltipY + 10, LEADERBOARD_LAYOUT.tooltipWidth - 32, "left")
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(hoverInfo.text, tooltipX + 16, tooltipY + 28, LEADERBOARD_LAYOUT.tooltipWidth - 32, "left")
-end
-
-local function getMenuDebugButton(game)
-    return {
-        id = "debug",
-        x = MENU_LAYOUT.debugMarginX,
-        y = game.viewport.h - MENU_LAYOUT.debugMarginY - MENU_LAYOUT.debugHeight,
-        w = MENU_LAYOUT.debugWidth,
-        h = MENU_LAYOUT.debugHeight,
-        label = game:isDebugModeEnabled() and "Debug Mode: On" or "Debug Mode: Off",
-    }
 end
 
 local function getPlayInfoOverlayRect(game)
@@ -431,16 +271,22 @@ local function getTrainStatusText(worldState, train)
 end
 
 local function buildPlayHelpSections(game)
+    local controlLines = {
+        "Left click a junction to activate its control.",
+        "Left click the selector below a junction to cycle outputs forward.",
+        "Right click the selector below a junction to cycle outputs backward.",
+        "M opens the menu. E opens the editor. R restarts the run.",
+        "F2 closes this help panel. F3 opens the debug panel.",
+    }
+
+    if game.playPhase == "prepare" then
+        controlLines[#controlLines + 1] = "Use the Start button when your routes are set."
+    end
+
     local sections = {
         {
             title = "Controls",
-            lines = {
-                "Left click a junction to activate its control.",
-                "Left click the selector below a junction to cycle outputs forward.",
-                "Right click the selector below a junction to cycle outputs backward.",
-                "M opens the menu. E opens the editor. R restarts the run.",
-                "F2 closes this help panel. F3 opens the debug panel.",
-            },
+            lines = controlLines,
         },
         {
             title = "Junctions",
@@ -458,7 +304,34 @@ end
 
 local function buildPlayDebugSections(game)
     local runSummary = game.world:getRunSummary()
+    local nextTrain = game.world:getNextQueuedTrain()
+    local nextDeadline = game.world:getNearestPendingDeadline()
     local sections = {
+        {
+            title = "Run Stats",
+            lines = {
+                string.format("Phase: %s", game.playPhase == "prepare" and "Preparation" or "Play"),
+                string.format("Elapsed: %.1fs", game.world.elapsedTime or 0),
+                game.world.timeRemaining and string.format("Time left: %.1fs", game.world.timeRemaining) or "Time left: Unlimited",
+                string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains),
+                string.format("Interactions: %d", runSummary.interactionCount or 0),
+                string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
+                nextTrain and string.format(
+                    "Next spawn: %s at %.1fs",
+                    game.world:getTrainSummary(nextTrain),
+                    nextTrain.spawnTime or 0
+                ) or "Next spawn: none",
+                nextDeadline and string.format(
+                    "Nearest deadline: %s by %.1fs",
+                    game.world:getTrainSummary(nextDeadline),
+                    nextDeadline.deadline or 0
+                ) or "Nearest deadline: none",
+            },
+        },
+        {
+            title = "Active Routes",
+            lines = { game.world:getActiveRouteSummary() },
+        },
         {
             title = "Junction State",
             lines = {},
@@ -467,54 +340,23 @@ local function buildPlayDebugSections(game)
             title = "Train Queue",
             lines = {},
         },
-        {
-            title = "Run Stats",
-            lines = {
-                string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #(game.world.trains or {})),
-                string.format("Interactions: %d", runSummary.interactionCount or 0),
-                string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
-            },
-        },
     }
     local worldState = game.world
-    local queueGroups = {}
-    local orderedGroups = {}
 
     for _, junction in ipairs(worldState.junctionOrder or {}) do
-        sections[1].lines[#sections[1].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
-        sections[1].lines[#sections[1].lines + 1] = getJunctionStateText(junction)
+        sections[3].lines[#sections[3].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
+        sections[3].lines[#sections[3].lines + 1] = getJunctionStateText(junction)
     end
 
-    for _, train in ipairs(worldState.trains or {}) do
-        local startEdgeId = train.startEdgeId or train.edgeId
-        local startEdge = worldState.edges[startEdgeId]
-        if not queueGroups[startEdgeId] then
-            queueGroups[startEdgeId] = {
-                label = startEdge and startEdge.label or startEdgeId,
-                trains = {},
-            }
-            orderedGroups[#orderedGroups + 1] = queueGroups[startEdgeId]
-        end
-        queueGroups[startEdgeId].trains[#queueGroups[startEdgeId].trains + 1] = train
-    end
-
-    table.sort(orderedGroups, function(firstGroup, secondGroup)
-        return firstGroup.label < secondGroup.label
-    end)
-
-    for _, group in ipairs(orderedGroups) do
-        table.sort(group.trains, function(firstTrain, secondTrain)
-            return (firstTrain.startProgress or 0) > (secondTrain.startProgress or 0)
-        end)
-
-        sections[2].lines[#sections[2].lines + 1] = string.format("%s queue", group.label)
+    for _, group in ipairs(worldState:getInputEdgeGroups()) do
+        sections[4].lines[#sections[4].lines + 1] = string.format("%s queue", group.edge.label or group.edge.id)
         for index, train in ipairs(group.trains) do
-            sections[2].lines[#sections[2].lines + 1] = string.format(
+            sections[4].lines[#sections[4].lines + 1] = string.format(
                 "%d. %s | start %.0f | %.2fx | %s",
                 index,
                 train.id,
-                train.startProgress or 0,
-                train.speedScale or 1,
+                train.spawnTime or 0,
+                train.speed / math.max(1, worldState.trainSpeed),
                 getTrainStatusText(worldState, train)
             )
         end
@@ -1126,113 +968,6 @@ local function drawLevelSelectTitleBar(game, selectedMap)
     graphics.printf(getMapKindLabel(selectedMap), barRect.x + 30, barRect.y + 48, barRect.w - 60, "center")
 end
 
-local function isLevelSelectLeaderboardCardFlipped(game, rect)
-    local mapUuid = rect and rect.map and rect.map.mapUuid or nil
-    return rect
-        and rect.selected
-        and mapUuid
-        and mapUuid ~= ""
-        and game.levelSelectLeaderboardFlipMapUuid == mapUuid
-end
-
-local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
-    local graphics = love.graphics
-    local fillColor = isHighlighted and { 0.16, 0.28, 0.38, 0.98 } or { 0.08, 0.11, 0.15, 0.96 }
-    local lineColor = isHighlighted and { 0.48, 0.72, 0.92, 1 } or { 0.24, 0.32, 0.4, 1 }
-
-    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
-    graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius)
-    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], lineColor[4])
-    graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
-    graphics.printf(
-        tostring(entry.rank or "-"),
-        rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
-        rowRect.y + 4,
-        LEVEL_SELECT_LEADERBOARD_CARD.rankWidth,
-        "left"
-    )
-
-    local nameX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX + LEVEL_SELECT_LEADERBOARD_CARD.rankWidth
-    local nameWidth = rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.rankWidth - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - (LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX * 2)
-    graphics.printf(
-        tostring(entry.playerDisplayName or "Unknown"),
-        nameX,
-        rowRect.y + 4,
-        math.max(0, nameWidth),
-        "left"
-    )
-
-    graphics.printf(
-        formatScore(entry.score or 0),
-        rowRect.x + rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
-        rowRect.y + 4,
-        LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth,
-        "right"
-    )
-end
-
-local function drawLevelSelectLeaderboardBack(game, rect)
-    local graphics = love.graphics
-    local contentRect = {
-        x = rect.x + LEVEL_SELECT_LEADERBOARD_CARD.inset,
-        y = rect.y + LEVEL_SELECT_LEADERBOARD_CARD.inset,
-        w = rect.w - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
-        h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
-    }
-    local previewState = game:getLevelSelectPreviewDisplayState(rect.map.mapUuid)
-    local topEntries = previewState.topEntries or {}
-    local pinnedPlayerEntry = previewState.pinnedPlayerEntry
-    local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
-
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
-    graphics.printf("Leaderboard", contentRect.x, contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.titleTop, contentRect.w, "center")
-
-    for index, entry in ipairs(topEntries) do
-        local rowRect = {
-            x = contentRect.x,
-            y = rowY,
-            w = contentRect.w,
-            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
-        }
-        local isPlayerEntry = tostring(entry.playerUuid or "") == tostring(game.profile and game.profile.playerId or "")
-        drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
-        rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
-        if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows then
-            break
-        end
-    end
-
-    if pinnedPlayerEntry then
-        local pinnedRowRect = {
-            x = contentRect.x,
-            y = contentRect.y + contentRect.h - LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
-            w = contentRect.w,
-            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
-        }
-        drawLevelSelectLeaderboardRow(game, pinnedRowRect, pinnedPlayerEntry, true)
-    elseif previewState.isLoading and #topEntries == 0 then
-        drawLoadingSpinner(
-            contentRect.x + math.floor(contentRect.w * 0.5 + 0.5),
-            contentRect.y + math.floor(contentRect.h * 0.56 + 0.5),
-            { 0.48, 0.92, 0.62, 1 }
-        )
-    elseif previewState.message then
-        love.graphics.setFont(game.fonts.small)
-        graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
-        graphics.printf(
-            previewState.message,
-            contentRect.x + LEVEL_SELECT_LEADERBOARD_CARD.statusPaddingX,
-            contentRect.y + math.floor(contentRect.h * 0.52 + 0.5),
-            math.max(0, contentRect.w - LEVEL_SELECT_LEADERBOARD_CARD.statusWidthMargin),
-            "center"
-        )
-    end
-end
-
 local function drawLevelCard(game, rect)
     local graphics = love.graphics
     local descriptor = rect.map
@@ -1255,14 +990,10 @@ local function drawLevelCard(game, rect)
         graphics.rectangle("line", rect.x - 6, rect.y - 6, rect.w + 12, rect.h + 12, 22, 22)
     end
 
-    if isLevelSelectLeaderboardCardFlipped(game, rect) then
-        drawLevelSelectLeaderboardBack(game, rect)
-    else
-        drawMapPreview(descriptor, rect.previewRect)
+    drawMapPreview(descriptor, rect.previewRect)
 
-        local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
-        drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
-    end
+    local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
+    drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
 end
 
 local function drawLevelSelectEmptyState(game, filterId)
@@ -1289,60 +1020,6 @@ local function drawLevelSelectEmptyState(game, filterId)
     end
 end
 
-local function getMenuButtons(game)
-    local centerX = math.floor((game.viewport.w - MENU_LAYOUT.buttonWidth) * 0.5 + 0.5)
-    local buttonY = MENU_LAYOUT.firstButtonY
-    return {
-        {
-            id = "play",
-            x = centerX,
-            y = buttonY,
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Level Select",
-        },
-        {
-            id = "leaderboard",
-            x = centerX,
-            y = buttonY + MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap,
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Online Leaderboard",
-        },
-        {
-            id = "editor",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 2),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Map Editor",
-        },
-        {
-            id = "quit",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 3),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Quit",
-        },
-    }
-end
-
-local function getProfileSetupConfirmRect(game)
-    return {
-        x = game.viewport.w * 0.5 - 110,
-        y = 430,
-        w = 220,
-        h = 52,
-    }
-end
-
-local function getLeaderboardActionRects(game)
-    return {
-        back = { x = 42, y = 38, w = 148, h = 42 },
-    }
-end
-
 function ui.getLevelSelectMapDescriptors(game)
     return getLevelSelectMaps(game)
 end
@@ -1360,7 +1037,12 @@ function ui.scrollLevelSelectToMap(_, _, currentScroll)
 end
 
 function ui.getMenuActionAt(game, x, y)
-    local buttons = getMenuButtons(game)
+    local centerX = game.viewport.w * 0.5 - 160
+    local buttons = {
+        { id = "play", x = centerX, y = 280, w = 320, h = 56 },
+        { id = "editor", x = centerX, y = 352, w = 320, h = 56 },
+        { id = "quit", x = centerX, y = 424, w = 320, h = 56 },
+    }
 
     for _, rect in ipairs(buttons) do
         if pointInRect(x, y, rect) then
@@ -1368,88 +1050,10 @@ function ui.getMenuActionAt(game, x, y)
         end
     end
 
-    if pointInRect(x, y, getMenuDebugButton(game)) then
-        return "debug"
-    end
-
     return nil
 end
 
-function ui.getProfileSetupActionAt(game, x, y)
-    if pointInRect(x, y, getProfileSetupConfirmRect(game)) then
-        return "confirm"
-    end
-    return nil
-end
-
-function ui.getLeaderboardActionAt(game, x, y)
-    local buttons = getLeaderboardActionRects(game)
-    if pointInRect(x, y, buttons.back) then
-        return "back"
-    end
-    if pointInRect(x, y, getLeaderboardFilterBadgeRect(game)) then
-        return "cycle_filter"
-    end
-    return nil
-end
-
-function ui.getLeaderboardHoverInfoAt(game, x, y)
-    local state = game.leaderboardState or { entries = {} }
-    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
-
-    for _, rowRect in ipairs(rowRects) do
-        if pointInRect(x, y, rowRect.player) then
-            return {
-                x = x,
-                y = y,
-                label = "Player ID",
-                text = rowRect.entry.playerUuid or "No player ID",
-            }
-        end
-
-        if rowRect.map and pointInRect(x, y, rowRect.map) then
-            local mapCount = tonumber(rowRect.entry.mapCount) or 0
-            local mapLabel = mapCount > 1
-                and string.format("Latest map UUID, %d maps total", mapCount)
-                or "Latest map UUID"
-            return {
-                x = x,
-                y = y,
-                label = mapLabel,
-                text = rowRect.entry.mapUuid or "No map UUID",
-            }
-        end
-    end
-
-    if pointInRect(x, y, getLeaderboardFilterBadgeRect(game)) then
-        return {
-            x = x,
-            y = y,
-            label = game.leaderboardMapUuid and "Map UUID" or "Map Filter",
-            text = game.leaderboardMapUuid or "Click to cycle through all maps.",
-        }
-    end
-
-    return nil
-end
-
-function ui.getLeaderboardMapHitAt(game, x, y)
-    local state = game.leaderboardState or { entries = {} }
-    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
-
-    for _, rowRect in ipairs(rowRects) do
-        if rowRect.map and pointInRect(x, y, rowRect.map) and rowRect.entry.mapUuid and rowRect.entry.mapUuid ~= "" then
-            return {
-                mapUuid = rowRect.entry.mapUuid,
-                mapName = rowRect.entry.mapName,
-            }
-        end
-    end
-
-    return nil
-end
-
-function ui.getLevelSelectHit(game, x, y, button)
+function ui.getLevelSelectHit(game, x, y)
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
         if pointInRect(x, y, overlay.edit) then
@@ -1493,9 +1097,6 @@ function ui.getLevelSelectHit(game, x, y, button)
 
     for _, rect in ipairs(cardRects) do
         if pointInRect(x, y, rect) then
-            if button == 2 and rect.selected then
-                return { kind = "toggle_leaderboard_card", map = rect.map }
-            end
             if rect.selected then
                 return { kind = "open_map", map = rect.map }
             end
@@ -1526,23 +1127,350 @@ function ui.getLevelSelectFilterHoverId(game, x, y)
     return nil
 end
 
-function ui.getPlayBackHit(_, x, y)
-    return pointInRect(x, y, {
+local function getPlayBackRect()
+    return {
         x = 1114,
         y = 28,
         w = 134,
         h = 38,
-    })
+    }
+end
+
+local function getPlayStartRect()
+    return {
+        x = 1048,
+        y = 74,
+        w = 200,
+        h = 46,
+    }
+end
+
+local function formatTimeValue(value)
+    if value == nil then
+        return "--"
+    end
+    return string.format("%.1f", value)
+end
+
+local function getColorLabel(colorId)
+    if not colorId then
+        return "--"
+    end
+    return colorId:sub(1, 1):upper() .. colorId:sub(2)
+end
+
+local function getTrackOuterAnchor(track, isOutput)
+    local points = track and track.path and track.path.points or {}
+    if #points == 0 then
+        return 0, 0, 0, -1
+    end
+
+    local outerPoint
+    local innerPoint
+    if isOutput then
+        outerPoint = points[#points]
+        innerPoint = points[#points - 1] or outerPoint
+    else
+        outerPoint = points[1]
+        innerPoint = points[2] or outerPoint
+    end
+
+    local angle = angleBetweenPoints(outerPoint, innerPoint)
+    local dirX = math.cos(angle)
+    local dirY = math.sin(angle)
+    if not isOutput then
+        dirX = -dirX
+        dirY = -dirY
+    end
+
+    return outerPoint.x, outerPoint.y, dirX, dirY
+end
+
+local function getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, height, offset)
+    local push = offset or 18
+    local targetX = anchorX + dirX * push
+    local targetY = anchorY + dirY * push
+    local rectX = targetX - width * 0.5
+    local rectY
+
+    if math.abs(dirX) > math.abs(dirY) then
+        if dirX < 0 then
+            rectX = targetX - width - 10
+        else
+            rectX = targetX + 10
+        end
+        rectY = targetY - height * 0.5
+    else
+        if dirY < 0 then
+            rectY = targetY - height - 10
+        else
+            rectY = targetY + 10
+        end
+    end
+
+    return {
+        x = clamp(rectX, 18, game.viewport.w - width - 18),
+        y = clamp(rectY or (targetY - height * 0.5), 82, game.viewport.h - height - 70),
+        w = width,
+        h = height,
+    }
+end
+
+local PREP_TRAIN_ROW_SPACING = 8
+local PREP_TRAIN_ARROW_LENGTH = 19
+local getPrepTrainRowWidth
+
+local function getInputPrepCardRect(game, edge, trainCount)
+    local rowCount = math.max(1, trainCount or 0)
+    local height = 20 + rowCount * 44
+    local width = 140
+
+    for _, group in ipairs(game.world:getInputEdgeGroups()) do
+        if group.edge.id == edge.id then
+            for _, train in ipairs(group.trains or {}) do
+                width = math.max(width, getPrepTrainRowWidth(game, train) + 20)
+            end
+            break
+        end
+    end
+
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, false)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, height, 12)
+end
+
+local function getInputLiveCardRect(game, edge, train)
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, false)
+    local width = math.max(140, getPrepTrainRowWidth(game, train) + 20)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 54, 12)
+end
+
+local function getOutputBadgeRect(game, edge, badge)
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, true)
+    love.graphics.setFont(game.fonts.body)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
+    local width = math.max(64, game.fonts.body:getWidth(ratioText) + PREP_TRAIN_ROW_SPACING * 2 + 16)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 44, 12)
+end
+
+local function formatSecondsLabel(value)
+    return string.format("%ss", formatTimeValue(value))
+end
+
+local function getPrepTrainPreviewMetrics(game, train)
+    local wagonCount = math.max(1, train.wagonCount or 1)
+    local gap = 4
+    local carriageWidth = 16
+    local carriageHeight = 16
+    local countText = nil
+    local totalWidth
+    local iconCount = math.min(wagonCount, 5)
+
+    if wagonCount > 5 then
+        love.graphics.setFont(game.fonts.small)
+        countText = string.format("%dx", wagonCount)
+        totalWidth = game.fonts.small:getWidth(countText) + gap + carriageWidth
+        iconCount = 1
+    else
+        totalWidth = iconCount * carriageWidth + (iconCount - 1) * gap
+    end
+
+    return {
+        gap = gap,
+        wagonCount = wagonCount,
+        iconCount = iconCount,
+        countText = countText,
+        carriageWidth = carriageWidth,
+        carriageHeight = carriageHeight,
+        totalWidth = totalWidth,
+    }
+end
+
+local function getPrepTrainRowContentWidth(game, train)
+    love.graphics.setFont(game.fonts.small)
+
+    local startText = formatSecondsLabel(train.spawnTime or 0)
+    local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
+    local startWidth = game.fonts.small:getWidth(startText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local trainMetrics = getPrepTrainPreviewMetrics(game, train)
+
+    if deadlineText then
+        return startWidth
+            + PREP_TRAIN_ROW_SPACING
+            + PREP_TRAIN_ARROW_LENGTH
+            + PREP_TRAIN_ROW_SPACING
+            + deadlineWidth
+            + PREP_TRAIN_ROW_SPACING
+            + trainMetrics.totalWidth
+    end
+
+    return startWidth + PREP_TRAIN_ROW_SPACING + trainMetrics.totalWidth
+end
+
+getPrepTrainRowWidth = function(game, train)
+    return getPrepTrainRowContentWidth(game, train) + PREP_TRAIN_ROW_SPACING * 2
+end
+
+local function drawPrepTrainPreview(game, x, centerY, train)
+    local graphics = love.graphics
+    local metrics = getPrepTrainPreviewMetrics(game, train)
+    local startX = x
+    local carriageY = math.floor(centerY - metrics.carriageHeight * 0.5 + 0.5)
+    local bodyColor = train.color or { 0.84, 0.88, 0.92 }
+    local darkColor = train.darkColor or { bodyColor[1] * 0.42, bodyColor[2] * 0.42, bodyColor[3] * 0.42 }
+
+    if metrics.countText then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(metrics.countText, startX, math.floor(centerY - game.fonts.small:getHeight() * 0.5 + 0.5))
+        startX = startX + game.fonts.small:getWidth(metrics.countText) + metrics.gap
+    end
+
+    for carriageIndex = 1, metrics.iconCount do
+        local carriageX = startX + (carriageIndex - 1) * (metrics.carriageWidth + metrics.gap)
+        graphics.setColor(darkColor[1], darkColor[2], darkColor[3], 0.96)
+        graphics.rectangle("fill", carriageX, carriageY, metrics.carriageWidth, metrics.carriageHeight, 4, 4)
+        graphics.setColor(bodyColor[1], bodyColor[2], bodyColor[3], 1)
+        graphics.setLineWidth(1.4)
+        graphics.rectangle("line", carriageX, carriageY, metrics.carriageWidth, metrics.carriageHeight, 4, 4)
+
+        local windowWidth = math.max(3, metrics.carriageWidth - 8)
+        local windowHeight = math.max(4, metrics.carriageHeight - 8)
+        graphics.setColor(0.95, 0.97, 1, 0.9)
+        graphics.rectangle(
+            "fill",
+            carriageX + math.floor((metrics.carriageWidth - windowWidth) * 0.5 + 0.5),
+            carriageY + math.floor((metrics.carriageHeight - windowHeight) * 0.5 + 0.5),
+            windowWidth,
+            windowHeight,
+            2,
+            2
+        )
+    end
+
+    graphics.setLineWidth(1)
+end
+
+local function drawTrainRow(game, rowRect, leadText, deadlineText, train)
+    local graphics = love.graphics
+    local centerY = rowRect.y + rowRect.h * 0.5
+
+    graphics.setColor(0.06, 0.08, 0.1, 0.96)
+    graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.setLineWidth(1.1)
+    graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+
+    love.graphics.setFont(game.fonts.small)
+    local leadWidth = game.fonts.small:getWidth(leadText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
+
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(leadText, contentStartX, rowRect.y + 9)
+
+    local nextX = contentStartX + leadWidth + PREP_TRAIN_ROW_SPACING
+    if deadlineText then
+        local arrowStartX = nextX
+        local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.setLineWidth(2)
+        graphics.line(arrowStartX, centerY, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY - 3, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY + 3, arrowEndX, centerY)
+        graphics.setLineWidth(1)
+        nextX = arrowEndX + PREP_TRAIN_ROW_SPACING
+        graphics.print(deadlineText, nextX, rowRect.y + 9)
+        nextX = nextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
+    end
+
+    drawPrepTrainPreview(game, nextX, centerY, train)
+end
+
+local function drawInputPrepCard(game, group)
+    local graphics = love.graphics
+    local rect = getInputPrepCardRect(game, group.edge, #(group.trains or {}))
+    local rowHeight = 34
+    local rowGap = 10
+    local rowCount = #(group.trains or {})
+    local totalRowsHeight = rowCount > 0 and (rowCount * rowHeight) + ((rowCount - 1) * rowGap) or 0
+    local rowY = rect.y + math.floor((rect.h - totalRowsHeight) * 0.5 + 0.5)
+
+    drawMetalPanel(rect, 0.96)
+
+    if rowCount == 0 then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("No scheduled trains.", rect.x + 16, rect.y + 14, rect.w - 32, "center")
+        return
+    end
+
+    for _, train in ipairs(group.trains or {}) do
+        local rowWidth = getPrepTrainRowWidth(game, train)
+        local rowRect = {
+            x = math.floor(rect.x + (rect.w - rowWidth) * 0.5 + 0.5),
+            y = rowY,
+            w = rowWidth,
+            h = rowHeight,
+        }
+        local startText = formatSecondsLabel(train.spawnTime or 0)
+        local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
+        drawTrainRow(game, rowRect, startText, deadlineText, train)
+        rowY = rowY + rowHeight + rowGap
+    end
+end
+
+local function drawInputLiveCard(game, edge, train)
+    local graphics = love.graphics
+    local rect = getInputLiveCardRect(game, edge, train)
+    local remainingSeconds = math.max(0, (train.spawnTime or 0) - (game.world.elapsedTime or 0))
+
+    drawMetalPanel(rect, 0.96)
+    drawTrainRow(
+        game,
+        {
+            x = math.floor(rect.x + 10),
+            y = math.floor(rect.y + 10),
+            w = rect.w - 20,
+            h = 34,
+        },
+        formatSecondsLabel(remainingSeconds),
+        train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil,
+        train
+    )
+end
+
+local function drawOutputBadge(game, badge)
+    local graphics = love.graphics
+    local rect = getOutputBadgeRect(game, badge.edge, badge)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
+
+    drawMetalPanel(rect, 0.96)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.48, 0.92, 0.62, 1)
+    graphics.printf(ratioText, rect.x, rect.y + math.floor((rect.h - game.fonts.body:getHeight()) * 0.5 + 0.5), rect.w, "center")
+end
+
+function ui.getPlayBackHit(_, x, y)
+    return pointInRect(x, y, getPlayBackRect())
+end
+
+function ui.getPlayStartHit(game, x, y)
+    if game.playPhase ~= "prepare" then
+        return false
+    end
+
+    return pointInRect(x, y, getPlayStartRect())
 end
 
 local function getResultsButtonRects(game)
-    local panelX = game.viewport.w * 0.5 - 240
+    local panelX = game.viewport.w * 0.5 - 250
     local buttonY = game.viewport.h - 72
     return {
-        replay = { x = panelX, y = buttonY, w = 112, h = 42 },
-        leaderboard = { x = panelX + 128, y = buttonY, w = 112, h = 42 },
-        editor = { x = panelX + 256, y = buttonY, w = 112, h = 42 },
-        menu = { x = panelX + 384, y = buttonY, w = 112, h = 42 },
+        replay = { x = panelX, y = buttonY, w = 150, h = 42 },
+        editor = { x = panelX + 175, y = buttonY, w = 150, h = 42 },
+        menu = { x = panelX + 350, y = buttonY, w = 150, h = 42 },
     }
 end
 
@@ -1550,9 +1478,6 @@ function ui.getResultsHit(game, x, y)
     local buttons = getResultsButtonRects(game)
     if pointInRect(x, y, buttons.replay) then
         return "replay"
-    end
-    if pointInRect(x, y, buttons.leaderboard) then
-        return "leaderboard"
     end
     if pointInRect(x, y, buttons.menu) then
         return "menu"
@@ -1565,8 +1490,33 @@ end
 
 function ui.drawMenu(game)
     local graphics = love.graphics
-    local buttons = getMenuButtons(game)
-    local debugButton = getMenuDebugButton(game)
+    local centerX = game.viewport.w * 0.5 - 160
+    local buttons = {
+        {
+            id = "play",
+            x = centerX,
+            y = 280,
+            w = 320,
+            h = 56,
+            label = "Level Select",
+        },
+        {
+            id = "editor",
+            x = centerX,
+            y = 352,
+            w = 320,
+            h = 56,
+            label = "Map Editor",
+        },
+        {
+            id = "quit",
+            x = centerX,
+            y = 424,
+            w = 320,
+            h = 56,
+            label = "Quit",
+        },
+    }
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -1582,7 +1532,7 @@ function ui.drawMenu(game)
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
     graphics.printf(
-        "Route trains through lever-controlled merges, upload cleared scores, and compare runs online.",
+        "Route trains through lever-controlled merges, or build your own maps and save them for later.",
         game.viewport.w * 0.5 - 280,
         188,
         560,
@@ -1593,185 +1543,9 @@ function ui.drawMenu(game)
         drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
     end
 
-    local debugStrokeColor = game:isDebugModeEnabled() and { 0.99, 0.78, 0.32, 1 } or { 0.3, 0.42, 0.54, 1 }
-    drawButton(debugButton, debugButton.label, { 0.09, 0.11, 0.15, 0.98 }, debugStrokeColor, game.fonts.small)
-
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf("Enter starts. L opens the leaderboard. D toggles debug mode. Esc quits.", 0, MENU_LAYOUT.footerY, game.viewport.w, "center")
-end
-
-function ui.drawProfileSetup(game)
-    local graphics = love.graphics
-    local panel = {
-        x = game.viewport.w * 0.5 - 280,
-        y = game.viewport.h * 0.5 - 150,
-        w = 560,
-        h = 300,
-    }
-    local inputRect = {
-        x = panel.x + 56,
-        y = panel.y + 126,
-        w = panel.w - 112,
-        h = 56,
-    }
-    local confirmRect = getProfileSetupConfirmRect(game)
-
-    graphics.setColor(0.05, 0.07, 0.1, 1)
-    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
-    drawMetalPanel(panel, 0.98)
-
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf("Choose Name", panel.x + 24, panel.y + 34, panel.w - 48, "center")
-
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf("Enter the name to use in the leaderboard.", panel.x + 42, panel.y + 84, panel.w - 84, "center")
-
-    graphics.setColor(0.48, 0.92, 0.62, 0.12)
-    graphics.rectangle("fill", inputRect.x - 4, inputRect.y - 4, inputRect.w + 8, inputRect.h + 8, 16, 16)
-    graphics.setColor(0.08, 0.1, 0.14, 0.98)
-    graphics.rectangle("fill", inputRect.x, inputRect.y, inputRect.w, inputRect.h, 14, 14)
-    graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.rectangle("line", inputRect.x, inputRect.y, inputRect.w, inputRect.h, 14, 14)
-    graphics.setColor(0.48, 0.92, 0.62, 0.24)
-    graphics.rectangle("line", inputRect.x - 4, inputRect.y - 4, inputRect.w + 8, inputRect.h + 8, 16, 16)
-
-    love.graphics.setFont(game.fonts.body)
-    local typedText = game.profileSetupNameBuffer or ""
-    local hasTypedText = typedText ~= ""
-    local nameText = hasTypedText and typedText or "Type a name..."
-    if hasTypedText then
-        graphics.setColor(0.97, 0.98, 1, 1)
-    else
-        graphics.setColor(0.5, 0.58, 0.66, 1)
-    end
-    graphics.printf(nameText, inputRect.x + 18, inputRect.y + 16, inputRect.w - 36, "left")
-
-    if math.floor((love.timer.getTime() or 0) * 2) % 2 == 0 then
-        local textWidth = game.fonts.body:getWidth(typedText)
-        local caretX = hasTypedText
-            and math.min(inputRect.x + inputRect.w - 24, inputRect.x + 18 + textWidth + 2)
-            or (inputRect.x + 12)
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.rectangle("fill", caretX, inputRect.y + 12, 3, inputRect.h - 24, 1, 1)
-    end
-
-    love.graphics.setFont(game.fonts.small)
-    if game.profileSetupError then
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf(game.profileSetupError, panel.x + 42, panel.y + 194, panel.w - 84, "center")
-    end
-
-    drawButton(confirmRect, "Continue", { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
-end
-
-function ui.drawLeaderboard(game)
-    local graphics = love.graphics
-    local layout = getLeaderboardContentLayout(game)
-    local panel = layout.panel
-    local buttons = getLeaderboardActionRects(game)
-    local state = game.leaderboardState or { status = "idle", entries = {} }
-    local hasEntries = #(state.entries or {}) > 0
-    local contentX = layout.contentX
-    local contentW = layout.contentW
-
-    graphics.setColor(0.05, 0.07, 0.1, 1)
-    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
-    drawMetalPanel(panel, 0.98)
-
-    drawButton(buttons.back, "Back", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.small)
-
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(game.leaderboardTitle or "Online Leaderboard", panel.x + 24, panel.y + 24, panel.w - 48, "center")
-
-    local badgeRect = getLeaderboardFilterBadgeRect(game)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.1, 0.14, 0.18, 0.98)
-    graphics.rectangle("fill", badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 14, 14)
-    graphics.setColor(game.leaderboardMapUuid and 0.56 or 0.3, game.leaderboardMapUuid and 0.72 or 0.42, game.leaderboardMapUuid and 0.98 or 0.54, 1)
-    graphics.rectangle("line", badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 14, 14)
-    graphics.setColor(0.9, 0.94, 0.98, 1)
-    graphics.printf(
-        badgeRect.text,
-        badgeRect.x + LEADERBOARD_LAYOUT.filterBadgePaddingX,
-        badgeRect.y + 6,
-        badgeRect.w - (LEADERBOARD_LAYOUT.filterBadgePaddingX * 2),
-        "center"
-    )
-
-    if state.status ~= "ready" and not hasEntries then
-        if state.status == "loading" then
-            drawLoadingSpinner(
-                panel.x + panel.w * 0.5,
-                panel.y + LEADERBOARD_LOADING.emptyStateYOffset + LEADERBOARD_LOADING.emptySpinnerYOffset,
-                { 0.48, 0.92, 0.62, 1 }
-            )
-        end
-
-        love.graphics.setFont(game.fonts.body)
-        graphics.setColor(state.status == "loading" and 0.84 or 0.99, state.status == "loading" and 0.88 or 0.78, state.status == "loading" and 0.92 or 0.32, 1)
-        graphics.printf(
-            state.message or "The leaderboard is not ready.",
-            contentX,
-            panel.y + LEADERBOARD_LOADING.emptyStateYOffset + LEADERBOARD_LOADING.emptyTextYOffset,
-            contentW,
-            "center"
-        )
-        return
-    end
-
-    if not hasEntries then
-        love.graphics.setFont(game.fonts.body)
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf(state.message or "No entries are available yet.", contentX, panel.y + 180, contentW, "center")
-        return
-    end
-
-    local headerY = panel.y + LEADERBOARD_LAYOUT.headerY
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.print("#", contentX, headerY)
-    graphics.print("Player", layout.playerX, headerY)
-    graphics.printf("Score", layout.scoreX, headerY, LEADERBOARD_LAYOUT.scoreWidth, "center")
-    if shouldShowLeaderboardMapColumn(game) then
-        graphics.printf("Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
-    end
-
-    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
-    for _, rowRect in ipairs(rowRects) do
-        local entry = rowRect.entry
-        local rowY = rowRect.player.y
-        graphics.setColor(0.1, 0.13, 0.17, 0.94)
-        graphics.rectangle("fill", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
-        graphics.setColor(0.26, 0.34, 0.42, 1)
-        graphics.rectangle("line", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
-
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.print(tostring(entry.rank or 0), contentX + 12, rowY + 2)
-        graphics.printf(entry.playerDisplayName or "Unknown", rowRect.player.x, rowY + 2, rowRect.player.w, "left")
-        graphics.printf(formatScore(entry.score or 0), layout.scoreX, rowY + 2, LEADERBOARD_LAYOUT.scoreWidth, "center")
-        if rowRect.map then
-            graphics.setColor(0.72, 0.78, 0.84, 1)
-            graphics.printf(entry.mapName or "Unknown Map", rowRect.map.x, rowY + 2, rowRect.map.w, "left")
-        end
-    end
-
-    if #(state.entries or {}) > #rowRects then
-        graphics.setColor(0.68, 0.74, 0.8, 1)
-        graphics.printf(
-            string.format("%d more entry/entries hidden.", #(state.entries or {}) - #rowRects),
-            contentX,
-            panel.y + panel.h - 44,
-            contentW,
-            "center"
-        )
-    end
-
-    drawLeaderboardTooltip(game, game.leaderboardHoverInfo)
+    graphics.printf("Enter opens level select. E opens the editor directly. Esc quits.", 0, 620, game.viewport.w, "center")
 end
 
 function ui.drawLevelSelect(game)
@@ -1885,35 +1659,47 @@ end
 
 function ui.drawPlay(game)
     local graphics = love.graphics
-    local runSummary = game.world:getRunSummary()
-    local scorePanel = {
-        x = math.floor(game.viewport.w - 274 + 0.5),
-        y = math.floor(game.viewport.h * 0.5 - 52 + 0.5),
-        w = 236,
-        h = 104,
-    }
+    local inputGroups = game.world:getInputEdgeGroups()
+    local outputGroups = game.world:getOutputBadgeGroups()
 
-    graphics.setColor(0.08, 0.1, 0.13, 0.94)
-    graphics.rectangle("fill", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
-    graphics.setColor(0.3, 0.36, 0.42, 1)
-    graphics.rectangle("line", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
+    for _, badge in ipairs(outputGroups) do
+        drawOutputBadge(game, badge)
+    end
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.8, 0.84, 0.9, 0.95)
-    graphics.printf("Score", scorePanel.x + 20, scorePanel.y + 18, scorePanel.w - 40, "left")
+    if game.playPhase == "prepare" then
+        for _, group in ipairs(inputGroups) do
+            drawInputPrepCard(game, group)
+        end
+    else
+        for _, group in ipairs(inputGroups) do
+            local nextTrain = game.world:getNextPendingTrainForInputEdge(group.edge.id)
+            if nextTrain then
+                drawInputLiveCard(game, group.edge, nextTrain)
+            end
+        end
+    end
 
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(formatScore(runSummary.finalScore or 0), scorePanel.x + 20, scorePanel.y + 44, scorePanel.w - 40, "left")
+    drawButton(getPlayBackRect(), "Main Menu", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 
-    drawButton(
-        { x = 1114, y = 28, w = 134, h = 38 },
-        "Main Menu",
-        { 0.09, 0.11, 0.15, 0.98 },
-        { 0.3, 0.36, 0.42, 1 },
-        game.fonts.small
+    if game.playPhase == "prepare" then
+        drawButton(getPlayStartRect(), "Start Run", { 0.12, 0.17, 0.2, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("Preparation Phase: set your routes, then start the clock.", 0, 34, game.viewport.w, "center")
+    end
+
+    graphics.setColor(0, 0, 0, 0.3)
+    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
+    graphics.setColor(0.8, 0.84, 0.9, 0.82)
+    graphics.printf(
+        game.playPhase == "prepare"
+            and "Press F2 for help, F3 for debug, M for menu, E for editor, or R to reset prep"
+            or "Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart",
+        0,
+        game.viewport.h - 42,
+        game.viewport.w,
+        "center"
     )
-
 
     drawPlayInfoOverlay(game)
 end
@@ -1963,19 +1749,9 @@ function ui.drawResults(game)
     graphics.printf(string.format("Score %s", formatScore(summary.finalScore or 0)), panel.x, panel.y + 108, panel.w, "center")
 
     love.graphics.setFont(game.fonts.small)
-    local onlineState = game.resultsOnlineState or {}
-    local onlineColor = { 0.72, 0.78, 0.84, 1 }
-    if onlineState.status == "submitted" or onlineState.status == "kept" then
-        onlineColor = { 0.48, 0.92, 0.62, 1 }
-    elseif onlineState.status == "error" or onlineState.status == "disabled" then
-        onlineColor = { 0.99, 0.78, 0.32, 1 }
-    end
-    graphics.setColor(onlineColor[1], onlineColor[2], onlineColor[3], onlineColor[4])
-    graphics.printf(onlineState.message or "Online sync pending.", panel.x + 38, panel.y + 158, panel.w - 76, "center")
-
     local breakdownX = panel.x + 58
     local valueX = panel.x + panel.w - 58
-    local lineY = panel.y + 220
+    local lineY = panel.y + 192
     local rows = {
         { "On-time clears", string.format("+%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.onTimeClears) or 0)) },
         { "Late clears", string.format("+%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.lateClears) or 0)) },
@@ -1998,7 +1774,9 @@ function ui.drawResults(game)
         string.format("Wrong destinations: %d", summary.wrongDestinationCount or 0),
         string.format("Elapsed time: %.1fs", summary.elapsedSeconds or 0),
         string.format("Interactions: %d", summary.interactionCount or 0),
-        string.format("Map UUID: %s", summary.mapUuid or "n/a"),
+        string.format("Driven distance: %.1fm", summary.actualDrivenDistance or 0),
+        string.format("Minimum distance: %.1fm", summary.minimumRequiredDistance or 0),
+        string.format("Extra distance: %.1fm", summary.extraDistance or 0),
     }
 
     for _, stat in ipairs(stats) do
@@ -2008,7 +1786,6 @@ function ui.drawResults(game)
     end
 
     drawButton(buttons.replay, "Replay", { 0.1, 0.14, 0.18, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.small)
-    drawButton(buttons.leaderboard, "Leaderboard", { 0.1, 0.14, 0.18, 0.98 }, { 0.56, 0.72, 0.98, 1 }, game.fonts.small)
     drawButton(buttons.editor, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
     drawButton(buttons.menu, "Main Menu", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 end
