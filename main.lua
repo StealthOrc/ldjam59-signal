@@ -4,7 +4,6 @@ local game
 
 function love.load()
     love.graphics.setDefaultFilter("nearest", "nearest")
-    love.window.setMode(1280, 720, { resizable = true, minwidth = 960, minheight = 540, vsync = 1 })
     game = Game.new()
 end
 
