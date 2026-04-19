@@ -2265,11 +2265,11 @@ end
 
 local function getTimerRatio(armed, remaining, duration)
     if duration <= 0 then
-        return armed and 0 or 1
+        return armed and 1 or 0
     end
 
     if not armed then
-        return 1
+        return 0
     end
 
     return clamp(remaining / duration, 0, 1)
@@ -2346,10 +2346,10 @@ end
 
 local function drawJunctionTimerPie(graphics, centerX, centerY, radius, primaryColor, stripeColors, ratio, drawOutline, drawBackground)
     local fillRatio = clamp(ratio or 0, 0, 1)
-    local fillAlpha = drawBackground == false and 1 or 0.26
+    local fillAlpha = 1
     local outlineRadius = radius - 0.5
 
-    if drawBackground ~= false then
+    if drawBackground == true then
         graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
         graphics.circle("fill", centerX, centerY, radius)
     end
@@ -2679,15 +2679,16 @@ end
 
 local function drawJunctionCircle(graphics, junction, primaryColor, stripeColors)
     local centerX, centerY, radius = getControlBubbleLayout(junction)
+    local backgroundAlpha = 0.28
 
     graphics.setColor(0.05, 0.06, 0.08, 0.9)
     graphics.circle("fill", centerX, centerY, radius)
 
     if stripeColors then
-        drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, 0.14)
+        drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, backgroundAlpha)
         drawStripedCircleOutline(graphics, centerX, centerY, radius, stripeColors, 0.92, 3)
     else
-        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], backgroundAlpha)
         graphics.circle("fill", centerX, centerY, radius)
         graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.88)
         graphics.setLineWidth(3)
@@ -2732,8 +2733,16 @@ function world:drawControlOverlay(junction)
 
     if control.type == "delayed" then
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local ratio = getTimerRatio(control.armed, control.remainingDelay, control.delay)
-        local progress = control.delay > 0 and (1 - ratio) or 0
+        local ratio = 1
+        local progress = 0
+
+        if control.armed and control.delay > 0 then
+            ratio = clamp(control.remainingDelay / control.delay, 0, 1)
+            progress = 1 - ratio
+        elseif control.armed then
+            ratio = 0
+            progress = 1
+        end
 
         drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
         withIconScale(graphics, centerX, centerY, iconScale, function()
