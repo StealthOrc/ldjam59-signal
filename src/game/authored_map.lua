@@ -480,7 +480,27 @@ local function buildLegacyAuthoredTrains(startEdgeRecords)
 end
 
 local function edgeSupportsGoalColor(edge, goalColor)
-    return containsValue(edge and edge.colors or {}, goalColor)
+    if containsValue(edge and edge.colors or {}, goalColor) then
+        return true
+    end
+
+    if edge and edge.adoptInputColor and containsValue(edge.inputColors or {}, goalColor) then
+        return true
+    end
+
+    return false
+end
+
+local function addOutputColors(outputColorLookup, edge, sourceEndpoint, targetEndpoint)
+    for _, colorId in ipairs(targetEndpoint and (targetEndpoint.colors or {}) or edge and edge.colors or {}) do
+        outputColorLookup[colorId] = true
+    end
+
+    if edge and edge.adoptInputColor then
+        for _, colorId in ipairs(sourceEndpoint and (sourceEndpoint.colors or {}) or edge.inputColors or {}) do
+            outputColorLookup[colorId] = true
+        end
+    end
 end
 
 local function canReachGoalColor(startEdgeId, goalColor, edgeById, junctionLookup)
@@ -523,8 +543,8 @@ end
 function authoredMap.validateEditorMap(mapName, editorData)
     local errors = {}
 
-    if not editorData or #(editorData.junctions or {}) == 0 then
-        errors[#errors + 1] = "Add at least one lever intersection before starting this map."
+    if not editorData or #(editorData.routes or {}) == 0 then
+        errors[#errors + 1] = "Draw at least one route before starting this map."
         return nil, errors, errors[1]
     end
 
@@ -569,9 +589,11 @@ function authoredMap.validateEditorMap(mapName, editorData)
 
     for _, route in ipairs(editorData.routes or {}) do
         local routeHits = routeJunctions[route.id] or {}
-        if #routeHits == 0 then
-            errors[#errors + 1] = string.format("Route '%s' is not attached to a playable junction.", route.label or route.id)
-            goto continue_route
+        local validRouteHits = {}
+        local routeTotalLength = 0
+
+        for pointIndex = 1, #(route.points or {}) - 1 do
+            routeTotalLength = routeTotalLength + segmentLength(route.points[pointIndex], route.points[pointIndex + 1])
         end
 
         for _, hit in ipairs(routeHits) do
@@ -580,18 +602,17 @@ function authoredMap.validateEditorMap(mapName, editorData)
                 errors[#errors + 1] = string.format("Route '%s' did not actually reach a detected junction.", route.label or route.id)
                 goto continue_route
             end
-            hit.distance = distanceAlongRoute
-            hit.point = snappedPoint
+
+            if distanceAlongRoute > 0.0001 and distanceAlongRoute < routeTotalLength - 0.0001 then
+                hit.distance = distanceAlongRoute
+                hit.point = snappedPoint
+                validRouteHits[#validRouteHits + 1] = hit
+            end
         end
 
-        table.sort(routeHits, function(first, second)
+        table.sort(validRouteHits, function(first, second)
             return first.distance < second.distance
         end)
-
-        local routeTotalLength = 0
-        for pointIndex = 1, #(route.points or {}) - 1 do
-            routeTotalLength = routeTotalLength + segmentLength(route.points[pointIndex], route.points[pointIndex + 1])
-        end
 
         local nodes = {
             {
@@ -602,7 +623,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
             },
         }
 
-        for _, hit in ipairs(routeHits) do
+        for _, hit in ipairs(validRouteHits) do
             nodes[#nodes + 1] = {
                 kind = "junction",
                 id = hit.junctionId,
@@ -643,7 +664,10 @@ function authoredMap.validateEditorMap(mapName, editorData)
                 color = getColor(route.color),
                 darkColor = darkerColor(getColor(route.color)),
                 colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
-                adoptInputColor = targetEndpoint and #(targetEndpoint.colors or {}) > 1 or false,
+                inputColors = sourceEndpoint and (sourceEndpoint.colors or {}) or {},
+                -- Merged endpoints may accept multiple colors, but authored route visuals
+                -- should stay tied to the route's defined map color.
+                adoptInputColor = false,
                 sourceType = sourceNode.kind,
                 sourceId = sourceNode.id,
                 targetType = targetNode.kind,
@@ -674,7 +698,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
                 local targetJunction = junctionLookup[targetNode.id]
                 targetJunction.inputEdgeIds[#targetJunction.inputEdgeIds + 1] = edge.id
             end
-            if sourceNode.kind == "start" and targetNode.kind == "junction" then
+            if sourceNode.kind == "start" then
                 startEdgeRecords[edge.id] = startEdgeRecords[edge.id] or {
                     edgeId = edge.id,
                     colors = {},
@@ -690,10 +714,10 @@ function authoredMap.validateEditorMap(mapName, editorData)
                         lineColorToEdgeId[colorId] = edge.id
                     end
                 end
-            elseif targetNode.kind == "exit" then
-                for _, colorId in ipairs(targetEndpoint and (targetEndpoint.colors or {}) or {}) do
-                    outputColorLookup[colorId] = true
-                end
+            end
+
+            if targetNode.kind == "exit" then
+                addOutputColors(outputColorLookup, edge, sourceEndpoint, targetEndpoint)
             end
         end
 
@@ -713,6 +737,7 @@ function authoredMap.validateEditorMap(mapName, editorData)
         edgeById[edge.id] = edge
     end
 
+    local playableJunctions = {}
     for _, junction in ipairs(orderedJunctions) do
         local inputEdges = {}
         local outputEdges = {}
@@ -735,6 +760,10 @@ function authoredMap.validateEditorMap(mapName, editorData)
         sortEdgesByStart(inputEdges)
         sortEdgesByEnd(outputEdges)
 
+        if #inputEdges == 0 and #outputEdges == 0 then
+            goto continue_junction
+        end
+
         if #inputEdges > 5 or #outputEdges > 5 then
             errors[#errors + 1] = "A junction exceeds the current limit of five inputs or five outputs."
         end
@@ -753,6 +782,9 @@ function authoredMap.validateEditorMap(mapName, editorData)
         end
         junction.activeInputIndex = math.min(junction.activeInputIndex, math.max(1, #junction.inputEdgeIds))
         junction.activeOutputIndex = math.min(junction.activeOutputIndex, math.max(1, #junction.outputEdgeIds))
+        playableJunctions[#playableJunctions + 1] = junction
+
+        ::continue_junction::
     end
 
     local authoredTrains = editorData.trains
@@ -815,13 +847,19 @@ function authoredMap.validateEditorMap(mapName, editorData)
         return nil, errors, table.concat(errors, " ")
     end
 
+    local hasPlayableJunctions = #playableJunctions > 0
+
     return {
         title = mapName,
         description = "Custom map loaded from the editor.",
-        hint = "Click the junction center to switch inputs. Use the bottom selector to switch outputs.",
-        footer = "Sequence trains from the editor pane and clear every goal on time.",
+        hint = hasPlayableJunctions
+            and "Click the junction center to switch inputs. Use the bottom selector to switch outputs."
+            or "Shared endpoints are not junctions. Only one train can safely occupy a line end at a time.",
+        footer = hasPlayableJunctions
+            and "Sequence trains from the editor pane and clear every goal on time."
+            or "Shared line ends stay contested even without a junction, so spacing still matters.",
         timeLimit = timeLimit,
-        junctions = orderedJunctions,
+        junctions = playableJunctions,
         edges = edges,
         trains = trains,
     }, {}, nil

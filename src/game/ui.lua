@@ -171,6 +171,37 @@ local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+local function clamp(value, minValue, maxValue)
+    if value < minValue then
+        return minValue
+    end
+    if value > maxValue then
+        return maxValue
+    end
+    return value
+end
+
+local function angleBetweenPoints(a, b)
+    local dx = (b and b.x or 0) - (a and a.x or 0)
+    local dy = (b and b.y or 0) - (a and a.y or 0)
+    if math.atan2 then
+        return math.atan2(dy, dx)
+    end
+
+    if dx == 0 then
+        if dy >= 0 then
+            return math.pi * 0.5
+        end
+        return -math.pi * 0.5
+    end
+
+    local angle = math.atan(dy / dx)
+    if dx < 0 then
+        angle = angle + math.pi
+    end
+    return angle
+end
+
 local function drawButton(rect, label, fillColor, strokeColor, font)
     local graphics = love.graphics
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
@@ -466,16 +497,22 @@ local function getTrainStatusText(worldState, train)
 end
 
 local function buildPlayHelpSections(game)
+    local controlLines = {
+        "Left click a junction to activate its control.",
+        "Left click the selector below a junction to cycle outputs forward.",
+        "Right click the selector below a junction to cycle outputs backward.",
+        "M opens the menu. E opens the editor. R restarts the run.",
+        "F2 closes this help panel. F3 opens the debug panel.",
+    }
+
+    if game.playPhase == "prepare" then
+        controlLines[#controlLines + 1] = "Use the Start button when your routes are set."
+    end
+
     local sections = {
         {
             title = "Controls",
-            lines = {
-                "Left click a junction to activate its control.",
-                "Left click the selector below a junction to cycle outputs forward.",
-                "Right click the selector below a junction to cycle outputs backward.",
-                "M opens the menu. E opens the editor. R restarts the run.",
-                "F2 closes this help panel. F3 opens the debug panel.",
-            },
+            lines = controlLines,
         },
         {
             title = "Junctions",
@@ -493,7 +530,34 @@ end
 
 local function buildPlayDebugSections(game)
     local runSummary = game.world:getRunSummary()
+    local nextTrain = game.world:getNextQueuedTrain()
+    local nextDeadline = game.world:getNearestPendingDeadline()
     local sections = {
+        {
+            title = "Run Stats",
+            lines = {
+                string.format("Phase: %s", game.playPhase == "prepare" and "Preparation" or "Play"),
+                string.format("Elapsed: %.1fs", game.world.elapsedTime or 0),
+                game.world.timeRemaining and string.format("Time left: %.1fs", game.world.timeRemaining) or "Time left: Unlimited",
+                string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains),
+                string.format("Interactions: %d", runSummary.interactionCount or 0),
+                string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
+                nextTrain and string.format(
+                    "Next spawn: %s at %.1fs",
+                    game.world:getTrainSummary(nextTrain),
+                    nextTrain.spawnTime or 0
+                ) or "Next spawn: none",
+                nextDeadline and string.format(
+                    "Nearest deadline: %s by %.1fs",
+                    game.world:getTrainSummary(nextDeadline),
+                    nextDeadline.deadline or 0
+                ) or "Nearest deadline: none",
+            },
+        },
+        {
+            title = "Active Routes",
+            lines = { game.world:getActiveRouteSummary() },
+        },
         {
             title = "Junction State",
             lines = {},
@@ -512,44 +576,21 @@ local function buildPlayDebugSections(game)
         },
     }
     local worldState = game.world
-    local queueGroups = {}
-    local orderedGroups = {}
 
     for _, junction in ipairs(worldState.junctionOrder or {}) do
-        sections[1].lines[#sections[1].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
-        sections[1].lines[#sections[1].lines + 1] = getJunctionStateText(junction)
+        sections[3].lines[#sections[3].lines + 1] = string.format("%s | %s", junction.label, getJunctionRouteText(junction))
+        sections[3].lines[#sections[3].lines + 1] = getJunctionStateText(junction)
     end
 
-    for _, train in ipairs(worldState.trains or {}) do
-        local startEdgeId = train.startEdgeId or train.edgeId
-        local startEdge = worldState.edges[startEdgeId]
-        if not queueGroups[startEdgeId] then
-            queueGroups[startEdgeId] = {
-                label = startEdge and startEdge.label or startEdgeId,
-                trains = {},
-            }
-            orderedGroups[#orderedGroups + 1] = queueGroups[startEdgeId]
-        end
-        queueGroups[startEdgeId].trains[#queueGroups[startEdgeId].trains + 1] = train
-    end
-
-    table.sort(orderedGroups, function(firstGroup, secondGroup)
-        return firstGroup.label < secondGroup.label
-    end)
-
-    for _, group in ipairs(orderedGroups) do
-        table.sort(group.trains, function(firstTrain, secondTrain)
-            return (firstTrain.startProgress or 0) > (secondTrain.startProgress or 0)
-        end)
-
-        sections[2].lines[#sections[2].lines + 1] = string.format("%s queue", group.label)
+    for _, group in ipairs(worldState:getInputEdgeGroups()) do
+        sections[4].lines[#sections[4].lines + 1] = string.format("%s queue", group.edge.label or group.edge.id)
         for index, train in ipairs(group.trains) do
-            sections[2].lines[#sections[2].lines + 1] = string.format(
+            sections[4].lines[#sections[4].lines + 1] = string.format(
                 "%d. %s | start %.0f | %.2fx | %s",
                 index,
                 train.id,
-                train.startProgress or 0,
-                train.speedScale or 1,
+                train.spawnTime or 0,
+                train.speed / math.max(1, worldState.trainSpeed),
                 getTrainStatusText(worldState, train)
             )
         end
@@ -2013,13 +2054,341 @@ function ui.getLevelSelectHoverId(game, x, y)
     return nil
 end
 
-function ui.getPlayBackHit(_, x, y)
-    return pointInRect(x, y, {
+local function getPlayBackRect()
+    return {
         x = 1114,
         y = 28,
         w = 134,
         h = 38,
-    })
+    }
+end
+
+local function getPlayStartRect()
+    return {
+        x = 1048,
+        y = 74,
+        w = 200,
+        h = 46,
+    }
+end
+
+local function formatTimeValue(value)
+    if value == nil then
+        return "--"
+    end
+    return string.format("%.1f", value)
+end
+
+local function getColorLabel(colorId)
+    if not colorId then
+        return "--"
+    end
+    return colorId:sub(1, 1):upper() .. colorId:sub(2)
+end
+
+local function getTrackOuterAnchor(track, isOutput)
+    local points = track and track.path and track.path.points or {}
+    if #points == 0 then
+        return 0, 0, 0, -1
+    end
+
+    local outerPoint
+    local innerPoint
+    if isOutput then
+        outerPoint = points[#points]
+        innerPoint = points[#points - 1] or outerPoint
+    else
+        outerPoint = points[1]
+        innerPoint = points[2] or outerPoint
+    end
+
+    local angle = angleBetweenPoints(outerPoint, innerPoint)
+    local dirX = math.cos(angle)
+    local dirY = math.sin(angle)
+    if not isOutput then
+        dirX = -dirX
+        dirY = -dirY
+    end
+
+    return outerPoint.x, outerPoint.y, dirX, dirY
+end
+
+local function getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, height, offset)
+    local push = offset or 18
+    local targetX = anchorX + dirX * push
+    local targetY = anchorY + dirY * push
+    local rectX = targetX - width * 0.5
+    local rectY
+
+    if math.abs(dirX) > math.abs(dirY) then
+        if dirX < 0 then
+            rectX = targetX - width - 10
+        else
+            rectX = targetX + 10
+        end
+        rectY = targetY - height * 0.5
+    else
+        if dirY < 0 then
+            rectY = targetY - height - 10
+        else
+            rectY = targetY + 10
+        end
+    end
+
+    return {
+        x = clamp(rectX, 18, game.viewport.w - width - 18),
+        y = clamp(rectY or (targetY - height * 0.5), 82, game.viewport.h - height - 70),
+        w = width,
+        h = height,
+    }
+end
+
+local PREP_TRAIN_ROW_SPACING = 8
+local PREP_TRAIN_ARROW_LENGTH = 19
+local getPrepTrainRowWidth
+
+local function getInputPrepCardRect(game, edge, trainCount)
+    local rowCount = math.max(1, trainCount or 0)
+    local height = 20 + rowCount * 44
+    local width = 140
+
+    for _, group in ipairs(game.world:getInputEdgeGroups()) do
+        if group.edge.id == edge.id then
+            for _, train in ipairs(group.trains or {}) do
+                width = math.max(width, getPrepTrainRowWidth(game, train) + 20)
+            end
+            break
+        end
+    end
+
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, false)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, height, 12)
+end
+
+local function getInputLiveCardRect(game, edge, train)
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, false)
+    local width = math.max(140, getPrepTrainRowWidth(game, train) + 20)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 54, 12)
+end
+
+local function getOutputBadgeRect(game, edge, badge)
+    local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, true)
+    love.graphics.setFont(game.fonts.body)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
+    local width = math.max(64, game.fonts.body:getWidth(ratioText) + PREP_TRAIN_ROW_SPACING * 2 + 16)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 44, 12)
+end
+
+local function formatSecondsLabel(value)
+    return string.format("%ss", formatTimeValue(value))
+end
+
+local function getPrepTrainPreviewMetrics(game, train)
+    local wagonCount = math.max(1, train.wagonCount or 1)
+    local gap = 4
+    local carriageWidth = 16
+    local carriageHeight = 16
+    local countText = nil
+    local totalWidth
+    local iconCount = math.min(wagonCount, 5)
+
+    if wagonCount > 5 then
+        love.graphics.setFont(game.fonts.small)
+        countText = string.format("%dx", wagonCount)
+        totalWidth = game.fonts.small:getWidth(countText) + gap + carriageWidth
+        iconCount = 1
+    else
+        totalWidth = iconCount * carriageWidth + (iconCount - 1) * gap
+    end
+
+    return {
+        gap = gap,
+        wagonCount = wagonCount,
+        iconCount = iconCount,
+        countText = countText,
+        carriageWidth = carriageWidth,
+        carriageHeight = carriageHeight,
+        totalWidth = totalWidth,
+    }
+end
+
+local function getPrepTrainRowContentWidth(game, train)
+    love.graphics.setFont(game.fonts.small)
+
+    local startText = formatSecondsLabel(train.spawnTime or 0)
+    local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
+    local startWidth = game.fonts.small:getWidth(startText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local trainMetrics = getPrepTrainPreviewMetrics(game, train)
+
+    if deadlineText then
+        return startWidth
+            + PREP_TRAIN_ROW_SPACING
+            + PREP_TRAIN_ARROW_LENGTH
+            + PREP_TRAIN_ROW_SPACING
+            + deadlineWidth
+            + PREP_TRAIN_ROW_SPACING
+            + trainMetrics.totalWidth
+    end
+
+    return startWidth + PREP_TRAIN_ROW_SPACING + trainMetrics.totalWidth
+end
+
+getPrepTrainRowWidth = function(game, train)
+    return getPrepTrainRowContentWidth(game, train) + PREP_TRAIN_ROW_SPACING * 2
+end
+
+local function drawPrepTrainPreview(game, x, centerY, train)
+    local graphics = love.graphics
+    local metrics = getPrepTrainPreviewMetrics(game, train)
+    local startX = x
+    local carriageY = math.floor(centerY - metrics.carriageHeight * 0.5 + 0.5)
+    local bodyColor = train.color or { 0.84, 0.88, 0.92 }
+    local darkColor = train.darkColor or { bodyColor[1] * 0.42, bodyColor[2] * 0.42, bodyColor[3] * 0.42 }
+
+    if metrics.countText then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(metrics.countText, startX, math.floor(centerY - game.fonts.small:getHeight() * 0.5 + 0.5))
+        startX = startX + game.fonts.small:getWidth(metrics.countText) + metrics.gap
+    end
+
+    for carriageIndex = 1, metrics.iconCount do
+        local carriageX = startX + (carriageIndex - 1) * (metrics.carriageWidth + metrics.gap)
+        graphics.setColor(darkColor[1], darkColor[2], darkColor[3], 0.96)
+        graphics.rectangle("fill", carriageX, carriageY, metrics.carriageWidth, metrics.carriageHeight, 4, 4)
+        graphics.setColor(bodyColor[1], bodyColor[2], bodyColor[3], 1)
+        graphics.setLineWidth(1.4)
+        graphics.rectangle("line", carriageX, carriageY, metrics.carriageWidth, metrics.carriageHeight, 4, 4)
+
+        local windowWidth = math.max(3, metrics.carriageWidth - 8)
+        local windowHeight = math.max(4, metrics.carriageHeight - 8)
+        graphics.setColor(0.95, 0.97, 1, 0.9)
+        graphics.rectangle(
+            "fill",
+            carriageX + math.floor((metrics.carriageWidth - windowWidth) * 0.5 + 0.5),
+            carriageY + math.floor((metrics.carriageHeight - windowHeight) * 0.5 + 0.5),
+            windowWidth,
+            windowHeight,
+            2,
+            2
+        )
+    end
+
+    graphics.setLineWidth(1)
+end
+
+local function drawTrainRow(game, rowRect, leadText, deadlineText, train)
+    local graphics = love.graphics
+    local centerY = rowRect.y + rowRect.h * 0.5
+
+    graphics.setColor(0.06, 0.08, 0.1, 0.96)
+    graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.setLineWidth(1.1)
+    graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+
+    love.graphics.setFont(game.fonts.small)
+    local leadWidth = game.fonts.small:getWidth(leadText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
+
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(leadText, contentStartX, rowRect.y + 9)
+
+    local nextX = contentStartX + leadWidth + PREP_TRAIN_ROW_SPACING
+    if deadlineText then
+        local arrowStartX = nextX
+        local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.setLineWidth(2)
+        graphics.line(arrowStartX, centerY, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY - 3, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY + 3, arrowEndX, centerY)
+        graphics.setLineWidth(1)
+        nextX = arrowEndX + PREP_TRAIN_ROW_SPACING
+        graphics.print(deadlineText, nextX, rowRect.y + 9)
+        nextX = nextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
+    end
+
+    drawPrepTrainPreview(game, nextX, centerY, train)
+end
+
+local function drawInputPrepCard(game, group)
+    local graphics = love.graphics
+    local rect = getInputPrepCardRect(game, group.edge, #(group.trains or {}))
+    local rowHeight = 34
+    local rowGap = 10
+    local rowCount = #(group.trains or {})
+    local totalRowsHeight = rowCount > 0 and (rowCount * rowHeight) + ((rowCount - 1) * rowGap) or 0
+    local rowY = rect.y + math.floor((rect.h - totalRowsHeight) * 0.5 + 0.5)
+
+    drawMetalPanel(rect, 0.96)
+
+    if rowCount == 0 then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("No scheduled trains.", rect.x + 16, rect.y + 14, rect.w - 32, "center")
+        return
+    end
+
+    for _, train in ipairs(group.trains or {}) do
+        local rowWidth = getPrepTrainRowWidth(game, train)
+        local rowRect = {
+            x = math.floor(rect.x + (rect.w - rowWidth) * 0.5 + 0.5),
+            y = rowY,
+            w = rowWidth,
+            h = rowHeight,
+        }
+        local startText = formatSecondsLabel(train.spawnTime or 0)
+        local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
+        drawTrainRow(game, rowRect, startText, deadlineText, train)
+        rowY = rowY + rowHeight + rowGap
+    end
+end
+
+local function drawInputLiveCard(game, edge, train)
+    local graphics = love.graphics
+    local rect = getInputLiveCardRect(game, edge, train)
+    local remainingSeconds = math.max(0, (train.spawnTime or 0) - (game.world.elapsedTime or 0))
+
+    drawMetalPanel(rect, 0.96)
+    drawTrainRow(
+        game,
+        {
+            x = math.floor(rect.x + 10),
+            y = math.floor(rect.y + 10),
+            w = rect.w - 20,
+            h = 34,
+        },
+        formatSecondsLabel(remainingSeconds),
+        train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil,
+        train
+    )
+end
+
+local function drawOutputBadge(game, badge)
+    local graphics = love.graphics
+    local rect = getOutputBadgeRect(game, badge.edge, badge)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
+
+    drawMetalPanel(rect, 0.96)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.48, 0.92, 0.62, 1)
+    graphics.printf(ratioText, rect.x, rect.y + math.floor((rect.h - game.fonts.body:getHeight()) * 0.5 + 0.5), rect.w, "center")
+end
+
+function ui.getPlayBackHit(_, x, y)
+    return pointInRect(x, y, getPlayBackRect())
+end
+
+function ui.getPlayStartHit(game, x, y)
+    if game.playPhase ~= "prepare" then
+        return false
+    end
+
+    return pointInRect(x, y, getPlayStartRect())
 end
 
 local function getResultsButtonRects(game)
@@ -2422,6 +2791,8 @@ end
 function ui.drawPlay(game)
     local graphics = love.graphics
     local runSummary = game.world:getRunSummary()
+    local inputGroups = game.world:getInputEdgeGroups()
+    local outputGroups = game.world:getOutputBadgeGroups()
     local scorePanel = {
         x = math.floor(game.viewport.w - 274 + 0.5),
         y = math.floor(game.viewport.h * 0.5 - 52 + 0.5),
@@ -2442,14 +2813,44 @@ function ui.drawPlay(game)
     graphics.setColor(0.97, 0.98, 1, 1)
     graphics.printf(formatScore(runSummary.finalScore or 0), scorePanel.x + 20, scorePanel.y + 44, scorePanel.w - 40, "left")
 
-    drawButton(
-        { x = 1114, y = 28, w = 134, h = 38 },
-        "Main Menu",
-        { 0.09, 0.11, 0.15, 0.98 },
-        { 0.3, 0.36, 0.42, 1 },
-        game.fonts.small
-    )
+    for _, badge in ipairs(outputGroups) do
+        drawOutputBadge(game, badge)
+    end
 
+    if game.playPhase == "prepare" then
+        for _, group in ipairs(inputGroups) do
+            drawInputPrepCard(game, group)
+        end
+    else
+        for _, group in ipairs(inputGroups) do
+            local nextTrain = game.world:getNextPendingTrainForInputEdge(group.edge.id)
+            if nextTrain then
+                drawInputLiveCard(game, group.edge, nextTrain)
+            end
+        end
+    end
+
+    drawButton(getPlayBackRect(), "Main Menu", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+
+    if game.playPhase == "prepare" then
+        drawButton(getPlayStartRect(), "Start Run", { 0.12, 0.17, 0.2, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf("Preparation Phase: set your routes, then start the clock.", 0, 34, game.viewport.w, "center")
+    end
+
+    graphics.setColor(0, 0, 0, 0.3)
+    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
+    graphics.setColor(0.8, 0.84, 0.9, 0.82)
+    graphics.printf(
+        game.playPhase == "prepare"
+            and "Press F2 for help, F3 for debug, M for menu, E for editor, or R to reset prep"
+            or "Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart",
+        0,
+        game.viewport.h - 42,
+        game.viewport.w,
+        "center"
+    )
 
     drawPlayInfoOverlay(game)
 end

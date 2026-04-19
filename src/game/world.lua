@@ -15,6 +15,7 @@ local CROSSBAR_FLASH_DURATION = 0.28
 local roadTypes = require("src.game.road_types")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
+local TRACK_STRIPE_LENGTH = 14
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -99,6 +100,25 @@ local function getColorById(colorId)
     return copyColor(COLOR_OPTIONS[1].color)
 end
 
+local function buildTrackStripeColors(colorIds, isActive)
+    if #(colorIds or {}) <= 1 then
+        return nil
+    end
+
+    local brightness = isActive and 1 or 0.58
+    local colors = {}
+    for _, colorId in ipairs(colorIds or {}) do
+        local color = getColorById(colorId)
+        colors[#colors + 1] = {
+            color[1] * brightness,
+            color[2] * brightness,
+            color[3] * brightness,
+        }
+    end
+
+    return colors
+end
+
 local function containsColorId(colors, colorId)
     for _, candidate in ipairs(colors or {}) do
         if candidate == colorId then
@@ -155,6 +175,53 @@ local function normalizeStyleSections(styleSections, totalLength, fallbackRoadTy
     end
 
     return normalizedSections
+end
+
+local function appendUnique(list, lookup, value)
+    if value and not lookup[value] then
+        lookup[value] = true
+        list[#list + 1] = value
+    end
+end
+
+local function compareScheduledTrains(firstTrain, secondTrain)
+    local firstSpawn = firstTrain.spawnTime or 0
+    local secondSpawn = secondTrain.spawnTime or 0
+    if math.abs(firstSpawn - secondSpawn) > 0.0001 then
+        return firstSpawn < secondSpawn
+    end
+
+    return tostring(firstTrain.id or "") < tostring(secondTrain.id or "")
+end
+
+local function compareEdgesBySource(firstEdge, secondEdge)
+    local firstPoint = firstEdge and firstEdge.path and firstEdge.path.points and firstEdge.path.points[1] or { x = 0, y = 0 }
+    local secondPoint = secondEdge and secondEdge.path and secondEdge.path.points and secondEdge.path.points[1] or { x = 0, y = 0 }
+
+    if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+        return firstPoint.x < secondPoint.x
+    end
+    if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+        return firstPoint.y < secondPoint.y
+    end
+
+    return tostring(firstEdge and firstEdge.id or "") < tostring(secondEdge and secondEdge.id or "")
+end
+
+local function compareEdgesByTarget(firstEdge, secondEdge)
+    local firstPoints = firstEdge and firstEdge.path and firstEdge.path.points or {}
+    local secondPoints = secondEdge and secondEdge.path and secondEdge.path.points or {}
+    local firstPoint = firstPoints[#firstPoints] or { x = 0, y = 0 }
+    local secondPoint = secondPoints[#secondPoints] or { x = 0, y = 0 }
+
+    if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+        return firstPoint.y < secondPoint.y
+    end
+    if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+        return firstPoint.x < secondPoint.x
+    end
+
+    return tostring(firstEdge and firstEdge.id or "") < tostring(secondEdge and secondEdge.id or "")
 end
 
 local function denormalizePoints(points, viewportW, viewportH)
@@ -360,7 +427,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.carriageLength = 34
     self.carriageGap = 12
     self.carriageCount = 4
-    self.exitPadding = 220
+    self.exitFadeDuration = 0.25
     self.crossingRadius = 40
     self.junctionTrackClearance = self.crossingRadius + 4
     self.collisionPoint = nil
@@ -422,7 +489,9 @@ function world:normalizeLevel(sourceLevel)
                 colors = edgeDefinition.colors or {},
                 color = color,
                 darkColor = edgeDefinition.darkColor and copyColor(edgeDefinition.darkColor) or darkerColor(color),
-                adoptInputColor = edgeDefinition.adoptInputColor == true,
+                -- Authored map routes already carry their accepted endpoint colors, so
+                -- older saved maps should not inherit the active input color visually.
+                adoptInputColor = edgeDefinition.adoptInputColor == true and edgeDefinition.routeId == nil,
                 roadType = roadTypes.normalizeRoadType(edgeDefinition.roadType),
                 speedScale = getRoadTypeScale(edgeDefinition.roadType, edgeDefinition.speedScale),
                 styleSections = edgeDefinition.styleSections or {},
@@ -751,7 +820,7 @@ function world:buildMinimumDistanceLookup()
         local goalColor = train.goalColor
         local bestDistance = nil
 
-        if startEdge and startEdge.targetType == "junction" then
+        if startEdge then
             local queue = {
                 {
                     edgeId = startEdge.id,
@@ -772,7 +841,20 @@ function world:buildMinimumDistanceLookup()
                 end
 
                 local currentEdge = self.edges[current.edgeId]
-                if not currentEdge or currentEdge.targetType ~= "junction" then
+                if not currentEdge then
+                    goto continue_distance_search
+                end
+
+                if currentEdge.targetType == "exit" then
+                    if containsColorId(currentEdge.colors, goalColor) or nearestColorId(currentEdge.color) == goalColor then
+                        if not bestDistance or current.distance < bestDistance then
+                            bestDistance = current.distance
+                        end
+                    end
+                    goto continue_distance_search
+                end
+
+                if currentEdge.targetType ~= "junction" then
                     goto continue_distance_search
                 end
 
@@ -798,9 +880,7 @@ function world:buildMinimumDistanceLookup()
             end
         end
 
-        if bestDistance then
-            bestDistance = bestDistance + self.exitPadding + getTailClearanceDistance(train.wagonCount, self.carriageLength, self.carriageGap)
-        else
+        if not bestDistance then
             bestDistance = 0
         end
 
@@ -850,9 +930,13 @@ function world:initializeLevel()
                 spawned = spawned,
                 completed = false,
                 completedAt = nil,
+                clearedAt = nil,
+                clearingExitEdgeId = nil,
                 deliveredCorrectly = false,
                 deliveredLate = false,
                 failedWrongDestination = false,
+                exiting = false,
+                exitFadeRemaining = 0,
                 actualDistance = 0,
                 minimumDistance = 0,
             }
@@ -890,14 +974,59 @@ function world:spawnTrain(train)
     train.occupiedEdgeIds = { train.startEdgeId }
     train.headDistance = train.spawnProgress or 0
     train.currentSpeed = 0
+    train.exiting = false
+    train.exitFadeRemaining = 0
+    train.clearedAt = nil
+    train.clearingExitEdgeId = nil
+end
+
+function world:isTrainCleared(train)
+    return train.completed or train.exiting
+end
+
+function world:beginTrainExit(train)
+    if not train or train.completed or train.exiting then
+        return
+    end
+
+    local occupiedEdges = self:getOccupiedEdges(train)
+    local currentEdge = occupiedEdges[#occupiedEdges]
+    if currentEdge then
+        local edgePrefix = self:getDistanceOnOccupiedEdges(occupiedEdges) - currentEdge.path.length
+        train.headDistance = edgePrefix + currentEdge.path.length
+        self:trimTrainOccupiedEdges(train, occupiedEdges)
+    end
+
+    train.currentSpeed = 0
+    train.exiting = true
+    train.exitFadeRemaining = self.exitFadeDuration
+    train.clearedAt = self.elapsedTime
+    train.clearingExitEdgeId = train.clearingExitEdgeId or (currentEdge and currentEdge.id or nil)
 end
 
 function world:completeTrain(train)
+    if train.completed then
+        return
+    end
+
     train.completed = true
+    train.exiting = false
+    train.exitFadeRemaining = 0
     train.currentSpeed = 0
-    train.completedAt = self.elapsedTime
+    train.completedAt = train.clearedAt or self.elapsedTime
     train.deliveredCorrectly = not train.failedWrongDestination
     train.deliveredLate = train.deliveredCorrectly and train.deadline ~= nil and train.completedAt > train.deadline
+end
+
+function world:updateTrainExit(train, dt)
+    if not train.exiting or train.completed then
+        return
+    end
+
+    train.exitFadeRemaining = math.max(0, (train.exitFadeRemaining or 0) - dt)
+    if train.exitFadeRemaining <= 0 then
+        self:completeTrain(train)
+    end
 end
 
 function world:doesOutputAcceptTrain(train, junction, outputEdge)
@@ -1219,7 +1348,7 @@ end
 
 function world:getDesiredLeadDistance(train)
     local currentEdge = self.edges[train.edgeId]
-    if not currentEdge or train.completed or currentEdge.targetType ~= "junction" then
+    if not currentEdge or self:isTrainCleared(train) or currentEdge.targetType ~= "junction" then
         return nil
     end
 
@@ -1269,6 +1398,9 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
     train.edgeId = outputEdge.id
     train.occupiedEdgeIds[#train.occupiedEdgeIds + 1] = outputEdge.id
     self:trimTrainOccupiedEdges(train)
+    if outputEdge.targetType == "exit" then
+        train.clearingExitEdgeId = outputEdge.id
+    end
 
     if junction.control.type == "trip" and junction.control.remainingTrips > 0 and not junction.control.pendingResetTrainId then
         junction.control.pendingResetTrainId = train.id
@@ -1279,7 +1411,7 @@ function world:advanceTrainToNextEdge(train, junction, overflow)
 end
 
 function world:updateTrain(train, dt)
-    if train.completed or not train.spawned then
+    if self:isTrainCleared(train) or not train.spawned then
         return
     end
 
@@ -1325,7 +1457,7 @@ function world:updateTrain(train, dt)
     train.headDistance = previousLength + nextProgress
     self:trimTrainOccupiedEdges(train)
 
-    while not train.completed do
+    while not self:isTrainCleared(train) do
         currentEdge = self.edges[train.edgeId]
         if not currentEdge then
             train.completed = true
@@ -1342,6 +1474,9 @@ function world:updateTrain(train, dt)
             local junction = self.junctions[currentEdge.targetId]
             local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
             if not junction or not activeInput or activeInput.id ~= currentEdge.id then
+                if overflow > 0 then
+                    train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+                end
                 local edgePrefix = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
                 train.headDistance = edgePrefix + currentEdge.path.length
                 train.currentSpeed = 0
@@ -1350,16 +1485,15 @@ function world:updateTrain(train, dt)
             if not self:advanceTrainToNextEdge(train, junction, overflow) then
                 break
             end
+        elseif currentEdge.targetType == "exit" then
+            if overflow > 0 then
+                train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+            end
+            self:beginTrainExit(train)
+            break
         else
             break
         end
-    end
-
-    local occupiedEdges = self:getOccupiedEdges(train)
-    local tailDistance = (train.headDistance or 0) - ((train.wagonCount or self.carriageCount) - 1) * (self.carriageLength + self.carriageGap)
-    local occupiedLength = self:getDistanceOnOccupiedEdges(occupiedEdges)
-    if currentEdge and currentEdge.targetType == "exit" and tailDistance > occupiedLength + self.exitPadding then
-        self:completeTrain(train)
     end
 end
 
@@ -1368,7 +1502,7 @@ function world:getTrainCarriagePositions(train)
     local carriageSpacing = self.carriageLength + self.carriageGap
     local occupiedEdges = self:getOccupiedEdges(train)
 
-    if train.completed or not train.spawned or #occupiedEdges == 0 then
+    if (train.completed and not train.exiting) or not train.spawned or #occupiedEdges == 0 then
         return positions
     end
 
@@ -1393,21 +1527,25 @@ function world:updateCollisionState()
 
     for firstIndex = 1, #self.trains - 1 do
         local firstTrain = self.trains[firstIndex]
-        local firstCars = self:getTrainCarriagePositions(firstTrain)
+        if firstTrain.spawned and not firstTrain.completed then
+            local firstCars = self:getTrainCarriagePositions(firstTrain)
 
-        for secondIndex = firstIndex + 1, #self.trains do
-            local secondTrain = self.trains[secondIndex]
-            local secondCars = self:getTrainCarriagePositions(secondTrain)
+            for secondIndex = firstIndex + 1, #self.trains do
+                local secondTrain = self.trains[secondIndex]
+                if secondTrain.spawned and not secondTrain.completed then
+                    local secondCars = self:getTrainCarriagePositions(secondTrain)
 
-            for _, firstCar in ipairs(firstCars) do
-                for _, secondCar in ipairs(secondCars) do
-                    if distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
-                        self.failureReason = "collision"
-                        self.collisionPoint = {
-                            x = (firstCar.x + secondCar.x) * 0.5,
-                            y = (firstCar.y + secondCar.y) * 0.5,
-                        }
-                        return
+                    for _, firstCar in ipairs(firstCars) do
+                        for _, secondCar in ipairs(secondCars) do
+                            if distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
+                                self.failureReason = "collision"
+                                self.collisionPoint = {
+                                    x = (firstCar.x + secondCar.x) * 0.5,
+                                    y = (firstCar.y + secondCar.y) * 0.5,
+                                }
+                                return
+                            end
+                        end
                     end
                 end
             end
@@ -1417,7 +1555,7 @@ end
 
 function world:updateDeadlineState()
     for _, train in ipairs(self.trains) do
-        if not train.completed and train.deadline and self.elapsedTime > train.deadline then
+        if not self:isTrainCleared(train) and train.deadline and self.elapsedTime > train.deadline then
             self.failureTrain = train
         end
     end
@@ -1440,7 +1578,7 @@ function world:update(dt)
 
     for _, train in ipairs(self.trains) do
         local trainDt = dt
-        if not train.spawned and not train.completed then
+        if not train.spawned and not self:isTrainCleared(train) then
             if self.elapsedTime >= (train.spawnTime or 0) then
                 self:spawnTrain(train)
                 trainDt = self.elapsedTime - math.max(previousElapsed, train.spawnTime or 0)
@@ -1452,6 +1590,8 @@ function world:update(dt)
         if trainDt and trainDt > 0 then
             self:updateTrain(train, trainDt)
         end
+
+        self:updateTrainExit(train, dt)
     end
 
     self:updateCollisionState()
@@ -1481,7 +1621,7 @@ end
 function world:countCompletedTrains()
     local completedCount = 0
     for _, train in ipairs(self.trains) do
-        if train.completed then
+        if self:isTrainCleared(train) then
             completedCount = completedCount + 1
         end
     end
@@ -1560,10 +1700,149 @@ function world:getCurrentScore()
     return self:getRunSummary().finalScore
 end
 
+function world:getInputEdgeGroups()
+    local orderedGroups = {}
+    local startEdges = {}
+
+    for _, edge in pairs(self.edges or {}) do
+        if edge and edge.sourceType == "start" then
+            startEdges[#startEdges + 1] = edge
+        end
+    end
+
+    table.sort(startEdges, compareEdgesBySource)
+
+    for _, startEdge in ipairs(startEdges) do
+        orderedGroups[#orderedGroups + 1] = {
+            edge = startEdge,
+            trains = {},
+        }
+    end
+
+    local groupsByEdgeId = {}
+    for _, group in ipairs(orderedGroups) do
+        groupsByEdgeId[group.edge.id] = group
+    end
+
+    for _, train in ipairs(self.trains or {}) do
+        local inputEdgeId = train.startEdgeId or train.edgeId
+        local group = groupsByEdgeId[inputEdgeId]
+        if group then
+            group.trains[#group.trains + 1] = train
+        end
+    end
+
+    for _, group in ipairs(orderedGroups) do
+        table.sort(group.trains, compareScheduledTrains)
+    end
+
+    return orderedGroups
+end
+
+function world:getNextPendingTrainForInputEdge(edgeId)
+    local nextTrain = nil
+
+    for _, train in ipairs(self.trains or {}) do
+        local inputEdgeId = train.startEdgeId or train.edgeId
+        if inputEdgeId == edgeId and not train.spawned and not self:isTrainCleared(train) then
+            if not nextTrain or compareScheduledTrains(train, nextTrain) then
+                nextTrain = train
+            end
+        end
+    end
+
+    return nextTrain
+end
+
+function world:getOutputAcceptedGoalColors(outputEdge)
+    local colors = {}
+    local lookup = {}
+
+    for _, colorId in ipairs(outputEdge and outputEdge.colors or {}) do
+        appendUnique(colors, lookup, colorId)
+    end
+
+    if outputEdge and outputEdge.adoptInputColor then
+        local sourceJunction = self.junctions[outputEdge.sourceId]
+        for _, inputEdge in ipairs(sourceJunction and sourceJunction.inputs or {}) do
+            for _, colorId in ipairs(inputEdge.colors or {}) do
+                appendUnique(colors, lookup, colorId)
+            end
+        end
+    end
+
+    if #colors == 0 and outputEdge then
+        appendUnique(colors, lookup, nearestColorId(outputEdge.color))
+    end
+
+    return colors
+end
+
+function world:getOutputBadgeGroups()
+    local groupedByExitId = {}
+    local orderedGroups = {}
+    local exitEdges = {}
+
+    for _, edge in pairs(self.edges or {}) do
+        if edge and edge.targetType == "exit" then
+            exitEdges[#exitEdges + 1] = edge
+        end
+    end
+
+    table.sort(exitEdges, compareEdgesByTarget)
+
+    local groupByEdgeId = {}
+    for _, outputEdge in ipairs(exitEdges) do
+        local exitId = outputEdge.targetId or outputEdge.id
+        local group = groupedByExitId[exitId]
+
+        if not group then
+            group = {
+                edge = outputEdge,
+                edges = {},
+                expectedCount = 0,
+                deliveredCount = 0,
+                acceptedColors = {},
+                acceptedLookup = {},
+            }
+            groupedByExitId[exitId] = group
+            orderedGroups[#orderedGroups + 1] = group
+        end
+
+        group.edges[#group.edges + 1] = outputEdge
+        groupByEdgeId[outputEdge.id] = group
+
+        for _, colorId in ipairs(self:getOutputAcceptedGoalColors(outputEdge)) do
+            appendUnique(group.acceptedColors, group.acceptedLookup, colorId)
+        end
+    end
+
+    for _, train in ipairs(self.trains or {}) do
+        local goalColor = train.goalColor or train.trainColor
+        for _, group in ipairs(orderedGroups) do
+            if group.acceptedLookup[goalColor] then
+                group.expectedCount = group.expectedCount + 1
+            end
+        end
+
+        local deliveredGroup = groupByEdgeId[train.clearingExitEdgeId]
+        if deliveredGroup and self:isTrainCleared(train) then
+            deliveredGroup.deliveredCount = deliveredGroup.deliveredCount + 1
+        end
+    end
+
+    for _, group in ipairs(orderedGroups) do
+        group.acceptedLookup = nil
+        group.edges = nil
+    end
+
+    return orderedGroups
+end
+
 function world:getNextQueuedTrain()
     local bestTrain = nil
     for _, train in ipairs(self.trains) do
-        if not train.spawned and not train.completed then
+        if not train.spawned and not self:isTrainCleared(train) then
             if not bestTrain or (train.spawnTime or 0) < (bestTrain.spawnTime or 0) then
                 bestTrain = train
             end
@@ -1575,7 +1854,7 @@ end
 function world:getNearestPendingDeadline()
     local bestTrain = nil
     for _, train in ipairs(self.trains) do
-        if not train.completed and train.deadline then
+        if not self:isTrainCleared(train) and train.deadline then
             if not bestTrain or train.deadline < bestTrain.deadline then
                 bestTrain = train
             end
@@ -1717,6 +1996,52 @@ function world:drawTrackRoadTypeMarkers(track, isActive)
     end
 end
 
+function world:drawTrackLine(points, width, color, alpha)
+    local graphics = love.graphics
+    graphics.setColor(color[1], color[2], color[3], alpha or 1)
+    graphics.setLineWidth(width)
+    graphics.line(points)
+end
+
+function world:drawStripedTrack(points, width, stripeColors, alpha)
+    local graphics = love.graphics
+    local stripeIndex = 1
+
+    graphics.setLineWidth(width)
+    for pointIndex = 1, #points - 3, 2 do
+        local ax = points[pointIndex]
+        local ay = points[pointIndex + 1]
+        local bx = points[pointIndex + 2]
+        local by = points[pointIndex + 3]
+        local dx = bx - ax
+        local dy = by - ay
+        local length = math.sqrt(dx * dx + dy * dy)
+
+        if length > 0.0001 then
+            local unitX = dx / length
+            local unitY = dy / length
+            local stripeLength = math.max(8, TRACK_STRIPE_LENGTH - #stripeColors)
+
+            for offset = 0, math.ceil(length / stripeLength) - 1 do
+                local startDistance = offset * stripeLength
+                local endDistance = math.min(length, startDistance + stripeLength)
+                local color = stripeColors[stripeIndex]
+                graphics.setColor(color[1], color[2], color[3], alpha or 1)
+                graphics.line(
+                    ax + unitX * startDistance,
+                    ay + unitY * startDistance,
+                    ax + unitX * endDistance,
+                    ay + unitY * endDistance
+                )
+                stripeIndex = stripeIndex + 1
+                if stripeIndex > #stripeColors then
+                    stripeIndex = 1
+                end
+            end
+        end
+    end
+end
+
 function world:getInputTrackAngle(track)
     if not track or #track.path.points < 2 then
         return -math.pi * 0.5
@@ -1730,6 +2055,7 @@ function world:drawInputTrack(track, isActive)
     local graphics = love.graphics
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
+    local stripeColors = buildTrackStripeColors(track.colors, isActive)
     local renderedPoints = self:getRenderedTrackPoints(track)
     if #renderedPoints < 2 then
         return
@@ -1742,9 +2068,40 @@ function world:drawInputTrack(track, isActive)
     graphics.setLineWidth(self.trackWidth + 10)
     graphics.line(points)
 
-    graphics.setColor(trackColor[1], trackColor[2], trackColor[3], trackAlpha)
-    graphics.setLineWidth(self.trackWidth)
+    if stripeColors then
+        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
+    else
+        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
+    end
+end
+
+function world:drawStandaloneTrack(track, isActive)
+    local graphics = love.graphics
+    local trackColor = isActive and track.color or track.darkColor
+    local trackAlpha = isActive and 0.96 or 0.72
+    local stripeColors = nil
+
+    if not track.adoptInputColor then
+        stripeColors = buildTrackStripeColors(track.colors, isActive)
+    end
+
+    local renderedPoints = self:getRenderedTrackPoints(track)
+    if #renderedPoints < 2 then
+        return
+    end
+
+    local points = flattenPoints(renderedPoints)
+
+    graphics.setLineStyle("rough")
+    graphics.setColor(0.17, 0.21, 0.24, 0.95)
+    graphics.setLineWidth(self.trackWidth + 10)
     graphics.line(points)
+
+    if stripeColors then
+        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
+    else
+        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
+    end
 
     self:drawTrackRoadTypeMarkers(track, isActive)
 end
@@ -1753,6 +2110,7 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
     local color = self:getOutputDisplayColor(junction, outputIndex, isActive)
+    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
     local renderedPoints = self:getRenderedTrackPoints(outputTrack)
     if #renderedPoints < 2 then
         return
@@ -1764,9 +2122,11 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     graphics.setLineWidth(self.sharedWidth + 10)
     graphics.line(points)
 
-    graphics.setColor(color[1], color[2], color[3], isActive and 0.98 or 0.7)
-    graphics.setLineWidth(self.sharedWidth)
-    graphics.line(points)
+    if stripeColors then
+        self:drawStripedTrack(points, self.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
+    else
+        self:drawTrackLine(points, self.sharedWidth, color, isActive and 0.98 or 0.7)
+    end
 
     self:drawTrackRoadTypeMarkers(outputTrack, isActive)
 end
@@ -2077,7 +2437,7 @@ function world:drawTrackSignal(junction, inputIndex)
 end
 
 function world:drawTrain(train)
-    if train.completed then
+    if train.completed and not train.exiting then
         return
     end
 
@@ -2085,6 +2445,16 @@ function world:drawTrain(train)
     local carriages = self:getTrainCarriagePositions(train)
     local width = self.carriageLength
     local height = 18
+    local outlineWidth = 2
+    local alpha = 1
+
+    if train.exiting and self.exitFadeDuration > 0 then
+        alpha = clamp((train.exitFadeRemaining or 0) / self.exitFadeDuration, 0, 1)
+    end
+
+    if alpha <= 0 then
+        return
+    end
 
     for carriageIndex = #carriages, 1, -1 do
         local carriage = carriages[carriageIndex]
@@ -2092,11 +2462,12 @@ function world:drawTrain(train)
         graphics.push()
         graphics.translate(carriage.x, carriage.y)
         graphics.rotate(carriage.angle)
-        graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95)
+        graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95 * alpha)
         graphics.rectangle("fill", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(train.color[1], train.color[2], train.color[3], 1)
+        graphics.setColor(train.color[1], train.color[2], train.color[3], alpha)
+        graphics.setLineWidth(outlineWidth)
         graphics.rectangle("line", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(0.94, 0.96, 0.98, 0.9)
+        graphics.setColor(0.94, 0.96, 0.98, 0.9 * alpha)
         graphics.rectangle("fill", -width * 0.22, -height * 0.28, width * 0.44, height * 0.56, 3, 3)
         graphics.pop()
     end
@@ -2121,6 +2492,7 @@ end
 function world:draw()
     local graphics = love.graphics
     local highlightedEdgeIds = self:getHighlightedEdgeIds()
+    local drawnEdgeIds = {}
 
     graphics.setColor(0.08, 0.1, 0.12, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
@@ -2129,17 +2501,29 @@ function world:draw()
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
             self:drawOutputTrack(junction, outputIndex, outputTrack and highlightedEdgeIds[outputTrack.id] == true)
+            if outputTrack then
+                drawnEdgeIds[outputTrack.id] = true
+            end
         end
 
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
             self:drawInputTrack(inputTrack, inputTrack and highlightedEdgeIds[inputTrack.id] == true)
+            if inputTrack then
+                drawnEdgeIds[inputTrack.id] = true
+            end
         end
 
         self:drawCrossing(junction)
 
         for inputIndex = 1, #junction.inputs do
             self:drawTrackSignal(junction, inputIndex)
+        end
+    end
+
+    for _, track in pairs(self.edges or {}) do
+        if track and not drawnEdgeIds[track.id] then
+            self:drawStandaloneTrack(track, highlightedEdgeIds[track.id] == true)
         end
     end
 
