@@ -2990,7 +2990,7 @@ function ui.drawLeaderboard(game)
     if shouldShowLeaderboardMapColumn(game) then
         graphics.printf("Latest Map", layout.mapX, headerY, layout.mapWidth, "left")
     end
-    graphics.printf("Record", layout.recordX, headerY, LEADERBOARD_LAYOUT.recordWidth, "right")
+    graphics.printf("Record", layout.recordX, headerY, LEADERBOARD_LAYOUT.recordWidth, "left")
 
     local rowRects = buildLeaderboardRowRects(game, state.entries or {})
     for _, rowRect in ipairs(rowRects) do
@@ -3016,7 +3016,7 @@ function ui.drawLeaderboard(game)
             rowRect.record.x,
             rowY + 2,
             rowRect.record.w,
-            "right"
+            "left"
         )
     end
 
