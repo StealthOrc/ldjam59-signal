@@ -38,10 +38,15 @@ luac.out
 *.i*86
 *.x86_64
 *.hex
+*.love
+dist/
 
 # Local tooling metadata
 .codex/
+
+# Local environment secrets
 .env
+.env.*
 
 *claude
 
@@ -53,4 +58,3 @@ settings.json
 /AGENTS.md
 .idea
 *idea/
-.env
