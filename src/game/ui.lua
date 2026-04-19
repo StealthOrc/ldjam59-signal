@@ -1951,6 +1951,45 @@ local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted
     )
 end
 
+local function getLevelSelectLeaderboardVisibleEntries(topEntries, pinnedPlayerEntry, maxRows)
+    local resolvedMaxRows = math.max(0, tonumber(maxRows) or LEVEL_SELECT_LEADERBOARD_CARD.maxRows)
+    local visibleTopEntries = {}
+    local visiblePinnedPlayerEntry = pinnedPlayerEntry
+    local visibleTopEntryLimit = resolvedMaxRows
+
+    if visiblePinnedPlayerEntry and visibleTopEntryLimit > 0 then
+        visibleTopEntryLimit = visibleTopEntryLimit - 1
+    end
+
+    for index, entry in ipairs(topEntries or {}) do
+        if index > visibleTopEntryLimit then
+            break
+        end
+
+        visibleTopEntries[#visibleTopEntries + 1] = entry
+    end
+
+    if resolvedMaxRows <= 0 then
+        visiblePinnedPlayerEntry = nil
+    end
+
+    return visibleTopEntries, visiblePinnedPlayerEntry
+end
+
+local function getLevelSelectLeaderboardPinnedRowY(contentRect, visibleEntryCount)
+    local resolvedVisibleEntryCount = math.max(0, tonumber(visibleEntryCount) or 0)
+    local baseRowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
+
+    if resolvedVisibleEntryCount == 0 then
+        return baseRowY
+    end
+
+    return baseRowY
+        + (resolvedVisibleEntryCount * LEVEL_SELECT_LEADERBOARD_CARD.rowHeight)
+        + ((resolvedVisibleEntryCount - 1) * LEVEL_SELECT_LEADERBOARD_CARD.rowGap)
+        + LEVEL_SELECT_LEADERBOARD_CARD.pinnedGap
+end
+
 local function drawLevelSelectLeaderboardBack(game, rect)
     local graphics = love.graphics
     local contentRect = {
@@ -1960,8 +1999,11 @@ local function drawLevelSelectLeaderboardBack(game, rect)
         h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
     }
     local previewState = game:getLevelSelectPreviewDisplayState(rect.map.mapUuid)
-    local topEntries = previewState.topEntries or {}
-    local pinnedPlayerEntry = previewState.pinnedPlayerEntry
+    local topEntries, pinnedPlayerEntry = getLevelSelectLeaderboardVisibleEntries(
+        previewState.topEntries or {},
+        previewState.pinnedPlayerEntry,
+        LEVEL_SELECT_LEADERBOARD_CARD.maxRows
+    )
     local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
 
     love.graphics.setFont(game.fonts.body)
@@ -1987,7 +2029,7 @@ local function drawLevelSelectLeaderboardBack(game, rect)
     if pinnedPlayerEntry then
         local pinnedRowRect = {
             x = contentRect.x,
-            y = contentRect.y + contentRect.h - LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+            y = getLevelSelectLeaderboardPinnedRowY(contentRect, #topEntries),
             w = contentRect.w,
             h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
         }
@@ -3314,5 +3356,7 @@ ui.formatLeaderboardScore = formatLeaderboardScore
 ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
 ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
+ui.getLevelSelectLeaderboardVisibleEntries = getLevelSelectLeaderboardVisibleEntries
+ui.getLevelSelectLeaderboardPinnedRowY = getLevelSelectLeaderboardPinnedRowY
 
 return ui
