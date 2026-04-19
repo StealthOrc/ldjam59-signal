@@ -113,6 +113,12 @@ local LEADERBOARD_LOADING = {
     emptySpinnerYOffset = 34,
     emptyTextYOffset = 68,
 }
+local LEADERBOARD_SCORE_DECIMAL_PLACES = 3
+local LEVEL_SELECT_LEADERBOARD_PLAYER_NAME_MAX_CHARACTERS = 14
+local LEADERBOARD_REFRESH_INDICATOR_RIGHT_PADDING = 28
+local LEADERBOARD_REFRESH_INDICATOR_BOTTOM_PADDING = 18
+local REFRESH_LOADING_ANIMATION_STEP_SECONDS = 0.4
+local REFRESH_LOADING_ANIMATION_FRAME_COUNT = 3
 
 local LEADERBOARD_LAYOUT = {
     panelX = 36,
@@ -154,6 +160,8 @@ local LEVEL_SELECT_LEADERBOARD_CARD = {
     pinnedGap = 12,
     statusPaddingX = 20,
     statusWidthMargin = 40,
+    refreshPaddingRight = 8,
+    refreshPaddingBottom = 2,
 }
 
 local function pointInRect(x, y, rect)
@@ -233,6 +241,84 @@ local function formatScore(value)
     return formatted
 end
 
+local function formatLeaderboardScore(value)
+    return string.format("%." .. tostring(LEADERBOARD_SCORE_DECIMAL_PLACES) .. "f", value or 0)
+end
+
+local function getNowSeconds()
+    if love and love.timer and love.timer.getTime then
+        return love.timer.getTime()
+    end
+
+    return os.clock()
+end
+
+local function getNowUnixSeconds()
+    if os and os.time then
+        return os.time()
+    end
+
+    return math.floor(getNowSeconds())
+end
+
+local function truncateText(text, maxCharacters)
+    local resolvedText = tostring(text or "")
+    local resolvedMaxCharacters = math.max(0, maxCharacters or 0)
+
+    if resolvedText == "" then
+        return resolvedText
+    end
+
+    if utf8 and utf8.len and utf8.offset then
+        local characterCount = utf8.len(resolvedText)
+        if characterCount and characterCount > resolvedMaxCharacters then
+            local endByte = utf8.offset(resolvedText, resolvedMaxCharacters + 1)
+            if endByte then
+                return resolvedText:sub(1, endByte - 1)
+            end
+        end
+        return resolvedText
+    end
+
+    if #resolvedText > resolvedMaxCharacters then
+        return resolvedText:sub(1, resolvedMaxCharacters)
+    end
+
+    return resolvedText
+end
+
+local function formatLevelSelectLeaderboardPlayerName(value)
+    local displayName = tostring(value or "Unknown")
+    if displayName == "" then
+        displayName = "Unknown"
+    end
+    return truncateText(displayName, LEVEL_SELECT_LEADERBOARD_PLAYER_NAME_MAX_CHARACTERS)
+end
+
+local function formatLoadingLabel(baseLabel, animationTime)
+    local resolvedAnimationTime = animationTime or getNowSeconds()
+    local animationFrame = math.floor(resolvedAnimationTime / REFRESH_LOADING_ANIMATION_STEP_SECONDS) % REFRESH_LOADING_ANIMATION_FRAME_COUNT
+    return baseLabel .. string.rep(".", animationFrame + 1)
+end
+
+local function formatLeaderboardRefreshLabel(nextRefreshAt, nowSeconds, isLoading, animationTime)
+    if isLoading then
+        return formatLoadingLabel("Refreshing", animationTime)
+    end
+
+    local resolvedNowSeconds = nowSeconds or getNowSeconds()
+    if type(nextRefreshAt) ~= "number" then
+        return "Refresh in 0s"
+    end
+
+    local remainingSeconds = math.max(0, math.ceil(nextRefreshAt - resolvedNowSeconds))
+    return string.format("Refresh in %ds", remainingSeconds)
+end
+
+local function formatLevelSelectLeaderboardRefreshLabel(nextRefreshAt, nowUnixSeconds, isLoading, animationTime)
+    return formatLeaderboardRefreshLabel(nextRefreshAt, nowUnixSeconds or getNowUnixSeconds(), isLoading, animationTime)
+end
+
 local function drawMetalPanel(rect, innerAlpha)
     local graphics = love.graphics
     local alpha = innerAlpha or 0.98
@@ -257,6 +343,40 @@ local function drawLoadingSpinner(centerX, centerY, color)
     graphics.setLineWidth(LEADERBOARD_LOADING.spinnerThickness)
     graphics.arc("line", "open", centerX, centerY, LEADERBOARD_LOADING.spinnerRadius, startAngle, endAngle)
     graphics.setLineWidth(1)
+end
+
+local function drawLeaderboardRefreshIndicator(game, panel, state)
+    local graphics = love.graphics
+    local label = formatLeaderboardRefreshLabel(
+        state and state.nextRefreshAt or nil,
+        getNowSeconds(),
+        state and state.status == "loading" or false,
+        getNowSeconds()
+    )
+    local textWidth = game.fonts.small:getWidth(label)
+    local textX = panel.x + panel.w - LEADERBOARD_REFRESH_INDICATOR_RIGHT_PADDING - textWidth
+    local textY = panel.y + panel.h - LEADERBOARD_REFRESH_INDICATOR_BOTTOM_PADDING - game.fonts.small:getHeight()
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.68, 0.74, 0.8, 1)
+    graphics.print(label, textX, textY)
+end
+
+local function drawLevelSelectLeaderboardRefreshIndicator(game, contentRect, previewState)
+    local graphics = love.graphics
+    local label = formatLevelSelectLeaderboardRefreshLabel(
+        previewState and previewState.nextRefreshAt or nil,
+        getNowUnixSeconds(),
+        previewState and previewState.isLoading or false,
+        getNowSeconds()
+    )
+    local textWidth = game.fonts.small:getWidth(label)
+    local textX = contentRect.x + contentRect.w - LEVEL_SELECT_LEADERBOARD_CARD.refreshPaddingRight - textWidth
+    local textY = contentRect.y + contentRect.h - LEVEL_SELECT_LEADERBOARD_CARD.refreshPaddingBottom - game.fonts.small:getHeight()
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+    graphics.print(label, textX, textY)
 end
 
 local function getLeaderboardPanelRect(game)
@@ -1621,7 +1741,7 @@ local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted
     local nameX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX + LEVEL_SELECT_LEADERBOARD_CARD.rankWidth
     local nameWidth = rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.rankWidth - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - (LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX * 2)
     graphics.printf(
-        tostring(entry.playerDisplayName or "Unknown"),
+        formatLevelSelectLeaderboardPlayerName(entry.playerDisplayName or "Unknown"),
         nameX,
         rowRect.y + 4,
         math.max(0, nameWidth),
@@ -1629,7 +1749,7 @@ local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted
     )
 
     graphics.printf(
-        formatScore(entry.score or 0),
+        formatLeaderboardScore(entry.score or 0),
         rowRect.x + rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
         rowRect.y + 4,
         LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth,
@@ -1694,6 +1814,8 @@ local function drawLevelSelectLeaderboardBack(game, rect)
             "center"
         )
     end
+
+    drawLevelSelectLeaderboardRefreshIndicator(game, contentRect, previewState)
 end
 
 local function drawLevelCard(game, rect)
@@ -2594,6 +2716,7 @@ function ui.drawLeaderboard(game)
             contentW,
             "center"
         )
+        drawLeaderboardRefreshIndicator(game, panel, state)
         return
     end
 
@@ -2601,6 +2724,7 @@ function ui.drawLeaderboard(game)
         love.graphics.setFont(game.fonts.body)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf(state.message or "No entries are available yet.", contentX, panel.y + 180, contentW, "center")
+        drawLeaderboardRefreshIndicator(game, panel, state)
         return
     end
 
@@ -2626,7 +2750,7 @@ function ui.drawLeaderboard(game)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.print(tostring(entry.rank or 0), contentX + 12, rowY + 2)
         graphics.printf(entry.playerDisplayName or "Unknown", rowRect.player.x, rowY + 2, rowRect.player.w, "left")
-        graphics.printf(formatScore(entry.score or 0), layout.scoreX, rowY + 2, LEADERBOARD_LAYOUT.scoreWidth, "center")
+        graphics.printf(formatLeaderboardScore(entry.score or 0), layout.scoreX, rowY + 2, LEADERBOARD_LAYOUT.scoreWidth, "center")
         if rowRect.map then
             graphics.setColor(0.72, 0.78, 0.84, 1)
             graphics.printf(entry.mapName or "Unknown Map", rowRect.map.x, rowY + 2, rowRect.map.w, "left")
@@ -2644,6 +2768,7 @@ function ui.drawLeaderboard(game)
         )
     end
 
+    drawLeaderboardRefreshIndicator(game, panel, state)
     drawLeaderboardTooltip(game, game.leaderboardHoverInfo)
 end
 
@@ -2969,5 +3094,10 @@ function ui.drawResults(game)
     drawButton(buttons.editor, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
     drawButton(buttons.menu, "Main Menu", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 end
+
+ui.formatLeaderboardScore = formatLeaderboardScore
+ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
+ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
+ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
 
 return ui
