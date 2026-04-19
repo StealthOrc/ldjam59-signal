@@ -44,6 +44,10 @@ dist/
 # Local tooling metadata
 .codex/
 
+# Local environment secrets
+.env
+.env.*
+
 *claude
 
 launch.json
