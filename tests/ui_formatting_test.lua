@@ -15,6 +15,18 @@ assertEqual(ui.formatLeaderboardScore(70.3), "70.300", "leaderboard score keeps 
 assertEqual(ui.formatLeaderboardScore(70.013), "70.013", "leaderboard score keeps thousandths")
 assertEqual(ui.formatLeaderboardScore(70), "70.000", "leaderboard score shows three decimals for integers")
 
+assert(type(ui.formatLeaderboardEntryTimestamp) == "function", "ui.formatLeaderboardEntryTimestamp should exist")
+assertEqual(
+    ui.formatLeaderboardEntryTimestamp("2026-04-20T13:45:59Z"),
+    "2026-04-20 13:45",
+    "leaderboard timestamp trims ISO timestamps to date and minute"
+)
+assertEqual(
+    ui.formatLeaderboardEntryTimestamp(nil),
+    "Unknown",
+    "leaderboard timestamp falls back when no timestamp is available"
+)
+
 assert(type(ui.formatLevelSelectLeaderboardPlayerName) == "function", "ui.formatLevelSelectLeaderboardPlayerName should exist")
 assertEqual(
     ui.formatLevelSelectLeaderboardPlayerName("ABCDEFGHIJKLMN"),

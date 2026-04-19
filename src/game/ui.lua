@@ -157,10 +157,14 @@ local LEADERBOARD_LAYOUT = {
     rowRadius = 10,
     rankWidth = 40,
     mapGap = 28,
-    mapWidth = 260,
+    mapMinWidth = 176,
     playerXOffset = 52,
     playerRightPadding = 36,
     scoreWidth = 120,
+    maxVisibleRows = 12,
+    recordWidth = 152,
+    recordGap = 18,
+    recordRightPadding = 16,
     tooltipWidth = 360,
     tooltipHeight = 62,
     tooltipOffsetY = 18,
@@ -288,6 +292,34 @@ end
 
 local function formatLeaderboardScore(value)
     return string.format("%." .. tostring(LEADERBOARD_SCORE_DECIMAL_PLACES) .. "f", value or 0)
+end
+
+local function formatLeaderboardEntryTimestamp(value)
+    if type(value) == "number" then
+        return os.date("%Y-%m-%d %H:%M", value)
+    end
+
+    local text = trim(tostring(value or ""))
+    if text == "" then
+        return "Unknown"
+    end
+
+    local numericValue = tonumber(text)
+    if numericValue then
+        return os.date("%Y-%m-%d %H:%M", numericValue)
+    end
+
+    local year, month, day, hour, minute = text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt%s](%d%d):(%d%d)")
+    if year and month and day and hour and minute then
+        return string.format("%s-%s-%s %s:%s", year, month, day, hour, minute)
+    end
+
+    local dateOnlyYear, dateOnlyMonth, dateOnlyDay = text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if dateOnlyYear and dateOnlyMonth and dateOnlyDay then
+        return string.format("%s-%s-%s", dateOnlyYear, dateOnlyMonth, dateOnlyDay)
+    end
+
+    return safeUiText(text, "Unknown")
 end
 
 local function getNowSeconds()
@@ -442,8 +474,10 @@ local function getLeaderboardContentLayout(game)
     local panel = getLeaderboardPanelRect(game)
     local contentX = panel.x + LEADERBOARD_LAYOUT.contentPadding
     local contentW = panel.w - (LEADERBOARD_LAYOUT.contentPadding * 2)
-    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
+    local recordX = contentX + contentW - LEADERBOARD_LAYOUT.recordWidth - LEADERBOARD_LAYOUT.recordRightPadding
+    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth - LEADERBOARD_LAYOUT.recordWidth - LEADERBOARD_LAYOUT.recordGap) * 0.5 + 0.5)
     local mapX = scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap
+    local mapWidth = math.max(LEADERBOARD_LAYOUT.mapMinWidth, recordX - mapX - LEADERBOARD_LAYOUT.recordGap)
     local playerX = contentX + LEADERBOARD_LAYOUT.playerXOffset
     local playerRightEdge = shouldShowLeaderboardMapColumn(game)
         and (mapX - LEADERBOARD_LAYOUT.mapGap)
@@ -455,6 +489,8 @@ local function getLeaderboardContentLayout(game)
         contentX = contentX,
         contentW = contentW,
         mapX = mapX,
+        mapWidth = mapWidth,
+        recordX = recordX,
         scoreX = scoreX,
         playerX = playerX,
         playerWidth = playerWidth,
@@ -483,7 +519,10 @@ end
 local function buildLeaderboardRowRects(game, entries)
     local layout = getLeaderboardContentLayout(game)
     local rects = {}
-    local maxEntries = math.min(12, #(entries or {}))
+    local maxEntries = math.min(
+        LEADERBOARD_LAYOUT.maxVisibleRows,
+        #(entries or {})
+    )
     local rowY = layout.panel.y + LEADERBOARD_LAYOUT.headerY + LEADERBOARD_LAYOUT.rowYOffset
 
     for index = 1, maxEntries do
@@ -505,9 +544,15 @@ local function buildLeaderboardRowRects(game, entries)
             map = shouldShowLeaderboardMapColumn(game) and {
                 x = layout.mapX,
                 y = rowY,
-                w = LEADERBOARD_LAYOUT.mapWidth,
+                w = layout.mapWidth,
                 h = game.fonts.small:getHeight() + 8,
             } or nil,
+            record = {
+                x = layout.recordX,
+                y = rowY,
+                w = LEADERBOARD_LAYOUT.recordWidth,
+                h = game.fonts.small:getHeight() + 8,
+            },
         }
 
         rects[#rects + 1] = rowRect
@@ -2968,8 +3013,9 @@ function ui.drawLeaderboard(game)
     graphics.print("Player", layout.playerX, headerY)
     graphics.printf("Score", layout.scoreX, headerY, LEADERBOARD_LAYOUT.scoreWidth, "center")
     if shouldShowLeaderboardMapColumn(game) then
-        graphics.printf("Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
+        graphics.printf("Latest Map", layout.mapX, headerY, layout.mapWidth, "left")
     end
+    graphics.printf("Record", layout.recordX, headerY, LEADERBOARD_LAYOUT.recordWidth, "left")
 
     local rowRects = buildLeaderboardRowRects(game, state.entries or {})
     for _, rowRect in ipairs(rowRects) do
@@ -2988,6 +3034,15 @@ function ui.drawLeaderboard(game)
             graphics.setColor(0.72, 0.78, 0.84, 1)
             graphics.printf(entry.mapName or "Unknown Map", rowRect.map.x, rowY + 2, rowRect.map.w, "left")
         end
+
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.printf(
+            formatLeaderboardEntryTimestamp(entry.updatedAt),
+            rowRect.record.x,
+            rowY + 2,
+            rowRect.record.w,
+            "left"
+        )
     end
 
     if #(state.entries or {}) > #rowRects then
@@ -3336,6 +3391,7 @@ function ui.drawResults(game)
 end
 
 ui.formatLeaderboardScore = formatLeaderboardScore
+ui.formatLeaderboardEntryTimestamp = formatLeaderboardEntryTimestamp
 ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
 ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
