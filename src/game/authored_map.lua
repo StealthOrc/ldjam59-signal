@@ -576,7 +576,9 @@ function authoredMap.validateEditorMap(mapName, editorData)
                 darkColor = darkerColor(getColor(route.color)),
                 colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
                 inputColors = sourceEndpoint and (sourceEndpoint.colors or {}) or {},
-                adoptInputColor = targetEndpoint and #(targetEndpoint.colors or {}) > 1 or false,
+                -- Merged endpoints may accept multiple colors, but authored route visuals
+                -- should stay tied to the route's defined map color.
+                adoptInputColor = false,
                 sourceType = sourceNode.kind,
                 sourceId = sourceNode.id,
                 targetType = targetNode.kind,

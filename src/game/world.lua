@@ -149,6 +149,36 @@ local function compareScheduledTrains(firstTrain, secondTrain)
     return tostring(firstTrain.id or "") < tostring(secondTrain.id or "")
 end
 
+local function compareEdgesBySource(firstEdge, secondEdge)
+    local firstPoint = firstEdge and firstEdge.path and firstEdge.path.points and firstEdge.path.points[1] or { x = 0, y = 0 }
+    local secondPoint = secondEdge and secondEdge.path and secondEdge.path.points and secondEdge.path.points[1] or { x = 0, y = 0 }
+
+    if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+        return firstPoint.x < secondPoint.x
+    end
+    if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+        return firstPoint.y < secondPoint.y
+    end
+
+    return tostring(firstEdge and firstEdge.id or "") < tostring(secondEdge and secondEdge.id or "")
+end
+
+local function compareEdgesByTarget(firstEdge, secondEdge)
+    local firstPoints = firstEdge and firstEdge.path and firstEdge.path.points or {}
+    local secondPoints = secondEdge and secondEdge.path and secondEdge.path.points or {}
+    local firstPoint = firstPoints[#firstPoints] or { x = 0, y = 0 }
+    local secondPoint = secondPoints[#secondPoints] or { x = 0, y = 0 }
+
+    if math.abs(firstPoint.y - secondPoint.y) > 0.0001 then
+        return firstPoint.y < secondPoint.y
+    end
+    if math.abs(firstPoint.x - secondPoint.x) > 0.0001 then
+        return firstPoint.x < secondPoint.x
+    end
+
+    return tostring(firstEdge and firstEdge.id or "") < tostring(secondEdge and secondEdge.id or "")
+end
+
 local function denormalizePoints(points, viewportW, viewportH)
     local denormalized = {}
 
@@ -413,7 +443,9 @@ function world:normalizeLevel(sourceLevel)
                 colors = edgeDefinition.colors or {},
                 color = color,
                 darkColor = edgeDefinition.darkColor and copyColor(edgeDefinition.darkColor) or darkerColor(color),
-                adoptInputColor = edgeDefinition.adoptInputColor == true,
+                -- Authored map routes already carry their accepted endpoint colors, so
+                -- older saved maps should not inherit the active input color visually.
+                adoptInputColor = edgeDefinition.adoptInputColor == true and edgeDefinition.routeId == nil,
                 points = edgeDefinition.points or {},
                 sourceType = edgeDefinition.sourceType,
                 sourceId = edgeDefinition.sourceId,
@@ -1369,6 +1401,9 @@ function world:updateTrain(train, dt)
             local junction = self.junctions[currentEdge.targetId]
             local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
             if not junction or not activeInput or activeInput.id ~= currentEdge.id then
+                if overflow > 0 then
+                    train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+                end
                 local edgePrefix = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
                 train.headDistance = edgePrefix + currentEdge.path.length
                 train.currentSpeed = 0
@@ -1378,6 +1413,9 @@ function world:updateTrain(train, dt)
                 break
             end
         elseif currentEdge.targetType == "exit" then
+            if overflow > 0 then
+                train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+            end
             self:beginTrainExit(train)
             break
         else
@@ -1588,19 +1626,27 @@ function world:getCurrentScore()
 end
 
 function world:getInputEdgeGroups()
-    local groupsByEdgeId = {}
     local orderedGroups = {}
+    local startEdges = {}
 
-    for _, junction in ipairs(self.junctionOrder or {}) do
-        for _, inputEdge in ipairs(junction.inputs or {}) do
-            if not groupsByEdgeId[inputEdge.id] then
-                groupsByEdgeId[inputEdge.id] = {
-                    edge = inputEdge,
-                    trains = {},
-                }
-                orderedGroups[#orderedGroups + 1] = groupsByEdgeId[inputEdge.id]
-            end
+    for _, edge in pairs(self.edges or {}) do
+        if edge and edge.sourceType == "start" then
+            startEdges[#startEdges + 1] = edge
         end
+    end
+
+    table.sort(startEdges, compareEdgesBySource)
+
+    for _, startEdge in ipairs(startEdges) do
+        orderedGroups[#orderedGroups + 1] = {
+            edge = startEdge,
+            trains = {},
+        }
+    end
+
+    local groupsByEdgeId = {}
+    for _, group in ipairs(orderedGroups) do
+        groupsByEdgeId[group.edge.id] = group
     end
 
     for _, train in ipairs(self.trains or {}) do
@@ -1658,35 +1704,61 @@ function world:getOutputAcceptedGoalColors(outputEdge)
 end
 
 function world:getOutputBadgeGroups()
+    local groupedByExitId = {}
     local orderedGroups = {}
+    local exitEdges = {}
 
-    for _, junction in ipairs(self.junctionOrder or {}) do
-        for _, outputEdge in ipairs(junction.outputs or {}) do
-            local acceptedColors = self:getOutputAcceptedGoalColors(outputEdge)
-            local acceptedLookup = {}
-            for _, colorId in ipairs(acceptedColors) do
-                acceptedLookup[colorId] = true
-            end
-
-            local expectedCount = 0
-            local deliveredCount = 0
-            for _, train in ipairs(self.trains or {}) do
-                local goalColor = train.goalColor or train.trainColor
-                if acceptedLookup[goalColor] then
-                    expectedCount = expectedCount + 1
-                end
-                if train.clearingExitEdgeId == outputEdge.id and self:isTrainCleared(train) then
-                    deliveredCount = deliveredCount + 1
-                end
-            end
-
-            orderedGroups[#orderedGroups + 1] = {
-                edge = outputEdge,
-                expectedCount = expectedCount,
-                deliveredCount = deliveredCount,
-                acceptedColors = acceptedColors,
-            }
+    for _, edge in pairs(self.edges or {}) do
+        if edge and edge.targetType == "exit" then
+            exitEdges[#exitEdges + 1] = edge
         end
+    end
+
+    table.sort(exitEdges, compareEdgesByTarget)
+
+    local groupByEdgeId = {}
+    for _, outputEdge in ipairs(exitEdges) do
+        local exitId = outputEdge.targetId or outputEdge.id
+        local group = groupedByExitId[exitId]
+
+        if not group then
+            group = {
+                edge = outputEdge,
+                edges = {},
+                expectedCount = 0,
+                deliveredCount = 0,
+                acceptedColors = {},
+                acceptedLookup = {},
+            }
+            groupedByExitId[exitId] = group
+            orderedGroups[#orderedGroups + 1] = group
+        end
+
+        group.edges[#group.edges + 1] = outputEdge
+        groupByEdgeId[outputEdge.id] = group
+
+        for _, colorId in ipairs(self:getOutputAcceptedGoalColors(outputEdge)) do
+            appendUnique(group.acceptedColors, group.acceptedLookup, colorId)
+        end
+    end
+
+    for _, train in ipairs(self.trains or {}) do
+        local goalColor = train.goalColor or train.trainColor
+        for _, group in ipairs(orderedGroups) do
+            if group.acceptedLookup[goalColor] then
+                group.expectedCount = group.expectedCount + 1
+            end
+        end
+
+        local deliveredGroup = groupByEdgeId[train.clearingExitEdgeId]
+        if deliveredGroup and self:isTrainCleared(train) then
+            deliveredGroup.deliveredCount = deliveredGroup.deliveredCount + 1
+        end
+    end
+
+    for _, group in ipairs(orderedGroups) do
+        group.acceptedLookup = nil
+        group.edges = nil
     end
 
     return orderedGroups
