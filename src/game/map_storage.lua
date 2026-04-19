@@ -6,6 +6,7 @@ local USER_MAP_DIR = "maps"
 local BUILTIN_MAP_DIR = "src/game/maps"
 local BUILTIN_TUTORIAL_DIR = BUILTIN_MAP_DIR .. "/tutorial"
 local BUILTIN_CAMPAIGN_DIR = BUILTIN_MAP_DIR .. "/campaign"
+local IMPORT_DUPLICATE_START_INDEX = 2
 
 local function ensureUserMapDirectory()
     if not love.filesystem.getInfo(USER_MAP_DIR, "directory") then
@@ -24,6 +25,15 @@ local function sanitizeFileName(name)
     end
 
     return slug .. ".lua"
+end
+
+local function splitFileName(fileName)
+    local baseName, extension = tostring(fileName or ""):match("^(.*)(%.[^%.]+)$")
+    if baseName then
+        return baseName, extension
+    end
+
+    return tostring(fileName or ""), ""
 end
 
 local function isIdentifier(value)
@@ -203,7 +213,47 @@ local function buildDescriptor(source, fileName, data, options)
         isTemplate = source == "builtin" and data.template == true,
         previewLevel = data.level,
         previewDescription = data.previewDescription or (data.level and (data.level.previewDescription or data.level.description)) or nil,
+        isRemoteImport = type(data.remoteSource) == "table",
+        remoteSource = data.remoteSource,
     }
+end
+
+local function findUserMapFileNameByUuid(mapUuid)
+    if type(mapUuid) ~= "string" or mapUuid == "" then
+        return nil
+    end
+
+    ensureUserMapDirectory()
+    for _, fileName in ipairs(love.filesystem.getDirectoryItems(USER_MAP_DIR)) do
+        if fileName:sub(-4) == ".lua" then
+            local data = mapStorage.loadMap(fileName, "user")
+            if data and data.mapUuid == mapUuid then
+                return fileName
+            end
+        end
+    end
+
+    return nil
+end
+
+local function resolveImportedFileName(name, payload)
+    local mapUuid = type(payload) == "table" and payload.mapUuid or nil
+    local existingFileName = findUserMapFileNameByUuid(mapUuid)
+    if existingFileName then
+        return existingFileName
+    end
+
+    local baseFileName = sanitizeFileName(name)
+    local baseName, extension = splitFileName(baseFileName)
+    local candidateFileName = baseFileName
+    local duplicateIndex = IMPORT_DUPLICATE_START_INDEX
+
+    while love.filesystem.getInfo(USER_MAP_DIR .. "/" .. candidateFileName, "file") do
+        candidateFileName = string.format("%s_%d%s", baseName, duplicateIndex, extension)
+        duplicateIndex = duplicateIndex + 1
+    end
+
+    return candidateFileName
 end
 
 local function listSourceMaps(source, directory, mapKind)
@@ -247,6 +297,26 @@ function mapStorage.saveMap(name, payload)
     end
 
     return buildDescriptor("user", fileName, payload)
+end
+
+function mapStorage.importMap(name, payload)
+    ensureUserMapDirectory()
+
+    local fileName = resolveImportedFileName(name, payload or {})
+    local path = USER_MAP_DIR .. "/" .. fileName
+    local resolvedPayload = payload or {}
+    resolvedPayload.mapUuid = resolvedPayload.mapUuid or uuid.generateV4()
+    if resolvedPayload.level then
+        resolvedPayload.level.id = resolvedPayload.mapUuid
+        resolvedPayload.level.mapUuid = resolvedPayload.mapUuid
+    end
+
+    local ok, writeError = writeMapFile(path, resolvedPayload)
+    if not ok then
+        return nil, writeError
+    end
+
+    return buildDescriptor("user", fileName, resolvedPayload)
 end
 
 function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)

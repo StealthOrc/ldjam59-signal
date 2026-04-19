@@ -6,6 +6,7 @@ local leaderboardClient = {}
 local SCRIPT_FILE = "leaderboard_request.ps1"
 local REQUEST_FILE = "leaderboard_request.json"
 local REQUEST_MODE_SUBMIT = "submit"
+local REQUEST_MODE_UPLOAD_MAP = "upload_map"
 
 local POWERSHELL_SCRIPT = [[
 param(
@@ -13,7 +14,8 @@ param(
     [string]$ApiKey,
     [string]$ApiBaseUrl,
     [string]$EndpointPath,
-    [string]$BodyPath
+    [string]$BodyPath,
+    [string]$HmacSecret
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,8 +23,20 @@ $headers = @{ 'x-api-key' = $ApiKey }
 $uri = $ApiBaseUrl.TrimEnd('/') + $EndpointPath
 
 try {
-    if ($Mode -eq 'submit') {
+    if ($Mode -eq 'submit' -or $Mode -eq 'upload_map') {
         $body = Get-Content -Raw -Path $BodyPath
+        if ($HmacSecret -and $HmacSecret.Trim().Length -gt 0) {
+            $encoding = [System.Text.Encoding]::UTF8
+            $hmac = [System.Security.Cryptography.HMACSHA256]::new($encoding.GetBytes($HmacSecret))
+            try {
+                $signatureBytes = $hmac.ComputeHash($encoding.GetBytes($body))
+            }
+            finally {
+                $hmac.Dispose()
+            }
+            $signature = [System.BitConverter]::ToString($signatureBytes).Replace('-', '').ToLowerInvariant()
+            $headers['x-signature'] = 'sha256=' + $signature
+        }
         $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body
     }
     else {
@@ -152,6 +166,8 @@ local function runPowerShell(mode, config, endpointPath, payload)
         quoteArgument(endpointPath),
         "-BodyPath",
         quoteArgument(absoluteSavePath(REQUEST_FILE)),
+        "-HmacSecret",
+        quoteArgument(config.hmacSecret),
     }, " ")
 
     local output, runError = runCommand(command)
@@ -202,6 +218,41 @@ function leaderboardClient.submitScore(submission, config)
     }
 
     return runPowerShell(REQUEST_MODE_SUBMIT, resolvedConfig, endpointPath, payload)
+end
+
+function leaderboardClient.uploadMap(submission, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mapUuid = tostring(submission.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The map could not be uploaded because the map UUID is missing."
+    end
+
+    local creatorUuid = tostring(submission.creatorUuid or "")
+    if creatorUuid == "" then
+        return nil, "The map could not be uploaded because the creator UUID is missing."
+    end
+
+    local mapName = tostring(submission.mapName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if mapName == "" then
+        mapName = "Untitled Map"
+    end
+
+    if type(submission.map) ~= "table" then
+        return nil, "The map could not be uploaded because its level data is missing."
+    end
+
+    local payload = {
+        map_uuid = mapUuid,
+        map_name = mapName,
+        creator_uuid = creatorUuid,
+        map = submission.map,
+    }
+
+    return runPowerShell(REQUEST_MODE_UPLOAD_MAP, resolvedConfig, "/api/maps", payload)
 end
 
 return leaderboardClient

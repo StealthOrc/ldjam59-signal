@@ -40,6 +40,35 @@ local LEVEL_SELECT_PREVIEW_STATUS_ERROR = "error"
 local LEVEL_SELECT_PREVIEW_MESSAGE_LOADING = "Loading leaderboard..."
 local LEVEL_SELECT_PREVIEW_MESSAGE_EMPTY = "No scores yet."
 local LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA = "No local leaderboard data."
+local LEVEL_SELECT_MODE_LIBRARY = "library"
+local LEVEL_SELECT_MODE_MARKETPLACE = "marketplace"
+local LEVEL_SELECT_MARKETPLACE_TAB_TOP = "top"
+local LEVEL_SELECT_MARKETPLACE_TAB_RANDOM = "random"
+local LEVEL_SELECT_MARKETPLACE_TAB_SEARCH = "search"
+local LEVEL_SELECT_MARKETPLACE_SEARCH_MAX_LENGTH = 40
+local LEVEL_SELECT_MARKETPLACE_TAB_ORDER = {
+    LEVEL_SELECT_MARKETPLACE_TAB_TOP,
+    LEVEL_SELECT_MARKETPLACE_TAB_RANDOM,
+    LEVEL_SELECT_MARKETPLACE_TAB_SEARCH,
+}
+local LEVEL_SELECT_MARKETPLACE_SOURCE_FAVORITES = "favorites"
+local LEVEL_SELECT_MARKETPLACE_SOURCE_SEARCH = "search"
+local LEVEL_SELECT_MARKETPLACE_SCOPE_FAVORITES = "favorites"
+local LEVEL_SELECT_MARKETPLACE_SCOPE_SEARCH_PREFIX = "search:"
+local LEVEL_SELECT_MARKETPLACE_REMOTE_LIMIT = 10
+local LEVEL_SELECT_MARKETPLACE_FETCH_TIMEOUT_SECONDS = 5
+local LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS = 60
+local LEVEL_SELECT_MARKETPLACE_STATUS_IDLE = "idle"
+local LEVEL_SELECT_MARKETPLACE_STATUS_LOADING = "loading"
+local LEVEL_SELECT_MARKETPLACE_STATUS_READY = "ready"
+local LEVEL_SELECT_MARKETPLACE_STATUS_ERROR = "error"
+local LEVEL_SELECT_MARKETPLACE_STATUS_DISABLED = "disabled"
+local LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING = "Loading online maps..."
+local LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH = "Type a map name, UUID, code, or creator to search."
+local LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED = "The online maps could not be loaded."
+local LEVEL_SELECT_ACTION_STATUS_INFO = "info"
+local LEVEL_SELECT_ACTION_STATUS_SUCCESS = "success"
+local LEVEL_SELECT_ACTION_STATUS_ERROR = "error"
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -111,6 +140,19 @@ end
 
 local function trimLastUtf8Character(value)
     return (value or ""):gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
+end
+
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[deepCopy(key)] = deepCopy(entry)
+    end
+
+    return copy
 end
 
 local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
@@ -218,9 +260,13 @@ function Game.new()
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
     self.levelSelectFilter = "all"
-    self.levelSelectFilterHoverId = nil
+    self.levelSelectHoverId = nil
     self.levelSelectVisualIndex = nil
     self.levelSelectScroll = 0
+    self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
+    self.levelSelectMarketplaceTab = LEVEL_SELECT_MARKETPLACE_TAB_TOP
+    self.levelSelectMarketplaceSearchQuery = ""
+    self.levelSelectActionState = nil
     self.levelSelectLeaderboardFlipMapUuid = nil
     self.levelSelectPreviewCacheByMap = leaderboardPreviewCache.load()
     self.levelSelectPreviewNextFetchAtByMap = {}
@@ -233,6 +279,13 @@ function Game.new()
     self.activeLevelSelectPreviewRequestId = nil
     self.activeLevelSelectPreviewRequestStartedAt = nil
     self.activeLevelSelectPreviewRequestMapUuid = nil
+    self.marketplaceCacheByScope = {}
+    self.marketplaceNextFetchAtByScope = {}
+    self.marketplaceStateByScope = {}
+    self.marketplaceRequestSequence = 0
+    self.activeMarketplaceRequestId = nil
+    self.activeMarketplaceRequestStartedAt = nil
+    self.activeMarketplaceRequestScopeKey = nil
     self.resultsSummary = nil
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
@@ -342,6 +395,123 @@ function Game:getActiveOnlineConfig()
     end
 
     return resolvedConfig
+end
+
+function Game:setLevelSelectActionState(status, message)
+    if not status or not message or message == "" then
+        self.levelSelectActionState = nil
+        return
+    end
+
+    self.levelSelectActionState = {
+        status = status,
+        message = message,
+    }
+end
+
+function Game:clearLevelSelectActionState()
+    self.levelSelectActionState = nil
+end
+
+function Game:getMarketplaceScopeDetails(tabId, query)
+    local resolvedTabId = tabId or self.levelSelectMarketplaceTab or LEVEL_SELECT_MARKETPLACE_TAB_TOP
+    local normalizedQuery = trim(query or self.levelSelectMarketplaceSearchQuery or "")
+
+    if resolvedTabId == LEVEL_SELECT_MARKETPLACE_TAB_SEARCH then
+        if normalizedQuery == "" then
+            return {
+                fetchMode = LEVEL_SELECT_MARKETPLACE_SOURCE_SEARCH,
+                scopeKey = LEVEL_SELECT_MARKETPLACE_SCOPE_SEARCH_PREFIX,
+                query = "",
+                needsRequest = false,
+            }
+        end
+
+        return {
+            fetchMode = LEVEL_SELECT_MARKETPLACE_SOURCE_SEARCH,
+            scopeKey = LEVEL_SELECT_MARKETPLACE_SCOPE_SEARCH_PREFIX .. string.lower(normalizedQuery),
+            query = normalizedQuery,
+            needsRequest = true,
+        }
+    end
+
+    return {
+        fetchMode = LEVEL_SELECT_MARKETPLACE_SOURCE_FAVORITES,
+        scopeKey = LEVEL_SELECT_MARKETPLACE_SCOPE_FAVORITES,
+        query = nil,
+        needsRequest = true,
+    }
+end
+
+function Game:getMarketplaceCacheEntry(scopeKey)
+    local resolvedScopeKey = scopeKey or self:getMarketplaceScopeDetails().scopeKey
+    return self.marketplaceCacheByScope[resolvedScopeKey] or {
+        payload = nil,
+        fetchedAt = nil,
+    }
+end
+
+function Game:setMarketplaceCacheEntry(scopeKey, payload, fetchedAt)
+    self.marketplaceCacheByScope[scopeKey] = {
+        payload = payload,
+        fetchedAt = fetchedAt,
+    }
+end
+
+function Game:setMarketplaceState(scopeKey, status, message)
+    self.marketplaceStateByScope[scopeKey] = {
+        status = status or LEVEL_SELECT_MARKETPLACE_STATUS_IDLE,
+        message = message,
+    }
+end
+
+function Game:getMarketplaceViewState()
+    local scopeDetails = self:getMarketplaceScopeDetails()
+    local scopeKey = scopeDetails.scopeKey
+    local state = self.marketplaceStateByScope[scopeKey]
+    if state then
+        return state
+    end
+
+    if scopeDetails.fetchMode == LEVEL_SELECT_MARKETPLACE_SOURCE_SEARCH and not scopeDetails.needsRequest then
+        return {
+            status = LEVEL_SELECT_MARKETPLACE_STATUS_IDLE,
+            message = LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH,
+        }
+    end
+
+    return {
+        status = LEVEL_SELECT_MARKETPLACE_STATUS_IDLE,
+        message = nil,
+    }
+end
+
+function Game:getMarketplaceEntries()
+    local scopeDetails = self:getMarketplaceScopeDetails()
+    if scopeDetails.fetchMode == LEVEL_SELECT_MARKETPLACE_SOURCE_SEARCH and not scopeDetails.needsRequest then
+        return {}
+    end
+
+    local cacheEntry = self:getMarketplaceCacheEntry(scopeDetails.scopeKey)
+    local payload = cacheEntry.payload
+    if type(payload) ~= "table" or type(payload.entries) ~= "table" then
+        return {}
+    end
+
+    return payload.entries
+end
+
+function Game:isMarketplaceCacheFresh(scopeKey)
+    local cacheEntry = self:getMarketplaceCacheEntry(scopeKey)
+    if not cacheEntry.payload or not cacheEntry.fetchedAt then
+        return false
+    end
+
+    return (getNowSeconds() - cacheEntry.fetchedAt) < LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+end
+
+function Game:isMarketplaceFetchAllowed(scopeKey)
+    return getNowSeconds() >= (self.marketplaceNextFetchAtByScope[scopeKey] or 0)
 end
 
 function Game:setLevelSelectPreviewState(mapUuid, status, message)
@@ -649,13 +819,64 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
     self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
 end
 
+function Game:beginMarketplaceFetch(onlineConfig, scopeDetails)
+    if self.activeMarketplaceRequestId ~= nil or not scopeDetails or not scopeDetails.needsRequest then
+        return
+    end
+
+    self:ensureLeaderboardWorker()
+    local scopeKey = scopeDetails.scopeKey
+    self.marketplaceRequestSequence = self.marketplaceRequestSequence + 1
+    self.activeMarketplaceRequestId = self.marketplaceRequestSequence
+    self.activeMarketplaceRequestStartedAt = getNowSeconds()
+    self.activeMarketplaceRequestScopeKey = scopeKey
+    self:setMarketplaceState(scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_LOADING, LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING)
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "marketplace",
+        requestId = self.activeMarketplaceRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            mode = scopeDetails.fetchMode,
+            query = scopeDetails.query,
+            limit = LEVEL_SELECT_MARKETPLACE_REMOTE_LIMIT,
+        },
+    }))
+end
+
+function Game:applyMarketplaceFetchResult(response, scopeKey)
+    if not scopeKey or scopeKey == "" then
+        return
+    end
+
+    if response.ok and type(response.payload) == "table" then
+        local fetchedAt = getNowSeconds()
+        self:setMarketplaceCacheEntry(scopeKey, response.payload, fetchedAt)
+        self.marketplaceNextFetchAtByScope[scopeKey] = fetchedAt + LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+        self:setMarketplaceState(scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_READY, nil)
+        return
+    end
+
+    self.marketplaceNextFetchAtByScope[scopeKey] = getNowSeconds() + LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+    self:setMarketplaceState(
+        scopeKey,
+        LEVEL_SELECT_MARKETPLACE_STATUS_ERROR,
+        response.error or LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED
+    )
+end
+
 function Game:updateLeaderboardFetchState()
     local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
     local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
     local activePreviewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
     local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid)
+    local marketplaceScopeKey = self.activeMarketplaceRequestScopeKey
 
-    if self.leaderboardWorkerThread and (self.activeLeaderboardRequestId ~= nil or self.activeLevelSelectPreviewRequestId ~= nil) then
+    if self.leaderboardWorkerThread and (
+        self.activeLeaderboardRequestId ~= nil
+        or self.activeLevelSelectPreviewRequestId ~= nil
+        or self.activeMarketplaceRequestId ~= nil
+    ) then
         local threadError = self.leaderboardWorkerThread:getError()
         if threadError then
             if self.activeLeaderboardRequestId ~= nil then
@@ -685,6 +906,16 @@ function Game:updateLeaderboardFetchState()
                     end
                 end
                 self.activeLevelSelectPreviewRequestMapUuid = nil
+            end
+
+            if self.activeMarketplaceRequestId ~= nil then
+                self.activeMarketplaceRequestId = nil
+                self.activeMarketplaceRequestStartedAt = nil
+                if marketplaceScopeKey and marketplaceScopeKey ~= "" then
+                    self.marketplaceNextFetchAtByScope[marketplaceScopeKey] = getNowSeconds() + LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+                    self:setMarketplaceState(marketplaceScopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_ERROR, threadError)
+                end
+                self.activeMarketplaceRequestScopeKey = nil
             end
 
             self.leaderboardWorkerThread = nil
@@ -730,6 +961,20 @@ function Game:updateLeaderboardFetchState()
         end
     end
 
+    if self.activeMarketplaceRequestId ~= nil and self.activeMarketplaceRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeMarketplaceRequestStartedAt
+        if elapsedSeconds >= LEVEL_SELECT_MARKETPLACE_FETCH_TIMEOUT_SECONDS then
+            local timedOutScopeKey = self.activeMarketplaceRequestScopeKey
+            self.activeMarketplaceRequestId = nil
+            self.activeMarketplaceRequestStartedAt = nil
+            if timedOutScopeKey and timedOutScopeKey ~= "" then
+                self.marketplaceNextFetchAtByScope[timedOutScopeKey] = getNowSeconds() + LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+                self:setMarketplaceState(timedOutScopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_ERROR, LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED)
+            end
+            self.activeMarketplaceRequestScopeKey = nil
+        end
+    end
+
     while true do
         local encodedResponse = self.leaderboardResponseChannel:pop()
         if not encodedResponse then
@@ -748,6 +993,12 @@ function Game:updateLeaderboardFetchState()
             self.activeLevelSelectPreviewRequestStartedAt = nil
             self.activeLevelSelectPreviewRequestMapUuid = nil
             self:applyLevelSelectPreviewFetchResult(decodedResponse, previewMapUuid)
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "marketplace" and decodedResponse.requestId == self.activeMarketplaceRequestId then
+            local responseScopeKey = self.activeMarketplaceRequestScopeKey
+            self.activeMarketplaceRequestId = nil
+            self.activeMarketplaceRequestStartedAt = nil
+            self.activeMarketplaceRequestScopeKey = nil
+            self:applyMarketplaceFetchResult(decodedResponse, responseScopeKey)
         end
     end
 
@@ -775,6 +1026,35 @@ function Game:updateLeaderboardFetchState()
             self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil)
         else
             self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA)
+        end
+    end
+
+    if self.screen == "level_select" and self:isLevelSelectMarketplaceMode() then
+        local scopeDetails = self:getMarketplaceScopeDetails()
+        local scopeKey = scopeDetails.scopeKey
+        local onlineConfig = self:getActiveOnlineConfig()
+
+        if not scopeDetails.needsRequest then
+            self:setMarketplaceState(scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_IDLE, LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH)
+            return
+        end
+
+        if not onlineConfig.isConfigured then
+            self:setMarketplaceState(
+                scopeKey,
+                LEVEL_SELECT_MARKETPLACE_STATUS_DISABLED,
+                table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+            )
+            return
+        end
+
+        if self.activeMarketplaceRequestId == nil
+            and not self:isMarketplaceCacheFresh(scopeKey)
+            and self:isMarketplaceFetchAllowed(scopeKey)
+        then
+            self:beginMarketplaceFetch(onlineConfig, scopeDetails)
+        elseif self:isMarketplaceCacheFresh(scopeKey) then
+            self:setMarketplaceState(scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_READY, nil)
         end
     end
 end
@@ -893,6 +1173,145 @@ function Game:submitResultsScore()
             or "Score uploaded successfully.",
     }
     self:updateLevelSelectPreviewCacheFromSubmit(response)
+end
+
+function Game:canUploadMapDescriptor(mapDescriptor)
+    return mapDescriptor ~= nil
+        and mapDescriptor.source == "user"
+        and mapDescriptor.isRemoteImport ~= true
+end
+
+function Game:isUploadSelectedMapAvailable(mapDescriptor)
+    return self.levelSelectMode == LEVEL_SELECT_MODE_LIBRARY
+        and self.levelSelectFilter == "user"
+        and self:canUploadMapDescriptor(mapDescriptor or self:getSelectedLevelMap())
+end
+
+function Game:uploadSelectedMap()
+    local selectedMap = self:getSelectedLevelMap()
+    if not self:canUploadMapDescriptor(selectedMap) then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "Only your own local user maps can be uploaded."
+        )
+        return
+    end
+
+    local onlineConfig = self:getActiveOnlineConfig()
+    if not onlineConfig.isConfigured then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        return
+    end
+
+    local mapData, loadError = mapStorage.loadMap(selectedMap)
+    if not mapData or type(mapData.level) ~= "table" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            loadError or "The selected map could not be uploaded."
+        )
+        return
+    end
+
+    local response, uploadError = leaderboardClient.uploadMap({
+        mapUuid = mapData.mapUuid or selectedMap.mapUuid,
+        mapName = mapData.name or selectedMap.displayName or selectedMap.name,
+        creatorUuid = self.profile and self.profile.playerId or "",
+        map = deepCopy(mapData.level),
+    }, onlineConfig)
+
+    if uploadError then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, uploadError)
+        return
+    end
+
+    local identifier = type(response) == "table" and tostring(response.internal_identifier or "") or ""
+    local successMessage = identifier ~= ""
+        and string.format("Map uploaded. Code: %s", identifier)
+        or "Map uploaded successfully."
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_SUCCESS, successMessage)
+end
+
+function Game:downloadMarketplaceMap(mapDescriptor)
+    local selectedMap = mapDescriptor or self:getSelectedLevelMap()
+    local sourceEntry = selectedMap and selectedMap.remoteSourceEntry or nil
+    if type(sourceEntry) ~= "table" or type(sourceEntry.map) ~= "table" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected online map could not be downloaded."
+        )
+        return
+    end
+
+    local importedPayload = {
+        version = 1,
+        mapUuid = tostring(sourceEntry.map_uuid or selectedMap.mapUuid or ""),
+        name = tostring(sourceEntry.map_name or selectedMap.displayName or selectedMap.name or "Untitled Map"),
+        previewDescription = selectedMap.previewDescription,
+        level = deepCopy(sourceEntry.map),
+        remoteSource = {
+            creatorUuid = tostring(sourceEntry.creator_uuid or ""),
+            creatorDisplayName = tostring(sourceEntry.creator_display_name or ""),
+            favoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0,
+            internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
+            mapCategory = tostring(sourceEntry.map_category or ""),
+        },
+    }
+
+    if type(importedPayload.level) == "table" then
+        importedPayload.level.id = importedPayload.mapUuid
+        importedPayload.level.mapUuid = importedPayload.mapUuid
+        importedPayload.level.title = importedPayload.level.title or importedPayload.name
+    end
+
+    local importedDescriptor, importError = mapStorage.importMap(importedPayload.name, importedPayload)
+    if not importedDescriptor then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            importError or "The selected online map could not be saved locally."
+        )
+        return
+    end
+
+    self:refreshMaps()
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_SUCCESS,
+        string.format("%s was saved to your local maps.", importedDescriptor.displayName or importedDescriptor.name or "Map")
+    )
+end
+
+function Game:refreshMarketplaceData()
+    local scopeDetails = self:getMarketplaceScopeDetails()
+    local scopeKey = scopeDetails.scopeKey
+    self.marketplaceCacheByScope[scopeKey] = nil
+    self.marketplaceNextFetchAtByScope[scopeKey] = 0
+
+    if not scopeDetails.needsRequest then
+        self:setMarketplaceState(scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_IDLE, LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH)
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH)
+        return
+    end
+
+    local onlineConfig = self:getActiveOnlineConfig()
+    if not onlineConfig.isConfigured then
+        self:setMarketplaceState(
+            scopeKey,
+            LEVEL_SELECT_MARKETPLACE_STATUS_DISABLED,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        return
+    end
+
+    if self.activeMarketplaceRequestId == nil then
+        self:beginMarketplaceFetch(onlineConfig, scopeDetails)
+    end
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING)
 end
 
 function Game:refreshLeaderboard()
@@ -1060,9 +1479,19 @@ function Game:getSelectedLevelMap()
     return fallback
 end
 
+function Game:isLevelSelectMarketplaceMode()
+    return self.levelSelectMode == LEVEL_SELECT_MODE_MARKETPLACE
+end
+
+function Game:isLevelSelectMarketplaceSearchActive()
+    return self:isLevelSelectMarketplaceMode()
+        and self.levelSelectMarketplaceTab == LEVEL_SELECT_MARKETPLACE_TAB_SEARCH
+end
+
 function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
     self.levelSelectScroll = 0
+    self:clearLevelSelectActionState()
     self:clearLevelSelectLeaderboardFlip()
 end
 
@@ -1074,10 +1503,95 @@ end
 
 function Game:setLevelSelectFilter(filterId)
     self.levelSelectFilter = filterId or "all"
+    self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
     self:resetLevelSelectVisualIndex()
     self.levelSelectScroll = 0
     self:clearLevelSelectLeaderboardFlip()
+end
+
+function Game:setLevelSelectMode(mode)
+    local resolvedMode = mode == LEVEL_SELECT_MODE_MARKETPLACE
+        and LEVEL_SELECT_MODE_MARKETPLACE
+        or LEVEL_SELECT_MODE_LIBRARY
+    if self.levelSelectMode == resolvedMode then
+        return
+    end
+
+    self.levelSelectMode = resolvedMode
+    self.levelSelectHoverId = nil
+    self.levelSelectIssue = nil
+    self:clearLevelSelectActionState()
+    self:clearLevelSelectLeaderboardFlip()
+end
+
+function Game:toggleLevelSelectMode()
+    if self:isLevelSelectMarketplaceMode() then
+        self:setLevelSelectMode(LEVEL_SELECT_MODE_LIBRARY)
+        return
+    end
+
+    self:setLevelSelectMode(LEVEL_SELECT_MODE_MARKETPLACE)
+end
+
+function Game:setLevelSelectMarketplaceTab(tabId)
+    for _, allowedTabId in ipairs(LEVEL_SELECT_MARKETPLACE_TAB_ORDER) do
+        if tabId == allowedTabId then
+            self.levelSelectMarketplaceTab = tabId
+            self.levelSelectHoverId = nil
+            self:clearLevelSelectActionState()
+            self:getSelectedLevelMap()
+            self:resetLevelSelectVisualIndex()
+            self.levelSelectScroll = 0
+            return
+        end
+    end
+end
+
+function Game:cycleLevelSelectMarketplaceTab(direction)
+    local currentIndex = 1
+    for index, tabId in ipairs(LEVEL_SELECT_MARKETPLACE_TAB_ORDER) do
+        if tabId == self.levelSelectMarketplaceTab then
+            currentIndex = index
+            break
+        end
+    end
+
+    local nextIndex = currentIndex + direction
+    if nextIndex < 1 then
+        nextIndex = #LEVEL_SELECT_MARKETPLACE_TAB_ORDER
+    elseif nextIndex > #LEVEL_SELECT_MARKETPLACE_TAB_ORDER then
+        nextIndex = 1
+    end
+
+    self:setLevelSelectMarketplaceTab(LEVEL_SELECT_MARKETPLACE_TAB_ORDER[nextIndex])
+end
+
+function Game:appendLevelSelectMarketplaceSearch(text)
+    if text == "" or not self:isLevelSelectMarketplaceSearchActive() then
+        return
+    end
+
+    local nextValue = self.levelSelectMarketplaceSearchQuery .. text
+    if #nextValue > LEVEL_SELECT_MARKETPLACE_SEARCH_MAX_LENGTH then
+        return
+    end
+
+    self.levelSelectMarketplaceSearchQuery = nextValue
+    self:clearLevelSelectActionState()
+    self:getSelectedLevelMap()
+    self:resetLevelSelectVisualIndex()
+end
+
+function Game:backspaceLevelSelectMarketplaceSearch()
+    if not self:isLevelSelectMarketplaceSearchActive() then
+        return
+    end
+
+    self.levelSelectMarketplaceSearchQuery = trimLastUtf8Character(self.levelSelectMarketplaceSearchQuery)
+    self:clearLevelSelectActionState()
+    self:getSelectedLevelMap()
+    self:resetLevelSelectVisualIndex()
 end
 
 function Game:updateLevelSelectAnimation(dt)
@@ -1181,7 +1695,8 @@ function Game:openMenu()
 
     self.screen = "menu"
     self.levelSelectIssue = nil
-    self.levelSelectFilterHoverId = nil
+    self.levelSelectHoverId = nil
+    self:clearLevelSelectActionState()
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self:refreshMaps()
@@ -1191,7 +1706,11 @@ function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
     self.levelSelectFilter = "all"
-    self.levelSelectFilterHoverId = nil
+    self.levelSelectHoverId = nil
+    self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
+    self.levelSelectMarketplaceTab = LEVEL_SELECT_MARKETPLACE_TAB_TOP
+    self.levelSelectMarketplaceSearchQuery = ""
+    self:clearLevelSelectActionState()
     self:clearLevelSelectLeaderboardFlip()
     self.resultsSummary = nil
     self.playOverlayMode = nil
@@ -1431,6 +1950,41 @@ function Game:keypressed(key)
             self:openEditorMap(self.levelSelectIssue.map)
             return
         end
+        if key == "tab" then
+            self:toggleLevelSelectMode()
+            return
+        end
+        if self:isLevelSelectMarketplaceMode() then
+            if key == "up" then
+                self:cycleLevelSelectMarketplaceTab(-1)
+                return
+            end
+            if key == "down" then
+                self:cycleLevelSelectMarketplaceTab(1)
+                return
+            end
+            if key == "left" then
+                self:moveLevelSelectSelection(-1)
+                return
+            end
+            if key == "right" then
+                self:moveLevelSelectSelection(1)
+                return
+            end
+            if key == "pageup" then
+                self:scrollLevelSelect(-3)
+                return
+            end
+            if key == "pagedown" then
+                self:scrollLevelSelect(3)
+                return
+            end
+            if key == "backspace" then
+                self:backspaceLevelSelectMarketplaceSearch()
+                return
+            end
+            return
+        end
         if key == "left" then
             self:moveLevelSelectSelection(-1)
             return
@@ -1559,6 +2113,8 @@ end
 function Game:textinput(text)
     if self.screen == "profile_setup" then
         self:appendProfileNameInput(text)
+    elseif self.screen == "level_select" then
+        self:appendLevelSelectMarketplaceSearch(text)
     elseif self.screen == "editor" then
         self.editor:textinput(text)
     end
@@ -1617,6 +2173,10 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
+        elseif hit.kind == "toggle_mode" then
+            self:toggleLevelSelectMode()
+        elseif hit.kind == "set_marketplace_tab" then
+            self:setLevelSelectMarketplaceTab(hit.tab)
         elseif hit.kind == "set_filter" then
             self:setLevelSelectFilter(hit.filter)
         elseif hit.kind == "issue_edit" then
@@ -1627,6 +2187,14 @@ function Game:mousepressed(x, y, button)
             return
         elseif hit.kind == "select_map" then
             self:setLevelSelectSelection(hit.map)
+        elseif hit.kind == "download_map" then
+            self:setLevelSelectSelection(hit.map)
+            self:downloadMarketplaceMap(hit.map)
+        elseif hit.kind == "refresh_marketplace" then
+            self:refreshMarketplaceData()
+        elseif hit.kind == "upload_map" then
+            self:setLevelSelectSelection(hit.map)
+            self:uploadSelectedMap()
         elseif hit.kind == "toggle_leaderboard_card" then
             self:toggleLevelSelectLeaderboardFlip(hit.map)
         elseif hit.kind == "open_map" then
@@ -1699,7 +2267,7 @@ function Game:mousemoved(x, y)
 
     if self.screen == "level_select" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
-        self.levelSelectFilterHoverId = ui.getLevelSelectFilterHoverId(self, viewportX, viewportY)
+        self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
         return
     end
 

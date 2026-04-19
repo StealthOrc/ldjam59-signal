@@ -9,6 +9,7 @@ local REQUIRED_KEYS = {
 }
 local OPTIONAL_KEYS = {
     "API_BASE_URL",
+    "HMAC_SECRET",
 }
 local SOURCE_WORKING_DIRECTORY = "working directory .env"
 local SOURCE_LOVE_FILESYSTEM = "project .env"
@@ -154,6 +155,7 @@ function envLoader.load()
 
     local apiKey = values.API_KEY or ""
     local apiBaseUrl = values.API_BASE_URL or DEFAULT_API_BASE_URL
+    local hmacSecret = values.HMAC_SECRET or ""
 
     if apiBaseUrl == DEFAULT_API_BASE_URL and not sourceByKey.API_BASE_URL then
         sourceByKey.API_BASE_URL = SOURCE_DEFAULT
@@ -167,6 +169,7 @@ function envLoader.load()
         values = values,
         apiKey = apiKey,
         apiBaseUrl = apiBaseUrl,
+        hmacSecret = hmacSecret,
         sourceByKey = sourceByKey,
         isConfigured = #errors == 0,
         errors = errors,

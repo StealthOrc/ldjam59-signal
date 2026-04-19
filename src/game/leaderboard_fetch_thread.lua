@@ -4,11 +4,15 @@ local REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
 local REQUEST_KIND_FETCH = "fetch"
 local REQUEST_KIND_PREVIEW = "preview"
+local REQUEST_KIND_MARKETPLACE = "marketplace"
 local CURL_STATUS_PREFIX = "__STATUS__"
 local DEFAULT_API_BASE_URL = "https://signal-leaderboard.just2dev-signal.workers.dev"
 local DEFAULT_LEADERBOARD_LIMIT = 50
 local DEFAULT_PREVIEW_LIMIT = 5
+local DEFAULT_MARKETPLACE_LIMIT = 10
 local DEFAULT_REQUEST_TIMEOUT_SECONDS = 5
+local MARKETPLACE_MODE_FAVORITES = "favorites"
+local MARKETPLACE_MODE_SEARCH = "search"
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
@@ -43,6 +47,13 @@ local function normalizeBaseUrl(baseUrl)
     return tostring(baseUrl or DEFAULT_API_BASE_URL):gsub("/+$", "")
 end
 
+local function urlEncode(value)
+    local text = tostring(value or "")
+    return (text:gsub("([^%w%-_%.~])", function(character)
+        return string.format("%%%02X", character:byte())
+    end))
+end
+
 local function buildLeaderboardUri(baseUrl, mapUuid, limit)
     local resolvedBaseUrl = normalizeBaseUrl(baseUrl)
     local resolvedLimit = tonumber(limit) or DEFAULT_LEADERBOARD_LIMIT
@@ -62,6 +73,17 @@ local function buildMapAroundUri(baseUrl, mapUuid, playerUuid)
         tostring(mapUuid or ""),
         tostring(playerUuid or "")
     )
+end
+
+local function buildMarketplaceFavoritesUri(baseUrl, limit)
+    local resolvedLimit = tonumber(limit) or DEFAULT_MARKETPLACE_LIMIT
+    return string.format("%s/api/maps/favorites?limit=%d", normalizeBaseUrl(baseUrl), resolvedLimit)
+end
+
+local function buildMarketplaceSearchUri(baseUrl, query, limit)
+    local resolvedLimit = tonumber(limit) or DEFAULT_MARKETPLACE_LIMIT
+    local queryParameter = urlEncode(tostring(query or ""))
+    return string.format("%s/api/maps/search?q=%s&limit=%d", normalizeBaseUrl(baseUrl), queryParameter, resolvedLimit)
 end
 
 local function fetchJson(uri, apiKey)
@@ -163,6 +185,19 @@ local function fetchLeaderboardPreview(config)
     return previewPayload
 end
 
+local function fetchMarketplaceEntries(config)
+    local mode = tostring(config.mode or MARKETPLACE_MODE_FAVORITES)
+    local uri
+
+    if mode == MARKETPLACE_MODE_SEARCH then
+        uri = buildMarketplaceSearchUri(config.apiBaseUrl, config.query, config.limit)
+    else
+        uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit)
+    end
+
+    return fetchJson(uri, config.apiKey)
+end
+
 while true do
     local encodedRequest = requestChannel:demand()
     local request = json.decode(encodedRequest)
@@ -180,6 +215,15 @@ while true do
         local payload, fetchError = fetchLeaderboardPreview(request.config or {})
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_PREVIEW,
+            requestId = request.requestId,
+            ok = payload ~= nil,
+            payload = payload,
+            error = fetchError,
+        }))
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_MARKETPLACE then
+        local payload, fetchError = fetchMarketplaceEntries(request.config or {})
+        responseChannel:push(json.encode({
+            kind = REQUEST_KIND_MARKETPLACE,
             requestId = request.requestId,
             ok = payload ~= nil,
             payload = payload,
