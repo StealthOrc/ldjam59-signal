@@ -76,4 +76,16 @@ assertEqual(
     "level select leaderboard refresh label clamps to zero without a cooldown"
 )
 
+assert(type(ui.formatMarketplaceFavoriteLabel) == "function", "ui.formatMarketplaceFavoriteLabel should exist")
+assertEqual(
+    ui.formatMarketplaceFavoriteLabel(12),
+    "12",
+    "marketplace favorite label shows the current favorite count"
+)
+assertEqual(
+    ui.formatMarketplaceFavoriteLabel(nil),
+    "0",
+    "marketplace favorite label falls back to zero without a count"
+)
+
 print("ui formatting tests passed")
