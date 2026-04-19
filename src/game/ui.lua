@@ -1216,6 +1216,8 @@ local function getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, h
     }
 end
 
+local PREP_TRAIN_ROW_SPACING = 8
+local PREP_TRAIN_ARROW_LENGTH = 19
 local getPrepTrainRowWidth
 
 local function getInputPrepCardRect(game, edge, trainCount)
@@ -1236,18 +1238,19 @@ local function getInputPrepCardRect(game, edge, trainCount)
     return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, height, 12)
 end
 
-local function getInputLiveCardRect(game, edge)
+local function getInputLiveCardRect(game, edge, train)
     local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, false)
-    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, 244, 82, 12)
+    local width = math.max(140, getPrepTrainRowWidth(game, train) + 20)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 54, 12)
 end
 
-local function getOutputBadgeRect(game, edge)
+local function getOutputBadgeRect(game, edge, badge)
     local anchorX, anchorY, dirX, dirY = getTrackOuterAnchor(edge, true)
-    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, 132, 62, 12)
+    love.graphics.setFont(game.fonts.body)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
+    local width = math.max(64, game.fonts.body:getWidth(ratioText) + PREP_TRAIN_ROW_SPACING * 2 + 16)
+    return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 44, 12)
 end
-
-local PREP_TRAIN_ROW_SPACING = 8
-local PREP_TRAIN_ARROW_LENGTH = 19
 
 local function formatSecondsLabel(value)
     return string.format("%ss", formatTimeValue(value))
@@ -1348,6 +1351,42 @@ local function drawPrepTrainPreview(game, x, centerY, train)
     graphics.setLineWidth(1)
 end
 
+local function drawTrainRow(game, rowRect, leadText, deadlineText, train)
+    local graphics = love.graphics
+    local centerY = rowRect.y + rowRect.h * 0.5
+
+    graphics.setColor(0.06, 0.08, 0.1, 0.96)
+    graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.setLineWidth(1.1)
+    graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
+
+    love.graphics.setFont(game.fonts.small)
+    local leadWidth = game.fonts.small:getWidth(leadText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
+
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(leadText, contentStartX, rowRect.y + 9)
+
+    local nextX = contentStartX + leadWidth + PREP_TRAIN_ROW_SPACING
+    if deadlineText then
+        local arrowStartX = nextX
+        local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.setLineWidth(2)
+        graphics.line(arrowStartX, centerY, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY - 3, arrowEndX, centerY)
+        graphics.line(arrowEndX - 4, centerY + 3, arrowEndX, centerY)
+        graphics.setLineWidth(1)
+        nextX = arrowEndX + PREP_TRAIN_ROW_SPACING
+        graphics.print(deadlineText, nextX, rowRect.y + 9)
+        nextX = nextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
+    end
+
+    drawPrepTrainPreview(game, nextX, centerY, train)
+end
+
 local function drawInputPrepCard(game, group)
     local graphics = love.graphics
     local rect = getInputPrepCardRect(game, group.edge, #(group.trains or {}))
@@ -1374,93 +1413,43 @@ local function drawInputPrepCard(game, group)
             w = rowWidth,
             h = rowHeight,
         }
-        local centerY = rowRect.y + rowRect.h * 0.5
         local startText = formatSecondsLabel(train.spawnTime or 0)
         local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
-
-        graphics.setColor(0.06, 0.08, 0.1, 0.96)
-        graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
-        graphics.setColor(0.24, 0.32, 0.4, 1)
-        graphics.setLineWidth(1.1)
-        graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
-
-        love.graphics.setFont(game.fonts.small)
-        local startWidth = game.fonts.small:getWidth(startText)
-        local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
-        local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
-
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.print(startText, contentStartX, rowRect.y + 9)
-
-        local nextX = contentStartX + startWidth + PREP_TRAIN_ROW_SPACING
-        if deadlineText then
-            local arrowStartX = nextX
-            local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.setLineWidth(2)
-            graphics.line(arrowStartX, centerY, arrowEndX, centerY)
-            graphics.line(arrowEndX - 4, centerY - 3, arrowEndX, centerY)
-            graphics.line(arrowEndX - 4, centerY + 3, arrowEndX, centerY)
-            graphics.setLineWidth(1)
-            nextX = arrowEndX + PREP_TRAIN_ROW_SPACING
-            graphics.print(deadlineText, nextX, rowRect.y + 9)
-            nextX = nextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
-        end
-
-        drawPrepTrainPreview(game, nextX, centerY, train)
+        drawTrainRow(game, rowRect, startText, deadlineText, train)
         rowY = rowY + rowHeight + rowGap
     end
 end
 
 local function drawInputLiveCard(game, edge, train)
     local graphics = love.graphics
-    local rect = getInputLiveCardRect(game, edge)
+    local rect = getInputLiveCardRect(game, edge, train)
     local remainingSeconds = math.max(0, (train.spawnTime or 0) - (game.world.elapsedTime or 0))
 
     drawMetalPanel(rect, 0.96)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(edge.label or edge.id, rect.x + 12, rect.y + 10, rect.w - 24, "left")
-
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf(tostring(train.id or "--"), rect.x + 12, rect.y + 31, rect.w - 24, "left")
-    graphics.printf(
-        string.format("Line %s -> Goal %s", getColorLabel(train.lineColor), getColorLabel(train.goalColor or train.trainColor)),
-        rect.x + 12,
-        rect.y + 49,
-        rect.w - 24,
-        "left"
-    )
-    graphics.setColor(0.99, 0.78, 0.32, 1)
-    graphics.printf(
-        string.format("Arrives in %ss | Deadline %s", formatTimeValue(remainingSeconds), formatTimeValue(train.deadline)),
-        rect.x + 12,
-        rect.y + 65,
-        rect.w - 24,
-        "left"
+    drawTrainRow(
+        game,
+        {
+            x = math.floor(rect.x + 10),
+            y = math.floor(rect.y + 10),
+            w = rect.w - 20,
+            h = 34,
+        },
+        formatSecondsLabel(remainingSeconds),
+        train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil,
+        train
     )
 end
 
 local function drawOutputBadge(game, badge)
     local graphics = love.graphics
-    local rect = getOutputBadgeRect(game, badge.edge)
+    local rect = getOutputBadgeRect(game, badge.edge, badge)
+    local ratioText = string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0)
 
     drawMetalPanel(rect, 0.96)
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(badge.edge.label or badge.edge.id, rect.x + 10, rect.y + 10, rect.w - 20, "center")
-
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.printf(
-        string.format("%d / %d", badge.deliveredCount or 0, badge.expectedCount or 0),
-        rect.x,
-        rect.y + 28,
-        rect.w,
-        "center"
-    )
+    graphics.printf(ratioText, rect.x, rect.y + math.floor((rect.h - game.fonts.body:getHeight()) * 0.5 + 0.5), rect.w, "center")
 end
 
 function ui.getPlayBackHit(_, x, y)
