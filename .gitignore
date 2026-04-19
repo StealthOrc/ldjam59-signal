@@ -38,10 +38,16 @@ luac.out
 *.i*86
 *.x86_64
 *.hex
+*.love
+dist/
 
 # Local tooling metadata
 .codex/
 .env
+
+# Local environment secrets
+.env
+.env.*
 
 *claude
 
