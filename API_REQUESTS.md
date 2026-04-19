@@ -75,7 +75,9 @@ Response example:
 
 ### POST /api/maps/{map_uuid}/favorites
 
-This adds one favorite vote for one user on one map. A user can vote only once per map.
+This adds one heart or like vote for one user on one map. A user can vote only once per map.
+
+If the same user sends the request again for the same map, the backend does not increment the count again. It returns `accepted: false` and `already_favorited: true`.
 
 ```http
 POST /api/maps/8c9d4c8b-8a53-49c8-9d4d-6deec824d1b5/favorites
@@ -95,8 +97,10 @@ Response example:
 
 ```json
 {
+  "already_favorited": false,
   "accepted": true,
   "favorite_count": 1,
+  "liked_by_player": true,
   "map_uuid": "8c9d4c8b-8a53-49c8-9d4d-6deec824d1b5",
   "ok": true,
   "voter_uuid": "223e4567-e89b-12d3-a456-426614174111"
@@ -109,8 +113,11 @@ Response example:
 
 This loads one map by its full `map_uuid`.
 
+If you pass `player_uuid` as a query parameter, the response also tells you whether that player has already liked the map.
+
 ```http
 GET /api/maps/id/8c9d4c8b-8a53-49c8-9d4d-6deec824d1b5
+GET /api/maps/id/8c9d4c8b-8a53-49c8-9d4d-6deec824d1b5?player_uuid=223e4567-e89b-12d3-a456-426614174111
 ```
 
 Response example:
@@ -122,6 +129,7 @@ Response example:
   "creator_uuid": "123e4567-e89b-12d3-a456-426614174000",
   "favorite_count": 1,
   "internal_identifier": "aB3kQ9",
+  "liked_by_player": true,
   "map": {
     "tiles": [],
     "spawn": {
@@ -140,8 +148,11 @@ Response example:
 
 This loads one map by its internal identifier.
 
+If you pass `player_uuid` as a query parameter, the response also tells you whether that player has already liked the map.
+
 ```http
 GET /api/maps/code/aB3kQ9
+GET /api/maps/code/aB3kQ9?player_uuid=223e4567-e89b-12d3-a456-426614174111
 ```
 
 Response example:
@@ -153,6 +164,7 @@ Response example:
   "creator_uuid": "123e4567-e89b-12d3-a456-426614174000",
   "favorite_count": 1,
   "internal_identifier": "aB3kQ9",
+  "liked_by_player": true,
   "map": {
     "tiles": [],
     "spawn": {
@@ -171,9 +183,12 @@ Response example:
 
 This returns the favorite maps ordered by `favorite_count` descending.
 
+If you pass `player_uuid` as a query parameter, each entry also includes `liked_by_player` for that player.
+
 ```http
 GET /api/maps/favorites
 GET /api/maps/favorites?limit=10
+GET /api/maps/favorites?limit=10&player_uuid=223e4567-e89b-12d3-a456-426614174111
 ```
 
 Response example:
@@ -187,6 +202,7 @@ Response example:
       "creator_uuid": "123e4567-e89b-12d3-a456-426614174000",
       "favorite_count": 12,
       "internal_identifier": "aB3kQ9",
+      "liked_by_player": true,
       "map": {
         "tiles": []
       },
@@ -204,10 +220,13 @@ Response example:
 
 This searches maps by partial `map_uuid`, partial `map_name`, partial `internal_identifier`, partial `creator_uuid`, or partial creator username.
 
+If you pass `player_uuid` as a query parameter, each entry also includes `liked_by_player` for that player.
+
 ```http
 GET /api/maps/search?q=arena
 GET /api/maps/search?query=aB3
 GET /api/maps/search?q=8c9d4c8b&limit=10
+GET /api/maps/search?q=arena&limit=10&player_uuid=223e4567-e89b-12d3-a456-426614174111
 ```
 
 Response example:
@@ -221,6 +240,7 @@ Response example:
       "creator_uuid": "123e4567-e89b-12d3-a456-426614174000",
       "favorite_count": 12,
       "internal_identifier": "aB3kQ9",
+      "liked_by_player": true,
       "map": {
         "tiles": []
       },

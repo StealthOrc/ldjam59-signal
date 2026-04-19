@@ -7,6 +7,7 @@ local SCRIPT_FILE = "leaderboard_request.ps1"
 local REQUEST_FILE = "leaderboard_request.json"
 local REQUEST_MODE_SUBMIT = "submit"
 local REQUEST_MODE_UPLOAD_MAP = "upload_map"
+local REQUEST_MODE_FAVORITE_MAP = "favorite_map"
 
 local POWERSHELL_SCRIPT = [[
 param(
@@ -23,7 +24,7 @@ $headers = @{ 'x-api-key' = $ApiKey }
 $uri = $ApiBaseUrl.TrimEnd('/') + $EndpointPath
 
 try {
-    if ($Mode -eq 'submit' -or $Mode -eq 'upload_map') {
+    if ($Mode -eq 'submit' -or $Mode -eq 'upload_map' -or $Mode -eq 'favorite_map') {
         $body = Get-Content -Raw -Path $BodyPath
         if ($HmacSecret -and $HmacSecret.Trim().Length -gt 0) {
             $encoding = [System.Text.Encoding]::UTF8
@@ -253,6 +254,30 @@ function leaderboardClient.uploadMap(submission, config)
     }
 
     return runPowerShell(REQUEST_MODE_UPLOAD_MAP, resolvedConfig, "/api/maps", payload)
+end
+
+function leaderboardClient.favoriteMap(submission, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mapUuid = tostring(submission.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The map could not be liked because the map UUID is missing."
+    end
+
+    local playerUuid = tostring(submission.playerUuid or "")
+    if playerUuid == "" then
+        return nil, "The map could not be liked because the player UUID is missing."
+    end
+
+    local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
+    local payload = {
+        player_uuid = playerUuid,
+    }
+
+    return runPowerShell(REQUEST_MODE_FAVORITE_MAP, resolvedConfig, endpointPath, payload)
 end
 
 return leaderboardClient

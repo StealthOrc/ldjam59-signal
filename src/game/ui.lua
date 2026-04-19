@@ -34,10 +34,32 @@ local MARKETPLACE_LAYOUT = {
     cardIndicatorInset = 14,
     cardIndicatorH = 28,
     cardIndicatorRadius = 14,
+    favoriteButtonH = 30,
+    favoriteButtonCornerRadius = 12,
+    favoriteButtonHeartRadius = 5,
+    favoriteButtonHeartInsetX = 18,
+    favoriteButtonHeartInsetY = 9,
+    favoriteButtonInset = 14,
+    favoriteButtonMinH = 24,
+    favoriteButtonMinW = 68,
+    favoriteButtonOutlineWidth = 2,
+    favoriteButtonTextInset = 34,
+    favoriteButtonW = 86,
+    favoriteLift = 14,
+    favoriteSpacing = 10,
     titleMetaTop = 48,
 }
 local MARKETPLACE_REMOTE_SOURCE = "remote"
 local MARKETPLACE_REMOTE_CATEGORY_USERS = "users"
+
+local MARKETPLACE_FAVORITE_COLORS = {
+    likedFill = { 0.42, 0.16, 0.22, 0.98 },
+    likedLine = { 0.98, 0.48, 0.62, 1 },
+    likedText = { 1, 0.94, 0.97, 1 },
+    unlikedFill = { 0.1, 0.14, 0.19, 0.96 },
+    unlikedLine = { 0.56, 0.72, 0.98, 1 },
+    unlikedText = { 0.94, 0.96, 1, 1 },
+}
 
 local PREVIEW_COLORS = {
     background = { 0.06, 0.09, 0.12, 1 },
@@ -859,6 +881,8 @@ local function buildMarketplaceDescriptor(entry)
         source = MARKETPLACE_REMOTE_SOURCE,
         name = displayName,
         displayName = displayName,
+        favoriteCount = tonumber(entry.favorite_count or 0) or 0,
+        likedByPlayer = entry.liked_by_player == true,
         mapKind = normalizeMarketplaceMapKind(entry.map_category),
         savedAt = entry.updated_at,
         hasEditor = false,
@@ -896,9 +920,10 @@ local function buildMarketplaceEntries(game)
                 subtitle = string.format("%s  |  %s", kindLabel, controlsSummary),
                 creatorDisplayName = tostring(sourceEntry.creator_display_name or "Unknown"),
                 creatorUuid = tostring(sourceEntry.creator_uuid or ""),
-                favoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0,
+                favoriteCount = descriptor.favoriteCount or 0,
                 internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
-                featuredWeight = tonumber(sourceEntry.favorite_count or 0) or 0,
+                likedByPlayer = descriptor.likedByPlayer == true,
+                featuredWeight = descriptor.favoriteCount or 0,
                 randomWeight = getMarketplaceHash(table.concat({
                     tostring(sourceEntry.map_uuid or ""),
                     tostring(sourceEntry.internal_identifier or ""),
@@ -1357,6 +1382,118 @@ local function getWrappedDistance(index, visualIndex, count)
     return distance
 end
 
+local function getMarketplaceFavoriteButtonRect(rect)
+    if not rect then
+        return nil
+    end
+
+    local buttonScale = rect.scale or 1
+    local buttonWidth = math.max(
+        MARKETPLACE_LAYOUT.favoriteButtonMinW,
+        math.floor(MARKETPLACE_LAYOUT.favoriteButtonW * buttonScale + 0.5)
+    )
+    local buttonHeight = math.max(
+        MARKETPLACE_LAYOUT.favoriteButtonMinH,
+        math.floor(MARKETPLACE_LAYOUT.favoriteButtonH * buttonScale + 0.5)
+    )
+    local inset = math.floor(MARKETPLACE_LAYOUT.favoriteButtonInset * buttonScale + 0.5)
+    return {
+        x = rect.x + math.floor((rect.w - buttonWidth) * 0.5 + 0.5),
+        y = rect.y + rect.h - buttonHeight + MARKETPLACE_LAYOUT.favoriteLift,
+        w = buttonWidth,
+        h = buttonHeight,
+    }
+end
+
+local function getMarketplaceFavoriteHoverId(descriptor)
+    return descriptor and ("favorite:" .. tostring(descriptor.id or "")) or nil
+end
+
+local function getMarketplaceFavoriteLabel(marketplaceEntry)
+    local favoriteCount = tonumber(marketplaceEntry and marketplaceEntry.favoriteCount or 0) or 0
+    return tostring(favoriteCount)
+end
+
+local function drawMarketplaceHeartIcon(rect, isLiked, lineColor, fillColor)
+    local graphics = love.graphics
+    local radius = MARKETPLACE_LAYOUT.favoriteButtonHeartRadius
+    local leftCenterX = rect.x + MARKETPLACE_LAYOUT.favoriteButtonHeartInsetX
+    local rightCenterX = leftCenterX + radius * 2
+    local topCenterY = rect.y + MARKETPLACE_LAYOUT.favoriteButtonHeartInsetY + radius
+    local bottomY = rect.y + rect.h - MARKETPLACE_LAYOUT.favoriteButtonHeartInsetY
+    local centerX = leftCenterX + radius
+
+    if isLiked then
+        graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
+        graphics.circle("fill", leftCenterX, topCenterY, radius)
+        graphics.circle("fill", rightCenterX, topCenterY, radius)
+        graphics.polygon(
+            "fill",
+            leftCenterX - radius,
+            topCenterY,
+            rightCenterX + radius,
+            topCenterY,
+            centerX,
+            bottomY
+        )
+    end
+
+    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], lineColor[4] or 1)
+    graphics.setLineWidth(MARKETPLACE_LAYOUT.favoriteButtonOutlineWidth)
+    graphics.circle("line", leftCenterX, topCenterY, radius)
+    graphics.circle("line", rightCenterX, topCenterY, radius)
+    graphics.line(leftCenterX - radius, topCenterY, centerX, bottomY, rightCenterX + radius, topCenterY)
+    graphics.setLineWidth(1)
+end
+
+local function drawMarketplaceFavoriteButton(game, descriptor, rect, marketplaceEntry)
+    if not rect or not marketplaceEntry then
+        return
+    end
+
+    local graphics = love.graphics
+    local hoverId = getMarketplaceFavoriteHoverId(descriptor)
+    local isHovered = game.levelSelectHoverId == hoverId
+    local isLiked = marketplaceEntry.likedByPlayer == true
+    local fillColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedFill or MARKETPLACE_FAVORITE_COLORS.unlikedFill
+    local lineColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedLine or MARKETPLACE_FAVORITE_COLORS.unlikedLine
+    local textColor = isLiked and MARKETPLACE_FAVORITE_COLORS.likedText or MARKETPLACE_FAVORITE_COLORS.unlikedText
+
+    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], isHovered and 1 or (fillColor[4] or 1))
+    graphics.rectangle(
+        "fill",
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius
+    )
+    graphics.setColor(lineColor[1], lineColor[2], lineColor[3], isHovered and 1 or (lineColor[4] or 1))
+    graphics.setLineWidth(MARKETPLACE_LAYOUT.favoriteButtonOutlineWidth)
+    graphics.rectangle(
+        "line",
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius,
+        MARKETPLACE_LAYOUT.favoriteButtonCornerRadius
+    )
+    graphics.setLineWidth(1)
+    drawMarketplaceHeartIcon(rect, isLiked, lineColor, fillColor)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(textColor[1], textColor[2], textColor[3], textColor[4] or 1)
+    graphics.printf(
+        getMarketplaceFavoriteLabel(marketplaceEntry),
+        rect.x + MARKETPLACE_LAYOUT.favoriteButtonTextInset,
+        rect.y + math.floor((rect.h - game.fonts.small:getHeight()) * 0.5 + 0.5),
+        math.max(0, rect.w - MARKETPLACE_LAYOUT.favoriteButtonTextInset - 8),
+        "left"
+    )
+end
+
 local function buildLevelSelectCardRects(game)
     local maps = getLevelSelectMaps(game)
     local selectedIndex = getSelectedMapIndex(game, maps)
@@ -1388,12 +1525,19 @@ local function buildLevelSelectCardRects(game)
                 w = width,
                 h = height,
             }
+            if game.levelSelectMode == "marketplace" and descriptor.source == MARKETPLACE_REMOTE_SOURCE then
+                rects[#rects].favoriteButtonRect = getMarketplaceFavoriteButtonRect(rects[#rects])
+            end
 
             local badgeGap = 12
             local badgeH = 22
             local badgeWidths, badgeTotalWidth = buildCardBadges(game, descriptor, width - 36)
             local badgeBottomPadding = 18
+            local favoriteButtonRect = rects[#rects].favoriteButtonRect
             local badgeY = y + height - badgeH - badgeBottomPadding
+            if favoriteButtonRect then
+                badgeY = favoriteButtonRect.y - badgeH - MARKETPLACE_LAYOUT.favoriteSpacing
+            end
             local previewTop = y + 18
             local previewBottom = badgeY - badgeGap
             rects[#rects].previewRect = {
@@ -1699,6 +1843,7 @@ end
 local function drawLevelCard(game, rect)
     local graphics = love.graphics
     local descriptor = rect.map
+    local marketplaceEntry = getMarketplaceEntryForDescriptor(game, descriptor)
     local selected = rect.selected
     local cardFill = selected and { 0.09, 0.11, 0.15, 0.98 } or { 0.08, 0.1, 0.13, 0.94 }
     local trim = selected and { 0.45, 0.7, 0.92, 1 } or { 0.24, 0.34, 0.44, 0.95 }
@@ -1722,6 +1867,7 @@ local function drawLevelCard(game, rect)
         drawLevelSelectLeaderboardBack(game, rect)
     else
         drawMapPreview(descriptor, rect.previewRect)
+        drawMarketplaceFavoriteButton(game, descriptor, rect.favoriteButtonRect, marketplaceEntry)
 
         local badgeY = rect.badgeRow and rect.badgeRow.y or (rect.y + rect.h - 40)
         drawControlBadges(game, descriptor, rect.x + 18, badgeY, rect.w - 36, rect.badgeRow)
@@ -1995,6 +2141,9 @@ function ui.getLevelSelectHit(game, x, y, button)
             end
         end
         for _, rect in ipairs(buildLevelSelectCardRects(game)) do
+            if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
+                return { kind = "favorite_map", map = rect.map }
+            end
             if pointInRect(x, y, rect) then
                 return { kind = "select_map", map = rect.map }
             end
@@ -2053,6 +2202,11 @@ function ui.getLevelSelectHoverId(game, x, y)
                 if pointInRect(x, y, uiControls.segmentRect(tabsRect, index, #tabSegments)) then
                     return segment.id
                 end
+            end
+        end
+        for _, rect in ipairs(buildLevelSelectCardRects(game)) do
+            if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
+                return getMarketplaceFavoriteHoverId(rect.map)
             end
         end
         return nil
