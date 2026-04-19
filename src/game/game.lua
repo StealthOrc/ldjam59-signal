@@ -31,6 +31,7 @@ local LEADERBOARD_MESSAGE_LOADING = "Loading leaderboard..."
 local LEADERBOARD_MESSAGE_EMPTY = "No entries were found for this leaderboard yet."
 local LEADERBOARD_MESSAGE_FETCH_FAILED = "The leaderboard could not be loaded."
 local LEADERBOARD_MESSAGE_NO_DATA = "No data right now."
+local LEADERBOARD_MESSAGE_UNAVAILABLE = "Leaderboard unavailable."
 local LEADERBOARD_MAP_NAME_UNKNOWN = "Unknown Map"
 local LEVEL_SELECT_PREVIEW_ENTRY_LIMIT = 5
 local LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS = 60
@@ -227,6 +228,19 @@ local function logOnlineConfig(onlineConfig)
     for _, errorMessage in ipairs(config.errors or {}) do
         print(string.format("%s config error: %s", ONLINE_CONFIG_LOG_PREFIX, errorMessage))
     end
+end
+
+local function getLeaderboardUnavailableMessage()
+    return LEADERBOARD_MESSAGE_UNAVAILABLE
+end
+
+local function normalizeLeaderboardErrorMessage(message)
+    local text = tostring(message or "")
+    if text:find("API_KEY", 1, true) or text:find("API_BASE_URL", 1, true) or text:find(".env", 1, true) then
+        return getLeaderboardUnavailableMessage()
+    end
+
+    return text ~= "" and text or LEADERBOARD_MESSAGE_FETCH_FAILED
 end
 
 function Game.new()
@@ -841,7 +855,7 @@ function Game:applyLeaderboardFetchResult(response)
     end
 
     self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
-    local fetchMessage = response.error or LEADERBOARD_MESSAGE_FETCH_FAILED
+    local fetchMessage = normalizeLeaderboardErrorMessage(response.error)
     if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
         self.leaderboardState = self:buildLeaderboardState(
             LEADERBOARD_STATUS_ERROR,
@@ -1121,7 +1135,7 @@ function Game:updateLeaderboardFetchState()
         if not onlineConfig.isConfigured then
             self.leaderboardState = self:buildLeaderboardState(
                 LEADERBOARD_STATUS_DISABLED,
-                table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
+                getLeaderboardUnavailableMessage(),
                 cacheEntry.payload,
                 cacheEntry.fetchedAt
             )
@@ -1253,7 +1267,7 @@ function Game:submitResultsScore()
     if not onlineConfig.isConfigured then
         self.resultsOnlineState = {
             status = "disabled",
-            message = table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
+            message = getLeaderboardUnavailableMessage(),
         }
         return
     end
@@ -1501,7 +1515,7 @@ function Game:refreshLeaderboard()
     if not onlineConfig.isConfigured then
         self.leaderboardState = self:buildLeaderboardState(
             LEADERBOARD_STATUS_DISABLED,
-            table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
+            getLeaderboardUnavailableMessage(),
             cacheEntry.payload,
             cacheEntry.fetchedAt
         )
