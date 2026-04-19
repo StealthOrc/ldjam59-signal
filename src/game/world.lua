@@ -12,6 +12,7 @@ local COLOR_OPTIONS = {
 local RELAY_FLASH_DURATION = 0.28
 local TRIP_FLASH_DURATION = 0.28
 local CROSSBAR_FLASH_DURATION = 0.28
+local TRACK_STRIPE_LENGTH = 14
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -94,6 +95,25 @@ local function getColorById(colorId)
         end
     end
     return copyColor(COLOR_OPTIONS[1].color)
+end
+
+local function buildTrackStripeColors(colorIds, isActive)
+    if #(colorIds or {}) <= 1 then
+        return nil
+    end
+
+    local brightness = isActive and 1 or 0.58
+    local colors = {}
+    for _, colorId in ipairs(colorIds or {}) do
+        local color = getColorById(colorId)
+        colors[#colors + 1] = {
+            color[1] * brightness,
+            color[2] * brightness,
+            color[3] * brightness,
+        }
+    end
+
+    return colors
 end
 
 local function containsColorId(colors, colorId)
@@ -1629,6 +1649,52 @@ function world:getRenderedTrackPoints(track)
     return buildPathSlice(track.path, trimStartDistance, trimEndDistance)
 end
 
+function world:drawTrackLine(points, width, color, alpha)
+    local graphics = love.graphics
+    graphics.setColor(color[1], color[2], color[3], alpha or 1)
+    graphics.setLineWidth(width)
+    graphics.line(points)
+end
+
+function world:drawStripedTrack(points, width, stripeColors, alpha)
+    local graphics = love.graphics
+    local stripeIndex = 1
+
+    graphics.setLineWidth(width)
+    for pointIndex = 1, #points - 3, 2 do
+        local ax = points[pointIndex]
+        local ay = points[pointIndex + 1]
+        local bx = points[pointIndex + 2]
+        local by = points[pointIndex + 3]
+        local dx = bx - ax
+        local dy = by - ay
+        local length = math.sqrt(dx * dx + dy * dy)
+
+        if length > 0.0001 then
+            local unitX = dx / length
+            local unitY = dy / length
+            local stripeLength = math.max(8, TRACK_STRIPE_LENGTH - #stripeColors)
+
+            for offset = 0, math.ceil(length / stripeLength) - 1 do
+                local startDistance = offset * stripeLength
+                local endDistance = math.min(length, startDistance + stripeLength)
+                local color = stripeColors[stripeIndex]
+                graphics.setColor(color[1], color[2], color[3], alpha or 1)
+                graphics.line(
+                    ax + unitX * startDistance,
+                    ay + unitY * startDistance,
+                    ax + unitX * endDistance,
+                    ay + unitY * endDistance
+                )
+                stripeIndex = stripeIndex + 1
+                if stripeIndex > #stripeColors then
+                    stripeIndex = 1
+                end
+            end
+        end
+    end
+end
+
 function world:getInputTrackAngle(track)
     if not track or #track.path.points < 2 then
         return -math.pi * 0.5
@@ -1642,6 +1708,7 @@ function world:drawInputTrack(track, isActive)
     local graphics = love.graphics
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
+    local stripeColors = buildTrackStripeColors(track.colors, isActive)
     local renderedPoints = self:getRenderedTrackPoints(track)
     if #renderedPoints < 2 then
         return
@@ -1654,15 +1721,18 @@ function world:drawInputTrack(track, isActive)
     graphics.setLineWidth(self.trackWidth + 10)
     graphics.line(points)
 
-    graphics.setColor(trackColor[1], trackColor[2], trackColor[3], trackAlpha)
-    graphics.setLineWidth(self.trackWidth)
-    graphics.line(points)
+    if stripeColors then
+        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
+    else
+        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
+    end
 end
 
 function world:drawOutputTrack(junction, outputIndex, isActive)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
     local color = self:getOutputDisplayColor(junction, outputIndex, isActive)
+    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
     local renderedPoints = self:getRenderedTrackPoints(outputTrack)
     if #renderedPoints < 2 then
         return
@@ -1674,9 +1744,11 @@ function world:drawOutputTrack(junction, outputIndex, isActive)
     graphics.setLineWidth(self.sharedWidth + 10)
     graphics.line(points)
 
-    graphics.setColor(color[1], color[2], color[3], isActive and 0.98 or 0.7)
-    graphics.setLineWidth(self.sharedWidth)
-    graphics.line(points)
+    if stripeColors then
+        self:drawStripedTrack(points, self.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
+    else
+        self:drawTrackLine(points, self.sharedWidth, color, isActive and 0.98 or 0.7)
+    end
 end
 
 function world:drawControlOverlay(junction)
