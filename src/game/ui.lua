@@ -61,16 +61,6 @@ local PLAY_OVERLAY = {
     sectionGap = 14,
 }
 
-local PLAY_HEADER = {
-    x = 22,
-    y = 20,
-    paddingX = 18,
-    paddingY = 12,
-    titleGap = 14,
-    rowGap = 8,
-    radius = 18,
-}
-
 local function pointInRect(x, y, rect)
     return x >= rect.x
         and x <= rect.x + rect.w
@@ -266,6 +256,7 @@ local function buildPlayHelpSections(game)
 end
 
 local function buildPlayDebugSections(game)
+    local runSummary = game.world:getRunSummary()
     local sections = {
         {
             title = "Junction State",
@@ -274,6 +265,14 @@ local function buildPlayDebugSections(game)
         {
             title = "Train Queue",
             lines = {},
+        },
+        {
+            title = "Run Stats",
+            lines = {
+                string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #(game.world.trains or {})),
+                string.format("Interactions: %d", runSummary.interactionCount or 0),
+                string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
+            },
         },
     }
     local worldState = game.world
@@ -1289,81 +1288,26 @@ end
 
 function ui.drawPlay(game)
     local graphics = love.graphics
-    local level = game.world:getLevel()
     local runSummary = game.world:getRunSummary()
-    local gameTitleText = "Out of Signal"
-    local levelTitleText = level.title or ""
-    local titleFont = game.fonts.title
-    local levelFont = game.fonts.body
-    local timerFont = game.fonts.small
-    local timerText = game.world.timeRemaining and string.format("Time left: %.1fs", game.world.timeRemaining) or nil
-    local titleRowWidth = titleFont:getWidth(gameTitleText)
-    local levelRowWidth = 0
-    local timerRowWidth = timerText and timerFont:getWidth(timerText) or 0
-    local titleRowHeight = math.max(titleFont:getHeight(), levelFont:getHeight())
-    local headerHeight = titleRowHeight + PLAY_HEADER.paddingY * 2
-
-    if levelTitleText ~= "" then
-        levelRowWidth = PLAY_HEADER.titleGap + levelFont:getWidth(levelTitleText)
-    end
-
-    if timerText then
-        headerHeight = headerHeight + PLAY_HEADER.rowGap + timerFont:getHeight()
-    end
-
-    local playHeaderRect = {
-        x = PLAY_HEADER.x,
-        y = PLAY_HEADER.y,
-        w = math.max(titleRowWidth + levelRowWidth, timerRowWidth) + PLAY_HEADER.paddingX * 2,
-        h = headerHeight,
+    local scorePanel = {
+        x = math.floor(game.viewport.w - 274 + 0.5),
+        y = math.floor(game.viewport.h * 0.5 - 52 + 0.5),
+        w = 236,
+        h = 104,
     }
-    local titleRowY = playHeaderRect.y + PLAY_HEADER.paddingY
-    local textX = playHeaderRect.x + PLAY_HEADER.paddingX
 
-    graphics.setColor(0, 0, 0, 0.34)
-    graphics.rectangle("fill", playHeaderRect.x, playHeaderRect.y, playHeaderRect.w, playHeaderRect.h, PLAY_HEADER.radius, PLAY_HEADER.radius)
-
-    love.graphics.setFont(titleFont)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print(gameTitleText, textX, titleRowY)
-
-    if levelTitleText ~= "" then
-        love.graphics.setFont(levelFont)
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.print(
-            levelTitleText,
-            textX + titleRowWidth + PLAY_HEADER.titleGap,
-            titleRowY + math.floor((titleRowHeight - levelFont:getHeight()) * 0.5 + 0.5)
-        )
-    end
-
-    if timerText then
-        love.graphics.setFont(timerFont)
-        graphics.setColor(0.99, 0.83, 0.44, 1)
-        graphics.print(timerText, textX, titleRowY + titleRowHeight + PLAY_HEADER.rowGap)
-    end
+    graphics.setColor(0.08, 0.1, 0.13, 0.94)
+    graphics.rectangle("fill", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
+    graphics.setColor(0.3, 0.36, 0.42, 1)
+    graphics.rectangle("line", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
 
     love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.48, 0.92, 0.62, 1)
-    graphics.print(game.world:getActiveRouteSummary(), 42, 152)
+    graphics.setColor(0.8, 0.84, 0.9, 0.95)
+    graphics.printf("Score", scorePanel.x + 20, scorePanel.y + 18, scorePanel.w - 40, "left")
 
-    local trainsText = string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains)
-    graphics.setColor(0.84, 0.88, 0.92, 0.95)
-    graphics.print(trainsText, 42, 174)
-    graphics.print(string.format("Interactions: %d", runSummary.interactionCount or 0), 42, 196)
-    graphics.print(string.format("Score: %s", formatScore(runSummary.finalScore or 0)), 220, 196)
-
-    local nextTrain = game.world:getNextQueuedTrain()
-    if nextTrain then
-        graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.print(string.format("Next spawn: %s at %.1fs", game.world:getTrainSummary(nextTrain), nextTrain.spawnTime or 0), 42, 220)
-    end
-
-    local nextDeadline = game.world:getNearestPendingDeadline()
-    if nextDeadline then
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.print(string.format("Nearest deadline: %s by %.1fs", game.world:getTrainSummary(nextDeadline), nextDeadline.deadline), 360, 220)
-    end
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(formatScore(runSummary.finalScore or 0), scorePanel.x + 20, scorePanel.y + 44, scorePanel.w - 40, "left")
 
     drawButton(
         { x = 1114, y = 28, w = 134, h = 38 },
@@ -1373,10 +1317,6 @@ function ui.drawPlay(game)
         game.fonts.small
     )
 
-    graphics.setColor(0, 0, 0, 0.3)
-    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
-    graphics.setColor(0.8, 0.84, 0.9, 0.82)
-    graphics.printf("Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart", 0, game.viewport.h - 42, game.viewport.w, "center")
 
     drawPlayInfoOverlay(game)
 end

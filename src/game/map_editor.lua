@@ -406,6 +406,8 @@ function mapEditor.new(viewportW, viewportH, level)
     self.dialog = nil
     self.currentMapName = nil
     self.sourceInfo = nil
+    self.lastSavedDescriptor = nil
+    self.pendingPlaytestDescriptor = nil
     self.loadedMapPayload = nil
     self.lastValidationError = nil
     self.validationErrors = {}
@@ -787,6 +789,27 @@ function mapEditor:refreshValidation(mapName)
     return level, buildError, self.validationErrors
 end
 
+function mapEditor:canPlaySavedMap()
+    return self.lastSavedDescriptor ~= nil and self.lastSavedDescriptor.hasLevel == true
+end
+
+function mapEditor:requestPlaytestFromSavedMap()
+    if not self:canPlaySavedMap() then
+        self:showStatus("Save a playable map first, then test it from here.")
+        return false
+    end
+
+    self.pendingPlaytestDescriptor = self.lastSavedDescriptor
+    self:showStatus("Starting test run from the saved map...")
+    return true
+end
+
+function mapEditor:consumePlaytestRequest()
+    local descriptor = self.pendingPlaytestDescriptor
+    self.pendingPlaytestDescriptor = nil
+    return descriptor
+end
+
 function mapEditor:createRoute(points, color, id, label, colorId, startColors, endColors, startEndpointId, endEndpointId, segmentRoadTypes)
     local routeId = id or ("route_" .. self.nextRouteId)
     local resolvedColorId = colorId or nearestColorId(color)
@@ -829,13 +852,22 @@ end
 function mapEditor:getSaveButtonRect()
     return {
         x = self.sidePanel.x + 18,
-        y = self.sidePanel.y + self.sidePanel.h - 210,
+        y = self.sidePanel.y + self.sidePanel.h - 260,
         w = self.sidePanel.w - 36,
         h = 38,
     }
 end
 
 function mapEditor:getOpenButtonRect()
+    return {
+        x = self.sidePanel.x + 18,
+        y = self.sidePanel.y + self.sidePanel.h - 210,
+        w = self.sidePanel.w - 36,
+        h = 38,
+    }
+end
+
+function mapEditor:getPlayTestButtonRect()
     return {
         x = self.sidePanel.x + 18,
         y = self.sidePanel.y + self.sidePanel.h - 160,
@@ -1139,6 +1171,7 @@ function mapEditor:openOpenDialog()
     self.dialog = {
         type = "open",
         maps = mapStorage.listMaps(),
+        scroll = 0,
     }
 end
 
@@ -1149,6 +1182,106 @@ function mapEditor:getDialogRect()
         w = 520,
         h = 360,
     }
+end
+
+function mapEditor:getOpenDialogListLayout()
+    local rect = self:getDialogRect()
+    local maps = (self.dialog and self.dialog.maps) or {}
+    local listRect = {
+        x = rect.x + 24,
+        y = rect.y + 78,
+        w = rect.w - 48,
+        h = rect.h - 142,
+    }
+    local rowStride = 54
+    local rowHeight = 44
+    local visibleRows = math.max(1, math.floor(listRect.h / rowStride))
+    local maxScroll = math.max(0, #maps - visibleRows)
+    local scroll = clamp((self.dialog and self.dialog.scroll) or 0, 0, maxScroll)
+
+    if self.dialog then
+        self.dialog.scroll = scroll
+    end
+
+    local contentWidth = listRect.w
+    local scrollbar = nil
+    if maxScroll > 0 then
+        local track = {
+            x = listRect.x + listRect.w - 8,
+            y = listRect.y,
+            w = 8,
+            h = listRect.h,
+        }
+        local thumbHeight = math.max(26, track.h * (visibleRows / #maps))
+        local thumbY = track.y + ((track.h - thumbHeight) * (scroll / maxScroll))
+        scrollbar = {
+            track = track,
+            thumb = {
+                x = track.x,
+                y = thumbY,
+                w = track.w,
+                h = thumbHeight,
+            },
+            maxScroll = maxScroll,
+        }
+        contentWidth = listRect.w - 14
+    end
+
+    local rows = {}
+    for slot = 1, visibleRows do
+        local mapIndex = scroll + slot
+        local savedMap = maps[mapIndex]
+        if not savedMap then
+            break
+        end
+
+        rows[#rows + 1] = {
+            index = mapIndex,
+            map = savedMap,
+            rect = {
+                x = listRect.x,
+                y = listRect.y + (slot - 1) * rowStride,
+                w = contentWidth,
+                h = rowHeight,
+            },
+        }
+    end
+
+    return {
+        listRect = listRect,
+        rows = rows,
+        totalMaps = #maps,
+        visibleRows = visibleRows,
+        maxScroll = maxScroll,
+        firstVisibleIndex = (#rows > 0) and rows[1].index or 0,
+        lastVisibleIndex = (#rows > 0) and rows[#rows].index or 0,
+        scrollbar = scrollbar,
+    }
+end
+
+function mapEditor:scrollOpenDialog(delta)
+    if not self.dialog or self.dialog.type ~= "open" then
+        return false
+    end
+
+    local layout = self:getOpenDialogListLayout()
+    if layout.maxScroll <= 0 then
+        return false
+    end
+
+    self.dialog.scroll = clamp((self.dialog.scroll or 0) + delta, 0, layout.maxScroll)
+    return true
+end
+
+function mapEditor:openDialogMap(savedMap)
+    local loadedMap, loadError = mapStorage.loadMap(savedMap)
+    if not loadedMap or not loadedMap.editor then
+        self:showStatus(loadError or "That map could not be opened.")
+        return false
+    end
+
+    self:resetFromMap(loadedMap, savedMap)
+    return true
 end
 
 function mapEditor:synthesizeTrainsFromLevel(levelData)
@@ -1520,11 +1653,12 @@ function mapEditor:saveMap(name)
 
     self.currentMapName = trimmedName
     self.sourceInfo = record
+    self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
     self.validationErrors = buildErrors or {}
     self:closeDialog()
     if level then
-        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory())
+        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ". Press Play Saved Map (P) to test.")
     else
         self:showStatus("Saved map: " .. trimmedName .. ". Remaining issues: " .. buildError)
     end
@@ -1534,6 +1668,8 @@ end
 function mapEditor:resetFromMap(mapData, sourceInfo)
     self.loadedMapPayload = mapData
     self.sourceInfo = sourceInfo
+    self.lastSavedDescriptor = sourceInfo and sourceInfo.hasLevel and sourceInfo or nil
+    self.pendingPlaytestDescriptor = nil
 
     if not mapData then
         self.level = nil
@@ -2561,20 +2697,18 @@ function mapEditor:handleDialogClick(x, y)
     end
 
     if self.dialog.type == "open" then
-        for mapIndex, savedMap in ipairs(self.dialog.maps or {}) do
-            local itemRect = {
-                x = rect.x + 24,
-                y = rect.y + 78 + (mapIndex - 1) * 54,
-                w = rect.w - 48,
-                h = 44,
-            }
-            if pointInRect(x, y, itemRect) then
-                local loadedMap, loadError = mapStorage.loadMap(savedMap)
-                if not loadedMap or not loadedMap.editor then
-                    self:showStatus(loadError or "That map could not be opened.")
-                else
-                    self:resetFromMap(loadedMap, savedMap)
-                end
+        local layout = self:getOpenDialogListLayout()
+        if layout.scrollbar and pointInRect(x, y, layout.scrollbar.track) then
+            local thumbTravel = math.max(1, layout.scrollbar.track.h - layout.scrollbar.thumb.h)
+            local thumbY = clamp(y - layout.scrollbar.thumb.h * 0.5, layout.scrollbar.track.y, layout.scrollbar.track.y + thumbTravel)
+            self.dialog.scroll = ((thumbY - layout.scrollbar.track.y) / thumbTravel) * layout.scrollbar.maxScroll
+            self.dialog.scroll = math.floor(self.dialog.scroll + 0.5)
+            return true
+        end
+
+        for _, row in ipairs(layout.rows) do
+            if pointInRect(x, y, row.rect) then
+                self:openDialogMap(row.map)
                 self:closeDialog()
                 return true
             end
@@ -2632,6 +2766,44 @@ function mapEditor:keypressed(key)
             end
         end
 
+        if self.dialog.type == "open" then
+            if key == "up" then
+                self:scrollOpenDialog(-1)
+                return true
+            end
+            if key == "down" then
+                self:scrollOpenDialog(1)
+                return true
+            end
+            if key == "pageup" then
+                local layout = self:getOpenDialogListLayout()
+                self:scrollOpenDialog(-layout.visibleRows)
+                return true
+            end
+            if key == "pagedown" then
+                local layout = self:getOpenDialogListLayout()
+                self:scrollOpenDialog(layout.visibleRows)
+                return true
+            end
+            if key == "home" then
+                self.dialog.scroll = 0
+                return true
+            end
+            if key == "end" then
+                local layout = self:getOpenDialogListLayout()
+                self.dialog.scroll = layout.maxScroll
+                return true
+            end
+            if key == "return" or key == "kpenter" then
+                local layout = self:getOpenDialogListLayout()
+                if layout.rows[1] then
+                    self:openDialogMap(layout.rows[1].map)
+                    self:closeDialog()
+                end
+                return true
+            end
+        end
+
         return true
     end
 
@@ -2663,6 +2835,12 @@ function mapEditor:keypressed(key)
     if key == "o" then
         self:commitTextField()
         self:openOpenDialog()
+        return true
+    end
+
+    if key == "p" then
+        self:commitTextField()
+        self:requestPlaytestFromSavedMap()
         return true
     end
 
@@ -2750,6 +2928,11 @@ function mapEditor:mousepressed(x, y, button)
         return true
     end
 
+    if pointInRect(x, y, self:getPlayTestButtonRect()) then
+        self:requestPlaytestFromSavedMap()
+        return true
+    end
+
     if pointInRect(x, y, self:getSequencerButtonRect()) then
         self.sidePanelMode = "sequencer"
         self:showStatus("Sequencer opened.")
@@ -2829,6 +3012,18 @@ function mapEditor:mousepressed(x, y, button)
 end
 
 function mapEditor:wheelmoved(_, y)
+    if self.dialog and self.dialog.type == "open" then
+        if y > 0 then
+            self:scrollOpenDialog(-1)
+            return true
+        end
+        if y < 0 then
+            self:scrollOpenDialog(1)
+            return true
+        end
+        return false
+    end
+
     if self.sidePanelMode ~= "sequencer" then
         return false
     end
@@ -3221,15 +3416,27 @@ function mapEditor:drawIntersection(intersection)
     end
 end
 
-function mapEditor:drawPanelButton(rect, label, accentColor)
+function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
     local graphics = love.graphics
     local font = graphics.getFont()
-    graphics.setColor(0.1, 0.12, 0.16, 0.96)
+    if isDisabled then
+        graphics.setColor(0.08, 0.1, 0.13, 0.72)
+    else
+        graphics.setColor(0.1, 0.12, 0.16, 0.96)
+    end
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
     graphics.setLineWidth(1.5)
-    graphics.setColor(accentColor[1], accentColor[2], accentColor[3], 1)
+    if isDisabled then
+        graphics.setColor(0.34, 0.38, 0.42, 0.85)
+    else
+        graphics.setColor(accentColor[1], accentColor[2], accentColor[3], 1)
+    end
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
-    graphics.setColor(0.97, 0.98, 1, 1)
+    if isDisabled then
+        graphics.setColor(0.6, 0.64, 0.68, 0.9)
+    else
+        graphics.setColor(0.97, 0.98, 1, 1)
+    end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
 end
 
@@ -3436,18 +3643,16 @@ function mapEditor:drawDialog(game)
     graphics.printf("Open Map", rect.x, rect.y + 20, rect.w, "center")
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
-    if #(self.dialog.maps or {}) == 0 then
+    local layout = self:getOpenDialogListLayout()
+    if layout.totalMaps == 0 then
         graphics.printf("No maps were found yet.", rect.x + 24, rect.y + 142, rect.w - 48, "center")
         return
     end
 
-    for mapIndex, savedMap in ipairs(self.dialog.maps or {}) do
-        local itemRect = {
-            x = rect.x + 24,
-            y = rect.y + 78 + (mapIndex - 1) * 54,
-            w = rect.w - 48,
-            h = 44,
-        }
+    love.graphics.setScissor(layout.listRect.x, layout.listRect.y, layout.listRect.w, layout.listRect.h)
+    for _, row in ipairs(layout.rows) do
+        local savedMap = row.map
+        local itemRect = row.rect
         graphics.setColor(0.05, 0.06, 0.08, 1)
         graphics.rectangle("fill", itemRect.x, itemRect.y, itemRect.w, itemRect.h, 12, 12)
         graphics.setColor(0.3, 0.36, 0.42, 1)
@@ -3455,8 +3660,21 @@ function mapEditor:drawDialog(game)
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.print(savedMap.name, itemRect.x + 14, itemRect.y + 12)
         graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.print(savedMap.source == "builtin" and "Tutorial" or "User Save", itemRect.x + itemRect.w - 110, itemRect.y + 12)
+        graphics.printf(savedMap.source == "builtin" and "Tutorial" or "User Save", itemRect.x, itemRect.y + 12, itemRect.w - 12, "right")
     end
+    love.graphics.setScissor()
+
+    if layout.scrollbar then
+        graphics.setColor(0.1, 0.12, 0.16, 1)
+        graphics.rectangle("fill", layout.scrollbar.track.x, layout.scrollbar.track.y, layout.scrollbar.track.w, layout.scrollbar.track.h, 4, 4)
+        graphics.setColor(0.34, 0.44, 0.54, 1)
+        graphics.rectangle("fill", layout.scrollbar.thumb.x, layout.scrollbar.thumb.y, layout.scrollbar.thumb.w, layout.scrollbar.thumb.h, 4, 4)
+    end
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    local rangeText = string.format("Showing %d-%d of %d", layout.firstVisibleIndex, layout.lastVisibleIndex, layout.totalMaps)
+    graphics.printf(rangeText, rect.x + 24, rect.y + rect.h - 52, rect.w - 48, "left")
 end
 
 function mapEditor:drawTextField(label, rect, valueText, accentColor, active)
@@ -3705,6 +3923,7 @@ function mapEditor:drawDefaultSidePanel(game)
     love.graphics.setFont(game.fonts.small)
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
+    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
     self:drawPanelButton(self:getSequencerButtonRect(), "Sequencer (C)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getResetButtonRect(), "Reset To Map (R)", { 0.99, 0.78, 0.32 })
 end

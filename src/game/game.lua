@@ -71,6 +71,7 @@ function Game.new()
     self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
     self.availableMaps = {}
     self.currentMapDescriptor = nil
+    self.currentRunOrigin = nil
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
     self.levelSelectFilter = "all"
@@ -285,15 +286,17 @@ function Game:showMapIssue(mapDescriptor, mapData, fallbackError)
     }
 end
 
-function Game:startMap(mapDescriptor)
+function Game:startMap(mapDescriptor, options)
     local mapData, loadError = mapStorage.loadMap(mapDescriptor)
     if not mapData or not mapData.level then
         return false, loadError or "That map does not contain playable level data.", mapData
     end
 
+    local startOptions = options or {}
     self.levelComplete = false
     self.failureReason = nil
     self.currentMapDescriptor = mapDescriptor
+    self.currentRunOrigin = startOptions.origin
     self.levelSelectIssue = nil
     self.resultsSummary = nil
     self.playOverlayMode = nil
@@ -302,12 +305,35 @@ function Game:startMap(mapDescriptor)
     return true
 end
 
+function Game:processEditorPlaytestRequest()
+    local descriptor = self.editor:consumePlaytestRequest()
+    if not descriptor then
+        return
+    end
+
+    local ok, startError = self:startMap(descriptor, { origin = "editor" })
+    if not ok then
+        self.screen = "editor"
+        self.editor:showStatus(startError or "The saved map could not be started.")
+    end
+end
+
+function Game:navigateBackFromRun()
+    if self.currentRunOrigin == "editor" and self.currentMapDescriptor then
+        if self:openEditorMap(self.currentMapDescriptor) then
+            return
+        end
+    end
+
+    self:openMenu()
+end
+
 function Game:restart()
     if not self.currentMapDescriptor then
         return
     end
 
-    self:startMap(self.currentMapDescriptor)
+    self:startMap(self.currentMapDescriptor, { origin = self.currentRunOrigin })
 end
 
 function Game:isRunLocked()
@@ -333,6 +359,7 @@ function Game:update(dt)
 
     if self.screen == "editor" then
         self.editor:update(dt)
+        self:processEditorPlaytestRequest()
         return
     end
 
@@ -391,6 +418,8 @@ function Game:keypressed(key)
             if not self.editor:keypressed(key) then
                 self:openMenu()
             end
+        elseif self.screen == "play" or self.screen == "results" then
+            self:navigateBackFromRun()
         else
             self:openMenu()
         end
@@ -471,7 +500,7 @@ function Game:keypressed(key)
 
     if self.screen == "results" then
         if key == "m" then
-            self:openMenu()
+            self:navigateBackFromRun()
             return
         end
         if (key == "e" or key == "tab") and self.currentMapDescriptor then
@@ -507,7 +536,7 @@ function Game:keypressed(key)
     end
 
     if key == "m" then
-        self:openMenu()
+        self:navigateBackFromRun()
         return
     end
 
@@ -615,7 +644,7 @@ function Game:mousepressed(x, y, button)
     end
 
     if ui.getPlayBackHit(self, viewportX, viewportY) then
-        self:openMenu()
+        self:navigateBackFromRun()
         return
     end
 
