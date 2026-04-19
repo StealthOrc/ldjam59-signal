@@ -47,6 +47,8 @@ local MARKETPLACE_LAYOUT = {
     favoriteButtonW = 86,
     favoriteLift = 14,
     favoriteSpacing = 10,
+    favoritePlusOneBaseOffset = 12,
+    favoritePlusOneRise = 18,
     titleMetaTop = 48,
 }
 local MARKETPLACE_REMOTE_SOURCE = "remote"
@@ -1065,6 +1067,7 @@ local function buildMarketplaceEntries(game)
             local displayName = getMapDisplayName(descriptor)
             local kindLabel = getMapKindLabel(descriptor)
             local controlsSummary = getMarketplaceControlsSummary(descriptor)
+            local favoriteAnimation = descriptor.mapUuid ~= "" and game:getMarketplaceFavoriteAnimation(descriptor.mapUuid) or nil
             entries[#entries + 1] = {
                 descriptor = descriptor,
                 title = displayName,
@@ -1072,6 +1075,7 @@ local function buildMarketplaceEntries(game)
                 creatorDisplayName = tostring(sourceEntry.creator_display_name or "Unknown"),
                 creatorUuid = tostring(sourceEntry.creator_uuid or ""),
                 favoriteCount = descriptor.favoriteCount or 0,
+                favoriteAnimation = favoriteAnimation,
                 internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
                 likedByPlayer = descriptor.likedByPlayer == true,
                 featuredWeight = descriptor.favoriteCount or 0,
@@ -1560,9 +1564,14 @@ local function getMarketplaceFavoriteHoverId(descriptor)
     return descriptor and ("favorite:" .. tostring(descriptor.id or "")) or nil
 end
 
+local function formatMarketplaceFavoriteLabel(favoriteCount)
+    local resolvedFavoriteCount = tonumber(favoriteCount or 0) or 0
+    return tostring(resolvedFavoriteCount)
+end
+
 local function getMarketplaceFavoriteLabel(marketplaceEntry)
     local favoriteCount = tonumber(marketplaceEntry and marketplaceEntry.favoriteCount or 0) or 0
-    return tostring(favoriteCount)
+    return formatMarketplaceFavoriteLabel(favoriteCount)
 end
 
 local function getMarketplaceFavoriteContentLayout(rect)
@@ -1662,6 +1671,22 @@ local function drawMarketplaceFavoriteButton(game, descriptor, rect, marketplace
         math.max(0, textRightEdge - contentLayout.textX),
         "right"
     )
+
+    local favoriteAnimation = marketplaceEntry.favoriteAnimation
+    local favoriteAnimationDelta = type(favoriteAnimation) == "table" and tonumber(favoriteAnimation.delta or 0) or 0
+    if favoriteAnimationDelta ~= 0 then
+        local progress = math.max(0, math.min(1, tonumber(favoriteAnimation.progress or 0) or 0))
+        local alpha = 1 - progress
+        local deltaLabel = string.format("%+d", favoriteAnimationDelta)
+        graphics.setColor(textColor[1], textColor[2], textColor[3], alpha)
+        graphics.printf(
+            deltaLabel,
+            contentLayout.textX,
+            rect.y - MARKETPLACE_LAYOUT.favoritePlusOneBaseOffset - math.floor(MARKETPLACE_LAYOUT.favoritePlusOneRise * progress + 0.5),
+            math.max(0, textRightEdge - contentLayout.textX),
+            "right"
+        )
+    end
 end
 
 local function buildLevelSelectCardRects(game)
@@ -3314,5 +3339,6 @@ ui.formatLeaderboardScore = formatLeaderboardScore
 ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
 ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
+ui.formatMarketplaceFavoriteLabel = formatMarketplaceFavoriteLabel
 
 return ui
