@@ -1678,6 +1678,11 @@ function Game:isLevelSelectMarketplaceMode()
     return self.levelSelectMode == LEVEL_SELECT_MODE_MARKETPLACE
 end
 
+function Game:isOnlineMapsAvailable()
+    local onlineConfig = self:getActiveOnlineConfig()
+    return onlineConfig and onlineConfig.isConfigured == true
+end
+
 function Game:isLevelSelectMarketplaceSearchActive()
     return self:isLevelSelectMarketplaceMode()
         and self.levelSelectMarketplaceTab == LEVEL_SELECT_MARKETPLACE_TAB_SEARCH
@@ -1709,6 +1714,12 @@ function Game:setLevelSelectMode(mode)
     local resolvedMode = mode == LEVEL_SELECT_MODE_MARKETPLACE
         and LEVEL_SELECT_MODE_MARKETPLACE
         or LEVEL_SELECT_MODE_LIBRARY
+    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMapsAvailable() then
+        self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
+        self:clearLevelSelectLeaderboardFlip()
+        return
+    end
+
     if self.levelSelectMode == resolvedMode then
         return
     end
