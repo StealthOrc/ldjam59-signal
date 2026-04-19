@@ -3,6 +3,7 @@ local DEFAULT_WAGON_COUNT = 4
 local LEGACY_TRAIN_SPACING = 110
 local LEGACY_TRAIN_OFFSET = 70
 local LEGACY_TRAIN_SPEED = 168
+local roadTypes = require("src.game.road_types")
 
 local COLOR_LOOKUP = {
     blue = { 0.33, 0.80, 0.98 },
@@ -252,6 +253,89 @@ local function getRouteById(editorData, routeId)
         end
     end
     return nil
+end
+
+local function getRouteSegmentRoadTypes(route)
+    local routePoints = (route and route.points) or {}
+    local segmentCount = math.max(0, #routePoints - 1)
+    local fallbackRoadType = roadTypes.normalizeRoadType(route and route.roadType)
+    local segmentRoadTypes = {}
+
+    for segmentIndex = 1, segmentCount do
+        local roadTypeId = route
+            and route.segmentRoadTypes
+            and route.segmentRoadTypes[segmentIndex]
+            or fallbackRoadType
+        segmentRoadTypes[segmentIndex] = roadTypes.normalizeRoadType(roadTypeId)
+    end
+
+    return segmentRoadTypes
+end
+
+local function buildRouteStyleSections(route, startDistance, endDistance)
+    local styleSections = {}
+    local routePoints = route.points or {}
+    local segmentRoadTypes = getRouteSegmentRoadTypes(route)
+    local traversedDistance = 0
+    local epsilon = 0.0000001
+    local totalSectionLength = math.max(endDistance - startDistance, epsilon)
+
+    for pointIndex = 1, #routePoints - 1 do
+        local pointA = routePoints[pointIndex]
+        local pointB = routePoints[pointIndex + 1]
+        local length = segmentLength(pointA, pointB)
+        local segmentStartDistance = traversedDistance
+        local segmentEndDistance = traversedDistance + length
+        local overlapStartDistance = math.max(startDistance, segmentStartDistance)
+        local overlapEndDistance = math.min(endDistance, segmentEndDistance)
+
+        if overlapEndDistance - overlapStartDistance > epsilon then
+            local roadTypeId = segmentRoadTypes[pointIndex]
+            local previousSection = styleSections[#styleSections]
+            local localStartRatio = (overlapStartDistance - startDistance) / totalSectionLength
+            local localEndRatio = (overlapEndDistance - startDistance) / totalSectionLength
+
+            if previousSection
+                and previousSection.roadType == roadTypeId
+                and math.abs(previousSection.endRatio - localStartRatio) <= epsilon then
+                previousSection.endRatio = localEndRatio
+            else
+                styleSections[#styleSections + 1] = {
+                    roadType = roadTypeId,
+                    speedScale = roadTypes.getConfig(roadTypeId).speedScale,
+                    startRatio = localStartRatio,
+                    endRatio = localEndRatio,
+                }
+            end
+        end
+
+        traversedDistance = segmentEndDistance
+    end
+
+    return styleSections
+end
+
+local function styleSectionsRoughlyMatch(firstSections, secondSections, tolerance)
+    if #firstSections ~= #secondSections then
+        return false
+    end
+
+    local epsilon = tolerance or 0.001
+    for sectionIndex = 1, #firstSections do
+        local firstSection = firstSections[sectionIndex]
+        local secondSection = secondSections[sectionIndex]
+        if firstSection.roadType ~= secondSection.roadType then
+            return false
+        end
+        if math.abs(firstSection.startRatio - secondSection.startRatio) > epsilon then
+            return false
+        end
+        if math.abs(firstSection.endRatio - secondSection.endRatio) > epsilon then
+            return false
+        end
+    end
+
+    return true
 end
 
 local function sortRouteIdsByMagnet(editorData, routeIds, magnetKind)
@@ -567,10 +651,15 @@ function authoredMap.validateEditorMap(mapName, editorData)
 
             local targetEndpoint = targetNode.kind == "exit" and getEndpointById(editorData, targetNode.id) or nil
             local sourceEndpoint = sourceNode.kind == "start" and getEndpointById(editorData, sourceNode.id) or nil
+            local styleSections = buildRouteStyleSections(route, sourceNode.distance, targetNode.distance)
+            local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
             local edge = {
                 id = string.format("%s_segment_%d", route.id, nodeIndex),
                 label = string.format("%s Segment %d", route.label or route.id, nodeIndex),
                 routeId = route.id,
+                roadType = primaryRoadType,
+                speedScale = roadTypes.getConfig(primaryRoadType).speedScale,
+                styleSections = styleSections,
                 points = points,
                 color = getColor(route.color),
                 darkColor = darkerColor(getColor(route.color)),
@@ -590,6 +679,10 @@ function authoredMap.validateEditorMap(mapName, editorData)
             if existingEdge then
                 if not pointsRoughlyMatch(existingEdge.points, edge.points) then
                     errors[#errors + 1] = "Merged tracks must share the same path between their nodes."
+                    goto continue_route
+                end
+                if not styleSectionsRoughlyMatch(existingEdge.styleSections or {}, edge.styleSections or {}) then
+                    errors[#errors + 1] = "Merged tracks must use the same road style profile."
                     goto continue_route
                 end
                 edge = existingEdge
@@ -772,8 +865,12 @@ function authoredMap.validateEditorMap(mapName, editorData)
     }, {}, nil
 end
 
-function authoredMap.buildPlayableLevel(mapName, editorData)
+function authoredMap.buildPlayableLevel(mapName, editorData, mapUuid)
     local level, errors, errorText = authoredMap.validateEditorMap(mapName, editorData)
+    if level then
+        level.id = mapUuid or level.id
+        level.mapUuid = mapUuid or level.mapUuid
+    end
     return level, errorText, errors
 end
 

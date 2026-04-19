@@ -1,5 +1,6 @@
 return {
     version = 1,
+    mapUuid = "029e1fd2-e138-4f6e-909f-e52b7005500b",
     name = "Map 5: Relay Dial",
     template = true,
     editor = {
