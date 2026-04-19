@@ -41,6 +41,7 @@ luac.out
 
 # Local tooling metadata
 .codex/
+.env
 
 *claude
 
@@ -52,3 +53,4 @@ settings.json
 /AGENTS.md
 .idea
 *idea/
+.env

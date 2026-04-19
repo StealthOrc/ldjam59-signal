@@ -827,8 +827,12 @@ function authoredMap.validateEditorMap(mapName, editorData)
     }, {}, nil
 end
 
-function authoredMap.buildPlayableLevel(mapName, editorData)
+function authoredMap.buildPlayableLevel(mapName, editorData, mapUuid)
     local level, errors, errorText = authoredMap.validateEditorMap(mapName, editorData)
+    if level then
+        level.id = mapUuid or level.id
+        level.mapUuid = mapUuid or level.mapUuid
+    end
     return level, errorText, errors
 end
 

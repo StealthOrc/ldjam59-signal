@@ -402,6 +402,7 @@ end
 function world:normalizeLevel(sourceLevel)
     local normalized = {
         id = sourceLevel.id,
+        mapUuid = sourceLevel.mapUuid or sourceLevel.id,
         title = sourceLevel.title,
         description = sourceLevel.description,
         hint = sourceLevel.hint,
@@ -1501,6 +1502,8 @@ function world:getRunSummary()
     local scoring = self:getScoringConstants()
     local summary = {
         endReason = self:getRunEndReason(),
+        mapUuid = self.level and (self.level.mapUuid or self.level.id) or nil,
+        mapTitle = self.level and self.level.title or nil,
         correctOnTimeCount = 0,
         correctLateCount = 0,
         wrongDestinationCount = 0,

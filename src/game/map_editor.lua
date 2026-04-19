@@ -1,6 +1,7 @@
 local mapStorage = require("src.game.map_storage")
 local authoredMap = require("src.game.authored_map")
 local roadTypes = require("src.game.road_types")
+local uuid = require("src.game.uuid")
 
 local mapEditor = {}
 mapEditor.__index = mapEditor
@@ -405,6 +406,7 @@ function mapEditor.new(viewportW, viewportH, level)
     self.routeTypePicker = nil
     self.dialog = nil
     self.currentMapName = nil
+    self.editingMapUuid = nil
     self.sourceInfo = nil
     self.lastSavedDescriptor = nil
     self.pendingPlaytestDescriptor = nil
@@ -782,7 +784,8 @@ end
 function mapEditor:refreshValidation(mapName)
     local level, buildError, buildErrors = authoredMap.buildPlayableLevel(
         mapName or self.currentMapName or "Untitled",
-        self:getExportData()
+        self:getExportData(),
+        self.editingMapUuid
     )
     self.lastValidationError = buildError
     self.validationErrors = buildErrors or {}
@@ -1639,6 +1642,7 @@ function mapEditor:saveMap(name)
     local payload = {
         version = 1,
         name = trimmedName,
+        mapUuid = self.editingMapUuid or uuid.generateV4(),
         savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         editor = self:getExportData(),
     }
@@ -1652,6 +1656,7 @@ function mapEditor:saveMap(name)
     end
 
     self.currentMapName = trimmedName
+    self.editingMapUuid = payload.mapUuid
     self.sourceInfo = record
     self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
@@ -1668,12 +1673,14 @@ end
 function mapEditor:resetFromMap(mapData, sourceInfo)
     self.loadedMapPayload = mapData
     self.sourceInfo = sourceInfo
+    self.editingMapUuid = mapData and mapData.mapUuid or nil
     self.lastSavedDescriptor = sourceInfo and sourceInfo.hasLevel and sourceInfo or nil
     self.pendingPlaytestDescriptor = nil
 
     if not mapData then
         self.level = nil
         self.currentMapName = nil
+        self.editingMapUuid = nil
         self.endpoints = {}
         self.routes = {}
         self.trains = {}
@@ -1695,6 +1702,9 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
     end
 
     if mapData.editor then
+        if sourceInfo and sourceInfo.source == "builtin" then
+            self.editingMapUuid = nil
+        end
         self:loadEditorData(mapData.editor, mapData.name, sourceInfo, mapData.level)
         return
     end
