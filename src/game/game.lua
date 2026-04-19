@@ -1188,6 +1188,63 @@ function Game:isUploadSelectedMapAvailable(mapDescriptor)
         and self:canUploadMapDescriptor(mapDescriptor or self:getSelectedLevelMap())
 end
 
+function Game:canCloneMapDescriptor(mapDescriptor)
+    return mapDescriptor ~= nil
+        and mapDescriptor.source == "user"
+        and mapDescriptor.isRemoteImport == true
+end
+
+function Game:cloneMapForEditing(mapDescriptor)
+    local selectedMap = mapDescriptor or self:getSelectedLevelMap()
+    if not self:canCloneMapDescriptor(selectedMap) then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "Only downloaded maps can be cloned."
+        )
+        return nil
+    end
+
+    local mapData, loadError = mapStorage.loadMap(selectedMap)
+    if not mapData then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            loadError or "The selected map could not be cloned."
+        )
+        return nil
+    end
+
+    local clonedPayload = deepCopy(mapData)
+    clonedPayload.remoteSource = nil
+    clonedPayload.mapUuid = nil
+    clonedPayload.savedAt = nil
+    if type(clonedPayload.level) == "table" then
+        clonedPayload.level.id = nil
+        clonedPayload.level.mapUuid = nil
+    end
+
+    local clonedDescriptor, cloneError = mapStorage.importMap(
+        tostring(clonedPayload.name or selectedMap.displayName or selectedMap.name or "Untitled Map"),
+        clonedPayload
+    )
+    if not clonedDescriptor then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            cloneError or "The selected map could not be cloned."
+        )
+        return nil
+    end
+
+    self:refreshMaps()
+    self:setLevelSelectSelection(clonedDescriptor)
+    self:setLevelSelectFilter("user")
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_SUCCESS,
+        string.format("%s was cloned to local maps with a new UUID.", clonedDescriptor.displayName or clonedDescriptor.name or "Map")
+    )
+
+    return clonedDescriptor
+end
+
 function Game:uploadSelectedMap()
     local selectedMap = self:getSelectedLevelMap()
     if not self:canUploadMapDescriptor(selectedMap) then
@@ -1744,9 +1801,17 @@ end
 
 function Game:openEditorMap(mapDescriptor)
     local mapData, loadError = mapStorage.loadMap(mapDescriptor)
-    if not mapData or not mapData.editor then
+    if not mapData then
         self.editor:showStatus(loadError or "That map could not be loaded into the editor.")
         self.screen = "editor"
+        return false
+    end
+
+    if mapDescriptor and mapDescriptor.isRemoteImport then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "Downloaded maps are read-only. Clone the map first to edit it."
+        )
         return false
     end
 
@@ -2037,7 +2102,11 @@ function Game:keypressed(key)
         if key == "e" then
             local selectedMap = self:getSelectedLevelMap()
             if selectedMap then
-                self:openEditorMap(selectedMap)
+                if self:canCloneMapDescriptor(selectedMap) then
+                    self:cloneMapForEditing(selectedMap)
+                else
+                    self:openEditorMap(selectedMap)
+                end
             end
             return
         end
@@ -2229,6 +2298,9 @@ function Game:mousepressed(x, y, button)
         elseif hit.kind == "edit_map" then
             self:setLevelSelectSelection(hit.map)
             self:openEditorMap(hit.map)
+        elseif hit.kind == "clone_map" then
+            self:setLevelSelectSelection(hit.map)
+            self:cloneMapForEditing(hit.map)
         end
         return
     end

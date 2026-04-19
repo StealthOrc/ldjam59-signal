@@ -671,6 +671,10 @@ local function drawCenteredOverlay(game, title, body, footer, accentColor)
 end
 
 local function getMapKind(descriptor)
+    -- Check if it's a downloaded/remote import first
+    if descriptor.source == "user" and descriptor.isRemoteImport then
+        return "downloaded"
+    end
     if descriptor.mapKind then
         return descriptor.mapKind
     end
@@ -688,6 +692,9 @@ local function getMapKindLabel(descriptor)
     if kind == "campaign" then
         return "Campaign"
     end
+    if kind == "downloaded" then
+        return "Downloaded"
+    end
     return "User"
 end
 
@@ -700,6 +707,7 @@ local function getLevelSelectFilterSegments()
         { id = "all", label = "All" },
         { id = "tutorial", label = "Tutorial" },
         { id = "campaign", label = "Campaign" },
+        { id = "downloaded", label = "Downloaded" },
         { id = "user", label = "User" },
     }
 end
@@ -717,7 +725,7 @@ local function getLevelSelectMaps(game)
     local maps = {}
     local filterId = game.levelSelectFilter or "all"
 
-    for _, mapKind in ipairs({ "tutorial", "campaign", "user" }) do
+    for _, mapKind in ipairs({ "tutorial", "campaign", "downloaded", "user" }) do
         if filterId == "all" or filterId == mapKind then
             for _, descriptor in ipairs(game.availableMaps or {}) do
                 if getMapKind(descriptor) == mapKind then
@@ -1213,9 +1221,16 @@ getLevelSelectActionButtons = function(game)
             { id = "toggle_mode", label = "Local Maps", w = LEVEL_SELECT_ACTION_LAYOUT.toggleW },
         }
     else
+        local editButtonId = "edit_map"
+        local editButtonLabel = "Edit"
+        if selectedMap and selectedMap.isRemoteImport then
+            editButtonId = "clone_map"
+            editButtonLabel = "Clone"
+        end
+
         buttonSpecs = {
             { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW },
-            { id = "edit_map", label = "Edit", w = LEVEL_SELECT_ACTION_LAYOUT.editW },
+            { id = editButtonId, label = editButtonLabel, w = LEVEL_SELECT_ACTION_LAYOUT.editW },
             { id = "toggle_mode", label = "Online Maps", w = LEVEL_SELECT_ACTION_LAYOUT.toggleW },
         }
 
@@ -1741,6 +1756,8 @@ local function drawLevelSelectEmptyState(game, filterId)
         )
     elseif filterId == "user" then
         graphics.printf("Open the editor and save a map to have it show up here.", panel.x + 34, panel.y + 78, panel.w - 68, "center")
+    elseif filterId == "downloaded" then
+        graphics.printf("Download a map from the online store to have it show up here.", panel.x + 34, panel.y + 78, panel.w - 68, "center")
     else
         graphics.printf("Switch filters or pick All to browse the full level list.", panel.x + 34, panel.y + 78, panel.w - 68, "center")
     end
@@ -2691,6 +2708,9 @@ function ui.drawLevelSelect(game)
         elseif buttonRect.id == "edit_map" and selectedMap then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.99, 0.78, 0.32, 1 }
+        elseif buttonRect.id == "clone_map" and selectedMap then
+            fillColor = { 0.12, 0.17, 0.2, 0.98 }
+            strokeColor = { 0.56, 0.72, 0.98, 1 }
         elseif buttonRect.id == "toggle_mode" then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.56, 0.72, 0.98, 1 }
