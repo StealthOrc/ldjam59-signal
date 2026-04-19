@@ -6,8 +6,7 @@ mapEditor.__index = mapEditor
 
 local DEFAULT_CONTROL = "direct"
 local MAX_TRIP_PASS_COUNT = 5
-local ENDPOINT_MERGE_RADIUS = 40
-local BEND_POINT_MERGE_RADIUS = 20
+local MERGE_SNAP_RADIUS = 40
 local INTERSECTION_GROUP_BUCKET = 20
 local SHARED_LANE_STRIPE_LENGTH = 14
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
@@ -1656,7 +1655,7 @@ function mapEditor:findPointHit(x, y)
 end
 
 function mapEditor:findBendPointAt(x, y, excludeRouteId, excludePointIndex)
-    local radiusSquared = BEND_POINT_MERGE_RADIUS * BEND_POINT_MERGE_RADIUS
+    local radiusSquared = MERGE_SNAP_RADIUS * MERGE_SNAP_RADIUS
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = #route.points - 1, 2, -1 do
@@ -1807,7 +1806,7 @@ end
 function mapEditor:findEndpointAt(x, y, kind, excludeEndpointId)
     for _, endpoint in ipairs(self.endpoints) do
         if endpoint.kind == kind and endpoint.id ~= excludeEndpointId then
-            if distanceSquared(x, y, endpoint.x, endpoint.y) <= ENDPOINT_MERGE_RADIUS * ENDPOINT_MERGE_RADIUS then
+            if distanceSquared(x, y, endpoint.x, endpoint.y) <= MERGE_SNAP_RADIUS * MERGE_SNAP_RADIUS then
                 return endpoint
             end
         end
