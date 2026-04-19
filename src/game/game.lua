@@ -149,6 +149,14 @@ local function closestWrappedIndex(currentValue, targetIndex, count)
     return bestValue
 end
 
+local function normalizeWrappedIndex(index, count)
+    if not index or count <= 0 then
+        return index
+    end
+
+    return ((index - 1) % count) + 1
+end
+
 local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
@@ -299,7 +307,9 @@ function Game.new()
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
     self.levelSelectVisualIndex = nil
+    self.levelSelectTargetVisualIndex = nil
     self.levelSelectScroll = 0
+    self.levelSelectPendingScrollDirections = {}
     self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
     self.levelSelectMarketplaceTab = LEVEL_SELECT_MARKETPLACE_TAB_TOP
     self.levelSelectMarketplaceSearchQuery = ""
@@ -1968,6 +1978,20 @@ function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedId = mapDescriptor and mapDescriptor.id or nil
     self.levelSelectSelectedMapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
     self.levelSelectScroll = 0
+    self.levelSelectPendingScrollDirections = {}
+
+    local maps = self:getLevelSelectMaps()
+    local targetIndex = findLevelSelectIndex(self, maps)
+    if targetIndex then
+        if self.levelSelectVisualIndex then
+            self.levelSelectTargetVisualIndex = closestWrappedIndex(self.levelSelectVisualIndex, targetIndex, #maps)
+        else
+            self.levelSelectTargetVisualIndex = targetIndex
+        end
+    else
+        self.levelSelectTargetVisualIndex = nil
+    end
+
     self:clearLevelSelectActionState()
     self:clearLevelSelectLeaderboardFlip()
 end
@@ -1976,6 +2000,8 @@ function Game:resetLevelSelectVisualIndex()
     local maps = self:getLevelSelectMaps()
     local targetIndex = findLevelSelectIndex(self, maps)
     self.levelSelectVisualIndex = targetIndex
+    self.levelSelectTargetVisualIndex = targetIndex
+    self.levelSelectPendingScrollDirections = {}
 end
 
 function Game:setLevelSelectFilter(filterId)
@@ -2005,6 +2031,8 @@ function Game:setLevelSelectMode(mode)
     self.levelSelectHoverId = nil
     self.levelSelectIssue = nil
     self:clearLevelSelectActionState()
+    self:getSelectedLevelMap()
+    self:resetLevelSelectVisualIndex()
     self:clearLevelSelectLeaderboardFlip()
 end
 
@@ -2078,24 +2106,49 @@ function Game:backspaceLevelSelectMarketplaceSearch()
 end
 
 function Game:updateLevelSelectAnimation(dt)
+    local pendingScrollDirections = self.levelSelectPendingScrollDirections or {}
+    if #pendingScrollDirections > 0 then
+        self.levelSelectPendingScrollDirections = {}
+        for _, direction in ipairs(pendingScrollDirections) do
+            self:moveLevelSelectSelection(direction)
+        end
+    end
+
     local maps = self:getLevelSelectMaps()
     local targetIndex = findLevelSelectIndex(self, maps)
     if not targetIndex then
         self.levelSelectVisualIndex = nil
+        self.levelSelectTargetVisualIndex = nil
         return
+    end
+
+    if not self.levelSelectTargetVisualIndex then
+        if self.levelSelectVisualIndex then
+            self.levelSelectTargetVisualIndex = closestWrappedIndex(self.levelSelectVisualIndex, targetIndex, #maps)
+        else
+            self.levelSelectTargetVisualIndex = targetIndex
+        end
     end
 
     if not self.levelSelectVisualIndex then
-        self.levelSelectVisualIndex = targetIndex
+        self.levelSelectVisualIndex = self.levelSelectTargetVisualIndex
         return
     end
 
-    local targetValue = closestWrappedIndex(self.levelSelectVisualIndex, targetIndex, #maps)
+    local targetValue = self.levelSelectTargetVisualIndex
+
     local smoothing = 1 - math.exp(-dt * 12)
     self.levelSelectVisualIndex = self.levelSelectVisualIndex + ((targetValue - self.levelSelectVisualIndex) * smoothing)
 
     if math.abs(targetValue - self.levelSelectVisualIndex) < 0.001 then
-        self.levelSelectVisualIndex = targetValue
+        local normalizedTarget = normalizeWrappedIndex(targetValue, #maps)
+        self.levelSelectVisualIndex = normalizedTarget
+        self.levelSelectTargetVisualIndex = normalizedTarget
+        if #maps > 0 then
+            local normalizedIndex = normalizeWrappedIndex(normalizedTarget, #maps)
+            self.levelSelectSelectedId = maps[normalizedIndex].id
+            self.levelSelectSelectedMapUuid = maps[normalizedIndex].mapUuid
+        end
     end
 end
 
@@ -2103,25 +2156,23 @@ function Game:moveLevelSelectSelection(direction)
     local maps = self:getLevelSelectMaps()
     if #maps == 0 then
         self.levelSelectSelectedId = nil
+        self.levelSelectTargetVisualIndex = nil
         self.levelSelectScroll = 0
         self:clearLevelSelectLeaderboardFlip()
         return nil
     end
 
-    local currentIndex = 1
-    for index, descriptor in ipairs(maps) do
-        if descriptor.id == self.levelSelectSelectedId then
-            currentIndex = index
-            break
+    if not self.levelSelectTargetVisualIndex then
+        local currentIndex = findLevelSelectIndex(self, maps) or 1
+        if self.levelSelectVisualIndex then
+            self.levelSelectTargetVisualIndex = closestWrappedIndex(self.levelSelectVisualIndex, currentIndex, #maps)
+        else
+            self.levelSelectTargetVisualIndex = currentIndex
         end
     end
 
-    local nextIndex = currentIndex + direction
-    if nextIndex < 1 then
-        nextIndex = #maps
-    elseif nextIndex > #maps then
-        nextIndex = 1
-    end
+    self.levelSelectTargetVisualIndex = self.levelSelectTargetVisualIndex + direction
+    local nextIndex = normalizeWrappedIndex(self.levelSelectTargetVisualIndex, #maps)
 
     self.levelSelectSelectedId = maps[nextIndex].id
     self.levelSelectSelectedMapUuid = maps[nextIndex].mapUuid
@@ -2840,7 +2891,12 @@ function Game:wheelmoved(screenX, screenY)
 
     local y = screenY
     if self.screen == "level_select" and not self.levelSelectIssue and y ~= 0 then
-        self:scrollLevelSelect(y > 0 and -1 or 1)
+        local steps = math.max(1, math.floor(math.abs(y) + 0.5))
+        local direction = y > 0 and -1 or 1
+        self.levelSelectPendingScrollDirections = self.levelSelectPendingScrollDirections or {}
+        for _ = 1, steps do
+            self.levelSelectPendingScrollDirections[#self.levelSelectPendingScrollDirections + 1] = direction
+        end
         return true
     end
 
