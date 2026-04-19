@@ -1283,6 +1283,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
             sortedRouteIds[#sortedRouteIds + 1] = routeId
         end
         table.sort(sortedRouteIds)
+        self:restoreSharedPointsForRoutes(sortedRouteIds)
         self.importedJunctionState[table.concat(sortedRouteIds, "|")] = {
             id = junctionData.id,
             x = junctionData.x * self.viewport.w,
@@ -1597,6 +1598,12 @@ function mapEditor:resetFromLevel(level)
                 activeOutputIndex = 1,
             }
         end
+
+        local routeIds = {}
+        for _, route in ipairs(branchRoutes) do
+            routeIds[#routeIds + 1] = route.id
+        end
+        self:restoreSharedPointsForRoutes(routeIds)
     end
 
     self:rebuildIntersections()
@@ -1777,6 +1784,60 @@ function mapEditor:updateSharedPointGroup(sharedPointId, x, y)
             if point.sharedPointId == sharedPointId then
                 point.x = x
                 point.y = y
+            end
+        end
+    end
+end
+
+function mapEditor:restoreSharedPointsForRoutes(routeIds)
+    local pointGroups = {}
+
+    for _, routeId in ipairs(routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        if route then
+            for pointIndex = 2, #route.points - 1 do
+                local point = route.points[pointIndex]
+                local matchedGroup = nil
+
+                for _, group in ipairs(pointGroups) do
+                    if distanceSquared(point.x, point.y, group.x, group.y) <= 4 then
+                        matchedGroup = group
+                        break
+                    end
+                end
+
+                if not matchedGroup then
+                    matchedGroup = {
+                        x = point.x,
+                        y = point.y,
+                        members = {},
+                    }
+                    pointGroups[#pointGroups + 1] = matchedGroup
+                end
+
+                matchedGroup.members[#matchedGroup.members + 1] = point
+            end
+        end
+    end
+
+    for _, group in ipairs(pointGroups) do
+        if #group.members > 1 then
+            local sharedPointId = nil
+
+            for _, point in ipairs(group.members) do
+                if point.sharedPointId then
+                    sharedPointId = point.sharedPointId
+                    break
+                end
+            end
+
+            if not sharedPointId then
+                sharedPointId = self.nextSharedPointId
+                self.nextSharedPointId = self.nextSharedPointId + 1
+            end
+
+            for _, point in ipairs(group.members) do
+                point.sharedPointId = sharedPointId
             end
         end
     end
