@@ -13,6 +13,9 @@ local RELAY_FLASH_DURATION = 0.28
 local TRIP_FLASH_DURATION = 0.28
 local CROSSBAR_FLASH_DURATION = 0.28
 local SPRING_RELEASE_DURATION = 0.42
+local ICON_PRESS_STIFFNESS = 118
+local ICON_PRESS_DAMPING = 15
+local ICON_PRESS_IMPULSE = 15
 local roadTypes = require("src.game.road_types")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
@@ -791,6 +794,8 @@ function world:buildJunction(definition, existing)
         crossingRadius = self.crossingRadius,
         activeInputIndex = clamp(existing and existing.activeInputIndex or definition.activeInputIndex or 1, 1, math.max(1, #inputs)),
         activeOutputIndex = clamp(existing and existing.activeOutputIndex or definition.activeOutputIndex or 1, 1, math.max(1, #outputs)),
+        selectorPress = existing and existing.selectorPress or 0,
+        selectorPressVelocity = existing and existing.selectorPressVelocity or 0,
         control = {
             type = controlDefinition.type or "direct",
             delay = controlDefinition.delay or 0,
@@ -811,6 +816,8 @@ function world:buildJunction(definition, existing)
             decayHold = existing and existing.control.decayHold or 0,
             decayTimer = existing and existing.control.decayTimer or 0,
             flashTimer = existing and existing.control.flashTimer or 0,
+            iconPress = existing and existing.control.iconPress or 0,
+            iconPressVelocity = existing and existing.control.iconPressVelocity or 0,
         },
         inputs = inputs,
         outputs = outputs,
@@ -827,6 +834,68 @@ end
 
 function world:registerInteraction()
     self.interactionCount = (self.interactionCount or 0) + 1
+end
+
+function world:triggerPressAnimation(stateTable, valueKey, velocityKey, strength, baseLift)
+    if not stateTable then
+        return
+    end
+
+    local impulse = (strength or 1) * ICON_PRESS_IMPULSE
+    stateTable[valueKey] = math.min(1.2, (stateTable[valueKey] or 0) + (baseLift or 0.08))
+    stateTable[velocityKey] = (stateTable[velocityKey] or 0) + impulse
+end
+
+function world:pressJunctionIcon(junction, strength)
+    if not (junction and junction.control) then
+        return
+    end
+
+    self:triggerPressAnimation(junction.control, "iconPress", "iconPressVelocity", strength, 0.1)
+end
+
+function world:pressOutputSelector(junction, strength)
+    if not junction then
+        return
+    end
+
+    self:triggerPressAnimation(junction, "selectorPress", "selectorPressVelocity", strength, 0.08)
+end
+
+function world:updatePressAnimation(stateTable, valueKey, velocityKey, dt)
+    if not stateTable then
+        return
+    end
+
+    local press = stateTable[valueKey] or 0
+    local velocity = stateTable[velocityKey] or 0
+
+    if math.abs(press) < 0.0005 and math.abs(velocity) < 0.005 then
+        stateTable[valueKey] = 0
+        stateTable[velocityKey] = 0
+        return
+    end
+
+    local acceleration = -ICON_PRESS_STIFFNESS * press - ICON_PRESS_DAMPING * velocity
+    velocity = velocity + acceleration * dt
+    press = press + velocity * dt
+
+    stateTable[valueKey] = press
+    stateTable[velocityKey] = velocity
+end
+
+function world:updateJunctionIconAnimation(control, dt)
+    self:updatePressAnimation(control, "iconPress", "iconPressVelocity", dt)
+end
+
+local function getControlIconScale(control)
+    local press = clamp(control and control.iconPress or 0, -0.4, 1.2)
+    return 1 - press * 0.25
+end
+
+local function getSelectorIconScale(junction)
+    local press = clamp(junction and junction.selectorPress or 0, -0.4, 1.2)
+    return 1 - press * 0.25
 end
 
 function world:doesEdgeAcceptGoalColor(inputEdge, outputEdge, goalColor)
@@ -1307,6 +1376,7 @@ function world:handleClick(x, y, button, isPreparationPhase)
                 changed = self:cycleOutput(junction, 1)
             end
             if changed then
+                self:pressOutputSelector(junction, 1)
                 self:registerInteraction()
             end
             return true
@@ -1314,6 +1384,7 @@ function world:handleClick(x, y, button, isPreparationPhase)
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
             if self:canActivateControl(junction, isPreparationPhase) and self:activateControl(junction) then
+                self:pressJunctionIcon(junction, 1)
                 self:registerInteraction()
             end
             return true
@@ -1325,6 +1396,8 @@ end
 
 function world:updateControlState(junction, dt)
     local control = junction.control
+    self:updateJunctionIconAnimation(control, dt)
+    self:updatePressAnimation(junction, "selectorPress", "selectorPressVelocity", dt)
 
     if control.type == "delayed" and control.armed then
         control.remainingDelay = math.max(0, control.remainingDelay - dt)
@@ -2540,6 +2613,15 @@ local function drawStaticJunctionIcon(graphics, image, centerX, centerY, size, s
     return true
 end
 
+local function withIconScale(graphics, centerX, centerY, iconScale, drawFn)
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.scale(iconScale, iconScale)
+    graphics.translate(-centerX, -centerY)
+    drawFn()
+    graphics.pop()
+end
+
 local function getControlBubbleLayout(junction)
     local bubbleRadius = junction.crossingRadius - 2
     local bubbleX = junction.mergePoint.x
@@ -2610,29 +2692,32 @@ function world:drawControlOverlay(junction)
     local graphics = love.graphics
     local control = junction.control
     local inputColor, inputStripeColors = getJunctionInputStyle(junction)
+    local iconScale = getControlIconScale(control)
 
     if control.type == "direct" then
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        if not drawStaticJunctionIcon(graphics, self.directImage, centerX, centerY, innerRadius, 1.42, 0.98) then
-            local activeInput = junction.inputs[junction.activeInputIndex]
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            if not drawStaticJunctionIcon(graphics, self.directImage, centerX, centerY, innerRadius, 1.42, 0.98) then
+                local activeInput = junction.inputs[junction.activeInputIndex]
 
-            graphics.setLineWidth(6)
-            graphics.setColor(0.05, 0.06, 0.08, 0.98)
-            graphics.line(centerX - innerRadius * 0.34, centerY + innerRadius * 0.2, centerX + innerRadius * 0.02, centerY - innerRadius * 0.12)
-            graphics.circle("fill", centerX + innerRadius * 0.18, centerY - innerRadius * 0.28, innerRadius * 0.15)
+                graphics.setLineWidth(6)
+                graphics.setColor(0.05, 0.06, 0.08, 0.98)
+                graphics.line(centerX - innerRadius * 0.34, centerY + innerRadius * 0.2, centerX + innerRadius * 0.02, centerY - innerRadius * 0.12)
+                graphics.circle("fill", centerX + innerRadius * 0.18, centerY - innerRadius * 0.28, innerRadius * 0.15)
 
-            if activeInput and #activeInput.path.points >= 2 then
-                local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
+                if activeInput and #activeInput.path.points >= 2 then
+                    local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
 
-                graphics.push()
-                graphics.translate(centerX, centerY)
-                graphics.rotate(angle)
-                graphics.setLineWidth(4)
-                graphics.setColor(0.05, 0.06, 0.08, 0.9)
-                graphics.line(0, -innerRadius * 0.48, 0, -innerRadius * 0.2)
-                graphics.pop()
+                    graphics.push()
+                    graphics.translate(centerX, centerY)
+                    graphics.rotate(angle)
+                    graphics.setLineWidth(4)
+                    graphics.setColor(0.05, 0.06, 0.08, 0.9)
+                    graphics.line(0, -innerRadius * 0.48, 0, -innerRadius * 0.2)
+                    graphics.pop()
+                end
             end
-        end
+        end)
         return
     end
 
@@ -2642,7 +2727,9 @@ function world:drawControlOverlay(junction)
         local progress = control.delay > 0 and (1 - ratio) or 0
 
         drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
-        drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
+        end)
         return
     end
 
@@ -2650,16 +2737,18 @@ function world:drawControlOverlay(junction)
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
         local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
         drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
-        if not drawStaticJunctionIcon(graphics, self.chargeImage, centerX, centerY, innerRadius, 1.34, 0.98) then
-            love.graphics.setColor(0.05, 0.06, 0.08, 1)
-            love.graphics.printf(
-                string.format("%d%%", math.floor(ratio * 100 + 0.5)),
-                centerX - 24,
-                centerY - 9,
-                48,
-                "center"
-            )
-        end
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            if not drawStaticJunctionIcon(graphics, self.chargeImage, centerX, centerY, innerRadius, 1.34, 0.98) then
+                love.graphics.setColor(0.05, 0.06, 0.08, 1)
+                love.graphics.printf(
+                    string.format("%d%%", math.floor(ratio * 100 + 0.5)),
+                    centerX - 24,
+                    centerY - 9,
+                    48,
+                    "center"
+                )
+            end
+        end)
         return
     end
 
@@ -2677,7 +2766,9 @@ function world:drawControlOverlay(junction)
         end
 
         drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
-        drawSpringIcon(graphics, self.springImage, centerX, centerY, innerRadius * 0.8, compression, releaseProgress, { 0.4, 0.96, 0.74 })
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            drawSpringIcon(graphics, self.springImage, centerX, centerY, innerRadius * 0.8, compression, releaseProgress, { 0.4, 0.96, 0.74 })
+        end)
         return
     end
 
@@ -2687,7 +2778,9 @@ function world:drawControlOverlay(junction)
 
         graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        drawRelayIcon(graphics, self.relayImage, centerX, centerY, innerRadius * 0.84, flashAlpha)
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            drawRelayIcon(graphics, self.relayImage, centerX, centerY, innerRadius * 0.84, flashAlpha)
+        end)
         return
     end
 
@@ -2697,16 +2790,18 @@ function world:drawControlOverlay(junction)
 
         graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        if not drawStaticJunctionIcon(graphics, self.tripImage, centerX, centerY, innerRadius, 1.4, 0.98) then
-            love.graphics.setColor(0.05, 0.06, 0.08, 1)
-            love.graphics.printf(
-                control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
-                centerX - 18,
-                centerY - 9,
-                36,
-                "center"
-            )
-        end
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            if not drawStaticJunctionIcon(graphics, self.tripImage, centerX, centerY, innerRadius, 1.4, 0.98) then
+                love.graphics.setColor(0.05, 0.06, 0.08, 1)
+                love.graphics.printf(
+                    control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
+                    centerX - 18,
+                    centerY - 9,
+                    36,
+                    "center"
+                )
+            end
+        end)
         return
     end
 
@@ -2716,21 +2811,23 @@ function world:drawControlOverlay(junction)
 
         graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
         graphics.circle("fill", centerX, centerY, innerRadius)
-        if not drawStaticJunctionIcon(graphics, self.crossImage, centerX, centerY, innerRadius, 1.42, 0.98) then
-            graphics.setLineWidth(4)
-            graphics.setColor(0.05, 0.06, 0.08, 0.96)
-            graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 0.15, math.pi * 0.85)
-            graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 1.15, math.pi * 1.85)
+        withIconScale(graphics, centerX, centerY, iconScale, function()
+            if not drawStaticJunctionIcon(graphics, self.crossImage, centerX, centerY, innerRadius, 1.42, 0.98) then
+                graphics.setLineWidth(4)
+                graphics.setColor(0.05, 0.06, 0.08, 0.96)
+                graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 0.15, math.pi * 0.85)
+                graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 1.15, math.pi * 1.85)
 
-            love.graphics.setColor(0.05, 0.06, 0.08, 1)
-            love.graphics.printf(
-                string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
-                centerX - 28,
-                centerY - 9,
-                56,
-                "center"
-            )
-        end
+                love.graphics.setColor(0.05, 0.06, 0.08, 1)
+                love.graphics.printf(
+                    string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
+                    centerX - 28,
+                    centerY - 9,
+                    56,
+                    "center"
+                )
+            end
+        end)
     end
 end
 
@@ -2818,12 +2915,16 @@ function world:drawCrossing(junction)
 
     if #junction.outputs > 1 and junction.control.type ~= "relay" and junction.control.type ~= "crossbar" then
         local selectorY = y + 36
-        graphics.setColor(0.08, 0.1, 0.13, 1)
-        graphics.circle("fill", x, selectorY, 15)
-        graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
-        graphics.circle("line", x, selectorY, 15)
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.printf(tostring(junction.activeOutputIndex), x - 14, selectorY - 7, 28, "center")
+        local selectorScale = getSelectorIconScale(junction)
+
+        withIconScale(graphics, x, selectorY, selectorScale, function()
+            graphics.setColor(0.08, 0.1, 0.13, 1)
+            graphics.circle("fill", x, selectorY, 15)
+            graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
+            graphics.circle("line", x, selectorY, 15)
+            graphics.setColor(0.97, 0.98, 1, 1)
+            graphics.printf(tostring(junction.activeOutputIndex), x - 14, selectorY - 7, 28, "center")
+        end)
     end
 
     self:drawControlOverlay(junction)
