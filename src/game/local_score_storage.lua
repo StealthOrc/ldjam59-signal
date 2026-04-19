@@ -3,7 +3,7 @@ local json = require("src.game.json")
 local localScoreStorage = {}
 
 local SCOREBOARD_FILE = "local_scoreboard.json"
-local STORAGE_VERSION = 1
+local STORAGE_VERSION = 2
 
 local function sanitizeEntry(mapUuid, entry)
     local resolvedMapUuid = tostring(mapUuid or entry and entry.map_uuid or "")
@@ -14,7 +14,7 @@ local function sanitizeEntry(mapUuid, entry)
     return {
         map_uuid = resolvedMapUuid,
         score = tonumber(entry and entry.score or 0) or 0,
-        updated_at = tonumber(entry and entry.updated_at or 0) or 0,
+        recorded_at = tonumber(entry and (entry.recorded_at or entry.recordedAt or entry.updated_at or entry.updatedAt) or 0) or 0,
     }
 end
 
@@ -94,7 +94,7 @@ function localScoreStorage.updateBestScore(store, summary)
     end
 
     local score = tonumber(summary and (summary.finalScore or summary.score) or 0) or 0
-    local updatedAt = tonumber(summary and summary.updated_at or 0) or os.time() or 0
+    local recordedAt = tonumber(summary and (summary.recorded_at or summary.recordedAt or summary.updated_at or summary.updatedAt) or 0) or os.time() or 0
     local existingEntry = sanitized.entries_by_map[mapUuid]
 
     if existingEntry and score <= (tonumber(existingEntry.score) or 0) then
@@ -104,7 +104,7 @@ function localScoreStorage.updateBestScore(store, summary)
     sanitized.entries_by_map[mapUuid] = {
         map_uuid = mapUuid,
         score = score,
-        updated_at = updatedAt,
+        recorded_at = recordedAt,
     }
     return sanitized, true
 end

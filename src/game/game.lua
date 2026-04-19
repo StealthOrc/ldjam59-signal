@@ -221,6 +221,7 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
         score = tonumber(entry.score or 0) or 0,
         rank = tonumber(entry.rank) or fallbackRank or 0,
         mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
+        recordedAt = entry.recorded_at or entry.recordedAt or entry.updated_at or entry.updatedAt,
         updatedAt = entry.updated_at or entry.updatedAt,
     }
 end
@@ -578,7 +579,7 @@ function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
         score = tonumber(scoreEntry.score or 0) or 0,
         rank = rank or 1,
         map_uuid = mapUuid,
-        updated_at = tonumber(scoreEntry.updated_at or 0) or 0,
+        recorded_at = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0,
     }
 end
 

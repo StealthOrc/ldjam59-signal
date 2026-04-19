@@ -161,18 +161,18 @@ local LEADERBOARD_LAYOUT = {
     headerY = 116,
     rowYOffset = 28,
     rowHeight = 34,
-    offlineRowHeight = 52,
     rowGap = 8,
     rowRadius = 10,
     rankWidth = 40,
     mapGap = 28,
     mapWidth = 260,
+    recordedGap = 24,
+    recordedWidth = 164,
     playerXOffset = 52,
     playerRightPadding = 36,
     scoreWidth = 120,
     rowBottomPadding = 56,
     rowPrimaryTextOffsetY = 2,
-    rowSecondaryTextOffsetY = 22,
     tooltipWidth = 360,
     tooltipHeight = 62,
     tooltipOffsetY = 18,
@@ -450,16 +450,8 @@ local function shouldShowLeaderboardMapColumn(game)
     return state.scope == "global"
 end
 
-local function shouldShowLeaderboardRecordedAt(game)
+local function shouldShowLeaderboardRecordedColumn(game)
     return game:isOfflineMode()
-end
-
-local function getLeaderboardRowHeight(game)
-    if shouldShowLeaderboardRecordedAt(game) then
-        return LEADERBOARD_LAYOUT.offlineRowHeight
-    end
-
-    return LEADERBOARD_LAYOUT.rowHeight
 end
 
 local function formatLeaderboardRecordedAt(value)
@@ -476,8 +468,21 @@ local function getLeaderboardContentLayout(game)
     local panel = getLeaderboardPanelRect(game)
     local contentX = panel.x + LEADERBOARD_LAYOUT.contentPadding
     local contentW = panel.w - (LEADERBOARD_LAYOUT.contentPadding * 2)
-    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
-    local mapX = scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap
+    local recordedX = nil
+    local scoreX = nil
+    local mapX = nil
+
+    if shouldShowLeaderboardRecordedColumn(game) then
+        recordedX = contentX + contentW - LEADERBOARD_LAYOUT.recordedWidth
+        scoreX = recordedX - LEADERBOARD_LAYOUT.recordedGap - LEADERBOARD_LAYOUT.scoreWidth
+        if shouldShowLeaderboardMapColumn(game) then
+            mapX = scoreX - LEADERBOARD_LAYOUT.mapGap - LEADERBOARD_LAYOUT.mapWidth
+        end
+    else
+        scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
+        mapX = shouldShowLeaderboardMapColumn(game) and (scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap) or nil
+    end
+
     local playerX = contentX + LEADERBOARD_LAYOUT.playerXOffset
     local playerRightEdge = shouldShowLeaderboardMapColumn(game)
         and (mapX - LEADERBOARD_LAYOUT.mapGap)
@@ -489,6 +494,7 @@ local function getLeaderboardContentLayout(game)
         contentX = contentX,
         contentW = contentW,
         mapX = mapX,
+        recordedX = recordedX,
         scoreX = scoreX,
         playerX = playerX,
         playerWidth = playerWidth,
@@ -517,7 +523,7 @@ end
 local function buildLeaderboardRowRects(game, entries)
     local layout = getLeaderboardContentLayout(game)
     local rects = {}
-    local rowHeight = getLeaderboardRowHeight(game)
+    local rowHeight = LEADERBOARD_LAYOUT.rowHeight
     local rowStep = rowHeight + LEADERBOARD_LAYOUT.rowGap
     local availableHeight = layout.panel.h - LEADERBOARD_LAYOUT.headerY - LEADERBOARD_LAYOUT.rowYOffset - LEADERBOARD_LAYOUT.rowBottomPadding
     local maxEntries = math.min(
@@ -546,6 +552,12 @@ local function buildLeaderboardRowRects(game, entries)
                 x = layout.mapX,
                 y = rowY,
                 w = LEADERBOARD_LAYOUT.mapWidth,
+                h = rowHeight - 8,
+            } or nil,
+            recorded = shouldShowLeaderboardRecordedColumn(game) and {
+                x = layout.recordedX,
+                y = rowY,
+                w = LEADERBOARD_LAYOUT.recordedWidth,
                 h = rowHeight - 8,
             } or nil,
         }
@@ -3108,6 +3120,9 @@ function ui.drawLeaderboard(game)
     if shouldShowLeaderboardMapColumn(game) then
         graphics.printf(game:isOfflineMode() and "Map" or "Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
     end
+    if shouldShowLeaderboardRecordedColumn(game) and layout.recordedX then
+        graphics.printf("Recorded", layout.recordedX, headerY, LEADERBOARD_LAYOUT.recordedWidth, "left")
+    end
 
     local rowRects = buildLeaderboardRowRects(game, state.entries or {})
     for _, rowRect in ipairs(rowRects) do
@@ -3134,13 +3149,13 @@ function ui.drawLeaderboard(game)
             LEADERBOARD_LAYOUT.scoreWidth,
             "center"
         )
-        if shouldShowLeaderboardRecordedAt(game) then
-            graphics.setColor(0.68, 0.74, 0.8, 1)
+        if rowRect.recorded then
+            graphics.setColor(0.72, 0.78, 0.84, 1)
             graphics.printf(
-                string.format("Recorded %s", formatLeaderboardRecordedAt(entry.updatedAt)),
-                rowRect.player.x,
-                rowY + LEADERBOARD_LAYOUT.rowSecondaryTextOffsetY,
-                rowRect.player.w,
+                formatLeaderboardRecordedAt(entry.recordedAt or entry.updatedAt),
+                rowRect.recorded.x,
+                rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY,
+                rowRect.recorded.w,
                 "left"
             )
             graphics.setColor(0.97, 0.98, 1, 1)

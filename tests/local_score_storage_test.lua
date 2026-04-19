@@ -13,7 +13,7 @@ local scoreboard = {
         ["map-1"] = {
             map_uuid = "map-1",
             score = 42,
-            updated_at = 10,
+            recorded_at = 10,
         },
     },
 }
@@ -21,7 +21,7 @@ local scoreboard = {
 local unchangedScoreboard, keptExistingBest = localScoreStorage.updateBestScore(scoreboard, {
     mapUuid = "map-1",
     finalScore = 41,
-    updated_at = 12,
+    recorded_at = 12,
 })
 assertEqual(keptExistingBest, false, "lower scores do not replace the local best")
 assertEqual(
@@ -33,7 +33,7 @@ assertEqual(
 local improvedScoreboard, storedNewBest = localScoreStorage.updateBestScore(scoreboard, {
     mapUuid = "map-1",
     finalScore = 48,
-    updated_at = 14,
+    recorded_at = 14,
 })
 assertEqual(storedNewBest, true, "higher scores replace the local best")
 assertEqual(
@@ -42,9 +42,9 @@ assertEqual(
     "higher scores overwrite the stored local best"
 )
 assertEqual(
-    improvedScoreboard.entries_by_map["map-1"].updated_at,
+    improvedScoreboard.entries_by_map["map-1"].recorded_at,
     14,
-    "higher scores keep the newest timestamp"
+    "higher scores keep the record creation timestamp"
 )
 
 print("local score storage tests passed")
