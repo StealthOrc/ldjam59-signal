@@ -10,6 +10,7 @@ local DEFAULT_CONTROL = "direct"
 local MAX_TRIP_PASS_COUNT = 5
 local MERGE_SNAP_RADIUS = 40
 local INTERSECTION_GROUP_BUCKET = 20
+local STRICT_INTERSECTION_CLUSTER_RADIUS = 6
 local SHARED_LANE_STRIPE_LENGTH = 14
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
 local DEFAULT_TRAIN_WAGONS = 4
@@ -155,6 +156,17 @@ local function routePairKey(a, b)
         return a .. "|" .. b
     end
     return b .. "|" .. a
+end
+
+local function buildRouteKey(routeIds)
+    local sortedIds = {}
+
+    for _, routeId in ipairs(routeIds or {}) do
+        sortedIds[#sortedIds + 1] = routeId
+    end
+
+    table.sort(sortedIds)
+    return table.concat(sortedIds, "|"), sortedIds
 end
 
 local function segmentLength(a, b)
@@ -385,6 +397,21 @@ local function pointOnSegment(point, a, b, toleranceSquared)
         return { x = closestX, y = closestY }
     end
     return nil
+end
+
+local function chooseBestCandidatePoint(candidates)
+    local bestCandidate = nil
+    local bestScore = nil
+
+    for _, candidate in ipairs(candidates or {}) do
+        local score = candidate.distanceScore or math.huge
+        if not bestScore or score < bestScore then
+            bestCandidate = candidate
+            bestScore = score
+        end
+    end
+
+    return bestCandidate
 end
 
 local function roundPointKey(point)
@@ -2284,6 +2311,97 @@ function mapEditor:getJunctionState(intersection, previousMatches)
     return nil
 end
 
+function mapEditor:getRoutesPassingThroughPoint(routeIds, point, toleranceSquared)
+    local matchedRouteIds = {}
+    local distanceScore = 0
+
+    for _, routeId in ipairs(routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        local bestDistanceSquared = nil
+
+        if route and route.points and #route.points >= 2 then
+            for pointIndex = 1, #route.points - 1 do
+                local a = route.points[pointIndex]
+                local b = route.points[pointIndex + 1]
+                local _, _, _, segmentDistanceSquared = closestPointOnSegment(point.x, point.y, a, b)
+                if not bestDistanceSquared or segmentDistanceSquared < bestDistanceSquared then
+                    bestDistanceSquared = segmentDistanceSquared
+                end
+            end
+        end
+
+        if bestDistanceSquared and bestDistanceSquared <= (toleranceSquared or 4) then
+            matchedRouteIds[#matchedRouteIds + 1] = routeId
+            distanceScore = distanceScore + bestDistanceSquared
+        end
+    end
+
+    local routeKey, sortedRouteIds = buildRouteKey(matchedRouteIds)
+    return sortedRouteIds, routeKey, distanceScore
+end
+
+function mapEditor:resolveGroupedIntersections(groupedIntersection)
+    local resolved = {}
+    local candidatesByRouteKey = {}
+    local clusterRadiusSquared = STRICT_INTERSECTION_CLUSTER_RADIUS * STRICT_INTERSECTION_CLUSTER_RADIUS
+
+    for _, hit in ipairs(groupedIntersection.hits or {}) do
+        local routeIds, routeKey, distanceScore = self:getRoutesPassingThroughPoint(
+            groupedIntersection.routeIds,
+            hit,
+            4
+        )
+
+        if #routeIds >= 2 then
+            candidatesByRouteKey[routeKey] = candidatesByRouteKey[routeKey] or {}
+
+            local targetCluster = nil
+            for _, cluster in ipairs(candidatesByRouteKey[routeKey]) do
+                if distanceSquared(cluster.x, cluster.y, hit.x, hit.y) <= clusterRadiusSquared then
+                    targetCluster = cluster
+                    break
+                end
+            end
+
+            if not targetCluster then
+                targetCluster = {
+                    x = hit.x,
+                    y = hit.y,
+                    routeIds = routeIds,
+                    candidates = {},
+                }
+                candidatesByRouteKey[routeKey][#candidatesByRouteKey[routeKey] + 1] = targetCluster
+            end
+
+            targetCluster.candidates[#targetCluster.candidates + 1] = {
+                x = hit.x,
+                y = hit.y,
+                distanceScore = distanceScore,
+            }
+        end
+    end
+
+    for routeKey, clusters in pairs(candidatesByRouteKey) do
+        for clusterIndex, cluster in ipairs(clusters) do
+            local bestCandidate = chooseBestCandidatePoint(cluster.candidates)
+            if bestCandidate then
+                resolved[#resolved + 1] = {
+                    id = string.format(
+                        "junction_%s_%d",
+                        routeKey:gsub("[^%w]+", "_"),
+                        clusterIndex
+                    ),
+                    x = bestCandidate.x,
+                    y = bestCandidate.y,
+                    routeIds = cluster.routeIds,
+                }
+            end
+        end
+    end
+
+    return resolved
+end
+
 function mapEditor:sortEndpointIdsByPosition(endpointIds, kind)
     table.sort(endpointIds, function(firstId, secondId)
         local first = self:getEndpointById(firstId)
@@ -2412,12 +2530,15 @@ function mapEditor:rebuildIntersections()
                                 y = hit.y,
                                 routeIds = {},
                                 routeLookup = {},
+                                hits = {},
                             }
                             grouped[groupKey] = entry
                         else
                             entry.x = (entry.x + hit.x) * 0.5
                             entry.y = (entry.y + hit.y) * 0.5
                         end
+
+                        entry.hits[#entry.hits + 1] = { x = hit.x, y = hit.y }
 
                         if not entry.routeLookup[firstRoute.id] then
                             entry.routeLookup[firstRoute.id] = true
@@ -2436,60 +2557,62 @@ function mapEditor:rebuildIntersections()
     self.intersections = {}
 
     for _, groupedIntersection in pairs(grouped) do
-        if self:isSharedEndpointIntersection(groupedIntersection) then
-            goto continue_intersection
-        end
-
         table.sort(groupedIntersection.routeIds)
-        local routeKey = table.concat(groupedIntersection.routeIds, "|")
-        local inputEndpointIds = {}
-        local outputEndpointIds = {}
-        local inputLookup = {}
-        local outputLookup = {}
-        local inputRouteIds = {}
-        local outputRouteIds = {}
+        for _, strictIntersection in ipairs(self:resolveGroupedIntersections(groupedIntersection)) do
+            if self:isSharedEndpointIntersection(strictIntersection) then
+                goto continue_strict_intersection
+            end
 
-        for _, routeId in ipairs(groupedIntersection.routeIds) do
-            local route = self:getRouteById(routeId)
-            if route then
-                inputRouteIds[#inputRouteIds + 1] = route.id
-                outputRouteIds[#outputRouteIds + 1] = route.id
-                if not inputLookup[route.startEndpointId] then
-                    inputLookup[route.startEndpointId] = true
-                    inputEndpointIds[#inputEndpointIds + 1] = route.startEndpointId
-                end
-                if not outputLookup[route.endEndpointId] then
-                    outputLookup[route.endEndpointId] = true
-                    outputEndpointIds[#outputEndpointIds + 1] = route.endEndpointId
+            local routeKey = table.concat(strictIntersection.routeIds, "|")
+            local inputEndpointIds = {}
+            local outputEndpointIds = {}
+            local inputLookup = {}
+            local outputLookup = {}
+            local inputRouteIds = {}
+            local outputRouteIds = {}
+
+            for _, routeId in ipairs(strictIntersection.routeIds) do
+                local route = self:getRouteById(routeId)
+                if route then
+                    inputRouteIds[#inputRouteIds + 1] = route.id
+                    outputRouteIds[#outputRouteIds + 1] = route.id
+                    if not inputLookup[route.startEndpointId] then
+                        inputLookup[route.startEndpointId] = true
+                        inputEndpointIds[#inputEndpointIds + 1] = route.startEndpointId
+                    end
+                    if not outputLookup[route.endEndpointId] then
+                        outputLookup[route.endEndpointId] = true
+                        outputEndpointIds[#outputEndpointIds + 1] = route.endEndpointId
+                    end
                 end
             end
+
+            self:sortEndpointIdsByPosition(inputEndpointIds, "input")
+            self:sortEndpointIdsByPosition(outputEndpointIds, "output")
+            self:sortRouteIdsByMagnet(inputRouteIds, "start")
+            self:sortRouteIdsByMagnet(outputRouteIds, "end")
+
+            local intersection = {
+                id = strictIntersection.id,
+                x = strictIntersection.x,
+                y = strictIntersection.y,
+                routeIds = strictIntersection.routeIds,
+                routeKey = routeKey,
+                inputEndpointIds = inputEndpointIds,
+                outputEndpointIds = outputEndpointIds,
+                inputRouteIds = inputRouteIds,
+                outputRouteIds = outputRouteIds,
+                unsupported = #inputRouteIds > 5 or #outputEndpointIds > 5,
+            }
+            local state = self:getJunctionState(intersection, previousIntersections)
+            intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
+            intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
+            intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
+            intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
+            self.intersections[#self.intersections + 1] = intersection
+
+            ::continue_strict_intersection::
         end
-
-        self:sortEndpointIdsByPosition(inputEndpointIds, "input")
-        self:sortEndpointIdsByPosition(outputEndpointIds, "output")
-        self:sortRouteIdsByMagnet(inputRouteIds, "start")
-        self:sortRouteIdsByMagnet(outputRouteIds, "end")
-
-        local intersection = {
-            id = "junction_" .. routeKey:gsub("[^%w]+", "_"),
-            x = groupedIntersection.x,
-            y = groupedIntersection.y,
-            routeIds = groupedIntersection.routeIds,
-            routeKey = routeKey,
-            inputEndpointIds = inputEndpointIds,
-            outputEndpointIds = outputEndpointIds,
-            inputRouteIds = inputRouteIds,
-            outputRouteIds = outputRouteIds,
-            unsupported = #inputRouteIds > 5 or #outputEndpointIds > 5,
-        }
-        local state = self:getJunctionState(intersection, previousIntersections)
-        intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
-        intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
-        intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
-        intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
-        self.intersections[#self.intersections + 1] = intersection
-
-        ::continue_intersection::
     end
 
     table.sort(self.intersections, function(a, b)
