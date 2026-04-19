@@ -2019,6 +2019,45 @@ function mapEditor:sortRouteIdsByMagnet(routeIds, magnetKind)
     end)
 end
 
+function mapEditor:isSharedEndpointIntersection(groupedIntersection)
+    local sharedStartEndpointId = nil
+    local sharedEndEndpointId = nil
+    local allAtSharedStart = true
+    local allAtSharedEnd = true
+    local toleranceSquared = 12 * 12
+
+    for _, routeId in ipairs(groupedIntersection.routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        if not route or not route.points or #route.points < 2 then
+            return false
+        end
+
+        local startPoint = route.points[1]
+        local endPoint = route.points[#route.points]
+        local touchesStart = distanceSquared(startPoint.x, startPoint.y, groupedIntersection.x, groupedIntersection.y) <= toleranceSquared
+        local touchesEnd = distanceSquared(endPoint.x, endPoint.y, groupedIntersection.x, groupedIntersection.y) <= toleranceSquared
+
+        if not touchesStart then
+            allAtSharedStart = false
+        elseif sharedStartEndpointId and sharedStartEndpointId ~= route.startEndpointId then
+            allAtSharedStart = false
+        else
+            sharedStartEndpointId = route.startEndpointId
+        end
+
+        if not touchesEnd then
+            allAtSharedEnd = false
+        elseif sharedEndEndpointId and sharedEndEndpointId ~= route.endEndpointId then
+            allAtSharedEnd = false
+        else
+            sharedEndEndpointId = route.endEndpointId
+        end
+    end
+
+    return (allAtSharedStart and sharedStartEndpointId ~= nil)
+        or (allAtSharedEnd and sharedEndEndpointId ~= nil)
+end
+
 function mapEditor:rebuildIntersections()
     local previousIntersections = self.intersections or {}
     local grouped = {}
@@ -2071,6 +2110,10 @@ function mapEditor:rebuildIntersections()
     self.intersections = {}
 
     for _, groupedIntersection in pairs(grouped) do
+        if self:isSharedEndpointIntersection(groupedIntersection) then
+            goto continue_intersection
+        end
+
         table.sort(groupedIntersection.routeIds)
         local routeKey = table.concat(groupedIntersection.routeIds, "|")
         local inputEndpointIds = {}
@@ -2119,6 +2162,8 @@ function mapEditor:rebuildIntersections()
         intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
         intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
         self.intersections[#self.intersections + 1] = intersection
+
+        ::continue_intersection::
     end
 
     table.sort(self.intersections, function(a, b)
