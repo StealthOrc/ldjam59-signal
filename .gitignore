@@ -41,3 +41,14 @@ luac.out
 
 # Local tooling metadata
 .codex/
+
+*claude
+
+launch.json
+settings.json
+.luarc.json
+*agents
+*idea
+/AGENTS.md
+.idea
+*idea/
