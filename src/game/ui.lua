@@ -126,6 +126,16 @@ local MENU_LAYOUT = {
     footerY = 654,
 }
 
+local PROFILE_MODE_SETUP_LAYOUT = {
+    panelW = 640,
+    panelH = 360,
+    buttonW = 220,
+    buttonH = 72,
+    buttonGap = 28,
+    buttonY = 230,
+    helperTextY = 322,
+}
+
 local LEADERBOARD_LOADING = {
     spinnerRadius = 18,
     spinnerThickness = 4,
@@ -151,6 +161,7 @@ local LEADERBOARD_LAYOUT = {
     headerY = 116,
     rowYOffset = 28,
     rowHeight = 34,
+    offlineRowHeight = 52,
     rowGap = 8,
     rowRadius = 10,
     rankWidth = 40,
@@ -159,6 +170,9 @@ local LEADERBOARD_LAYOUT = {
     playerXOffset = 52,
     playerRightPadding = 36,
     scoreWidth = 120,
+    rowBottomPadding = 56,
+    rowPrimaryTextOffsetY = 2,
+    rowSecondaryTextOffsetY = 22,
     tooltipWidth = 360,
     tooltipHeight = 62,
     tooltipOffsetY = 18,
@@ -390,7 +404,7 @@ end
 
 local function drawLeaderboardRefreshIndicator(game, panel, state)
     local graphics = love.graphics
-    local label = formatLeaderboardRefreshLabel(
+    local label = state and state.refreshLabel or formatLeaderboardRefreshLabel(
         state and state.nextRefreshAt or nil,
         getNowSeconds(),
         state and state.status == "loading" or false,
@@ -407,7 +421,7 @@ end
 
 local function drawLevelSelectLeaderboardRefreshIndicator(game, contentRect, previewState)
     local graphics = love.graphics
-    local label = formatLevelSelectLeaderboardRefreshLabel(
+    local label = previewState and previewState.refreshLabel or formatLevelSelectLeaderboardRefreshLabel(
         previewState and previewState.nextRefreshAt or nil,
         getNowUnixSeconds(),
         previewState and previewState.isLoading or false,
@@ -434,6 +448,28 @@ end
 local function shouldShowLeaderboardMapColumn(game)
     local state = game.leaderboardState or {}
     return state.scope == "global"
+end
+
+local function shouldShowLeaderboardRecordedAt(game)
+    return game:isOfflineMode()
+end
+
+local function getLeaderboardRowHeight(game)
+    if shouldShowLeaderboardRecordedAt(game) then
+        return LEADERBOARD_LAYOUT.offlineRowHeight
+    end
+
+    return LEADERBOARD_LAYOUT.rowHeight
+end
+
+local function formatLeaderboardRecordedAt(value)
+    local timestamp = tonumber(value)
+    if timestamp then
+        return os.date("%Y-%m-%d %H:%M", timestamp)
+    end
+
+    local text = tostring(value or "")
+    return text ~= "" and text or "Unknown"
 end
 
 local function getLeaderboardContentLayout(game)
@@ -481,7 +517,13 @@ end
 local function buildLeaderboardRowRects(game, entries)
     local layout = getLeaderboardContentLayout(game)
     local rects = {}
-    local maxEntries = math.min(12, #(entries or {}))
+    local rowHeight = getLeaderboardRowHeight(game)
+    local rowStep = rowHeight + LEADERBOARD_LAYOUT.rowGap
+    local availableHeight = layout.panel.h - LEADERBOARD_LAYOUT.headerY - LEADERBOARD_LAYOUT.rowYOffset - LEADERBOARD_LAYOUT.rowBottomPadding
+    local maxEntries = math.min(
+        #(entries or {}),
+        math.max(1, math.floor((availableHeight + LEADERBOARD_LAYOUT.rowGap) / rowStep))
+    )
     local rowY = layout.panel.y + LEADERBOARD_LAYOUT.headerY + LEADERBOARD_LAYOUT.rowYOffset
 
     for index = 1, maxEntries do
@@ -492,24 +534,24 @@ local function buildLeaderboardRowRects(game, entries)
                 x = layout.contentX,
                 y = rowY - 6,
                 w = layout.contentW,
-                h = LEADERBOARD_LAYOUT.rowHeight,
+                h = rowHeight,
             },
             player = {
                 x = layout.playerX,
                 y = rowY,
                 w = layout.playerWidth,
-                h = game.fonts.small:getHeight() + 8,
+                h = rowHeight - 8,
             },
             map = shouldShowLeaderboardMapColumn(game) and {
                 x = layout.mapX,
                 y = rowY,
                 w = LEADERBOARD_LAYOUT.mapWidth,
-                h = game.fonts.small:getHeight() + 8,
+                h = rowHeight - 8,
             } or nil,
         }
 
         rects[#rects + 1] = rowRect
-        rowY = rowY + LEADERBOARD_LAYOUT.rowHeight + LEADERBOARD_LAYOUT.rowGap
+        rowY = rowY + rowStep
     end
 
     return rects
@@ -1407,8 +1449,15 @@ getLevelSelectActionButtons = function(game)
         buttonSpecs = {
             { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW },
             { id = editButtonId, label = editButtonLabel, w = LEVEL_SELECT_ACTION_LAYOUT.editW },
-            { id = "toggle_mode", label = "Online Maps", w = LEVEL_SELECT_ACTION_LAYOUT.toggleW },
         }
+
+        if game:isOnlineMode() then
+            buttonSpecs[#buttonSpecs + 1] = {
+                id = "toggle_mode",
+                label = "Online Maps",
+                w = LEVEL_SELECT_ACTION_LAYOUT.toggleW,
+            }
+        end
 
         if selectedMap and game:isUploadSelectedMapAvailable(selectedMap) then
             buttonSpecs[#buttonSpecs + 1] = {
@@ -1966,7 +2015,7 @@ local function drawLevelSelectLeaderboardBack(game, rect)
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
-    graphics.printf("Leaderboard", contentRect.x, contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.titleTop, contentRect.w, "center")
+    graphics.printf(previewState.title or "Leaderboard", contentRect.x, contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.titleTop, contentRect.w, "center")
 
     for index, entry in ipairs(topEntries) do
         local rowRect = {
@@ -2126,7 +2175,7 @@ local function getMenuButtons(game)
             y = buttonY + MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap,
             w = MENU_LAYOUT.buttonWidth,
             h = MENU_LAYOUT.buttonHeight,
-            label = "Online Leaderboard",
+            label = game:getLeaderboardButtonLabel(),
         },
         {
             id = "editor",
@@ -2137,9 +2186,17 @@ local function getMenuButtons(game)
             label = "Map Editor",
         },
         {
-            id = "quit",
+            id = "toggle_play_mode",
             x = centerX,
             y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 3),
+            w = MENU_LAYOUT.buttonWidth,
+            h = MENU_LAYOUT.buttonHeight,
+            label = game:getPlayModeButtonLabel(),
+        },
+        {
+            id = "quit",
+            x = centerX,
+            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 4),
             w = MENU_LAYOUT.buttonWidth,
             h = MENU_LAYOUT.buttonHeight,
             label = "Quit",
@@ -2153,6 +2210,36 @@ local function getProfileSetupConfirmRect(game)
         y = 430,
         w = 220,
         h = 52,
+    }
+end
+
+local function getProfileModeSetupPanelRect(game)
+    return {
+        x = math.floor(game.viewport.w * 0.5 - PROFILE_MODE_SETUP_LAYOUT.panelW * 0.5 + 0.5),
+        y = math.floor(game.viewport.h * 0.5 - PROFILE_MODE_SETUP_LAYOUT.panelH * 0.5 + 0.5),
+        w = PROFILE_MODE_SETUP_LAYOUT.panelW,
+        h = PROFILE_MODE_SETUP_LAYOUT.panelH,
+    }
+end
+
+local function getProfileModeSetupOptionRects(game)
+    local panel = getProfileModeSetupPanelRect(game)
+    local totalWidth = (PROFILE_MODE_SETUP_LAYOUT.buttonW * 2) + PROFILE_MODE_SETUP_LAYOUT.buttonGap
+    local startX = panel.x + math.floor((panel.w - totalWidth) * 0.5 + 0.5)
+
+    return {
+        online = {
+            x = startX,
+            y = panel.y + PROFILE_MODE_SETUP_LAYOUT.buttonY,
+            w = PROFILE_MODE_SETUP_LAYOUT.buttonW,
+            h = PROFILE_MODE_SETUP_LAYOUT.buttonH,
+        },
+        offline = {
+            x = startX + PROFILE_MODE_SETUP_LAYOUT.buttonW + PROFILE_MODE_SETUP_LAYOUT.buttonGap,
+            y = panel.y + PROFILE_MODE_SETUP_LAYOUT.buttonY,
+            w = PROFILE_MODE_SETUP_LAYOUT.buttonW,
+            h = PROFILE_MODE_SETUP_LAYOUT.buttonH,
+        },
     }
 end
 
@@ -2197,6 +2284,17 @@ end
 function ui.getProfileSetupActionAt(game, x, y)
     if pointInRect(x, y, getProfileSetupConfirmRect(game)) then
         return "confirm"
+    end
+    return nil
+end
+
+function ui.getProfileModeSetupActionAt(game, x, y)
+    local optionRects = getProfileModeSetupOptionRects(game)
+    if pointInRect(x, y, optionRects.online) then
+        return "online"
+    end
+    if pointInRect(x, y, optionRects.offline) then
+        return "offline"
     end
     return nil
 end
@@ -2785,7 +2883,9 @@ function ui.drawMenu(game)
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
     graphics.printf(
-        "Route trains through lever-controlled merges, upload cleared scores, and compare runs online.",
+        game:isOfflineMode()
+            and "Route trains through lever-controlled merges and keep your personal scores on this device."
+            or "Route trains through lever-controlled merges, upload cleared scores, and compare runs online.",
         game.viewport.w * 0.5 - 280,
         188,
         560,
@@ -2801,7 +2901,15 @@ function ui.drawMenu(game)
 
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf("Enter starts. L opens the leaderboard. D toggles debug mode. Esc quits.", 0, MENU_LAYOUT.footerY, game.viewport.w, "center")
+    graphics.printf(
+        game:isOfflineMode()
+            and "Enter starts. L opens personal scores. O toggles online or offline mode. D toggles debug mode. Esc quits."
+            or "Enter starts. L opens the leaderboard. O toggles online or offline mode. D toggles debug mode. Esc quits.",
+        0,
+        MENU_LAYOUT.footerY,
+        game.viewport.w,
+        "center"
+    )
 end
 
 function ui.drawProfileSetup(game)
@@ -2830,7 +2938,7 @@ function ui.drawProfileSetup(game)
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf("Enter the name to use in the leaderboard.", panel.x + 42, panel.y + 84, panel.w - 84, "center")
+    graphics.printf("Enter the name to use in the game.", panel.x + 42, panel.y + 84, panel.w - 84, "center")
 
     graphics.setColor(0.48, 0.92, 0.62, 0.12)
     graphics.rectangle("fill", inputRect.x - 4, inputRect.y - 4, inputRect.w + 8, inputRect.h + 8, 16, 16)
@@ -2868,6 +2976,61 @@ function ui.drawProfileSetup(game)
     end
 
     drawButton(confirmRect, "Continue", { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+end
+
+function ui.drawProfileModeSetup(game)
+    local graphics = love.graphics
+    local panel = getProfileModeSetupPanelRect(game)
+    local optionRects = getProfileModeSetupOptionRects(game)
+    local isOnlineSelected = game.profileModeSelection == "online"
+
+    graphics.setColor(0.05, 0.07, 0.1, 1)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+    drawMetalPanel(panel, 0.98)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf("Choose Mode", panel.x + 24, panel.y + 34, panel.w - 48, "center")
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    graphics.printf(
+        "Offline keeps every score local. Online enables scoreboards and community maps.",
+        panel.x + 44,
+        panel.y + 92,
+        panel.w - 88,
+        "center"
+    )
+
+    drawButton(
+        optionRects.online,
+        "Online",
+        isOnlineSelected and { 0.12, 0.17, 0.2, 0.98 } or { 0.08, 0.1, 0.14, 0.98 },
+        isOnlineSelected and { 0.48, 0.92, 0.62, 1 } or { 0.3, 0.42, 0.54, 1 },
+        game.fonts.body
+    )
+    drawButton(
+        optionRects.offline,
+        "Offline",
+        isOnlineSelected and { 0.08, 0.1, 0.14, 0.98 } or { 0.12, 0.17, 0.2, 0.98 },
+        isOnlineSelected and { 0.3, 0.42, 0.54, 1 } or { 0.48, 0.92, 0.62, 1 },
+        game.fonts.body
+    )
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.printf(
+        "Use Left or Right and press Enter, or click a mode.",
+        panel.x + 40,
+        panel.y + PROFILE_MODE_SETUP_LAYOUT.helperTextY,
+        panel.w - 80,
+        "center"
+    )
+
+    if game.profileModeSetupError then
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.printf(game.profileModeSetupError, panel.x + 40, panel.y + panel.h - 42, panel.w - 80, "center")
+    end
 end
 
 function ui.drawLeaderboard(game)
@@ -2943,7 +3106,7 @@ function ui.drawLeaderboard(game)
     graphics.print("Player", layout.playerX, headerY)
     graphics.printf("Score", layout.scoreX, headerY, LEADERBOARD_LAYOUT.scoreWidth, "center")
     if shouldShowLeaderboardMapColumn(game) then
-        graphics.printf("Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
+        graphics.printf(game:isOfflineMode() and "Map" or "Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
     end
 
     local rowRects = buildLeaderboardRowRects(game, state.entries or {})
@@ -2956,12 +3119,41 @@ function ui.drawLeaderboard(game)
         graphics.rectangle("line", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
 
         graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.print(tostring(entry.rank or 0), contentX + 12, rowY + 2)
-        graphics.printf(entry.playerDisplayName or "Unknown", rowRect.player.x, rowY + 2, rowRect.player.w, "left")
-        graphics.printf(formatLeaderboardScore(entry.score or 0), layout.scoreX, rowY + 2, LEADERBOARD_LAYOUT.scoreWidth, "center")
+        graphics.print(tostring(entry.rank or 0), contentX + 12, rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY)
+        graphics.printf(
+            entry.playerDisplayName or "Unknown",
+            rowRect.player.x,
+            rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY,
+            rowRect.player.w,
+            "left"
+        )
+        graphics.printf(
+            formatLeaderboardScore(entry.score or 0),
+            layout.scoreX,
+            rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY,
+            LEADERBOARD_LAYOUT.scoreWidth,
+            "center"
+        )
+        if shouldShowLeaderboardRecordedAt(game) then
+            graphics.setColor(0.68, 0.74, 0.8, 1)
+            graphics.printf(
+                string.format("Recorded %s", formatLeaderboardRecordedAt(entry.updatedAt)),
+                rowRect.player.x,
+                rowY + LEADERBOARD_LAYOUT.rowSecondaryTextOffsetY,
+                rowRect.player.w,
+                "left"
+            )
+            graphics.setColor(0.97, 0.98, 1, 1)
+        end
         if rowRect.map then
             graphics.setColor(0.72, 0.78, 0.84, 1)
-            graphics.printf(entry.mapName or "Unknown Map", rowRect.map.x, rowY + 2, rowRect.map.w, "left")
+            graphics.printf(
+                entry.mapName or "Unknown Map",
+                rowRect.map.x,
+                rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY,
+                rowRect.map.w,
+                "left"
+            )
         end
     end
 
@@ -3268,7 +3460,13 @@ function ui.drawResults(game)
         onlineColor = { 0.99, 0.78, 0.32, 1 }
     end
     graphics.setColor(onlineColor[1], onlineColor[2], onlineColor[3], onlineColor[4])
-    graphics.printf(onlineState.message or "Online sync pending.", panel.x + 38, panel.y + 158, panel.w - 76, "center")
+    graphics.printf(
+        onlineState.message or (game:isOfflineMode() and "Local score pending." or "Online sync pending."),
+        panel.x + 38,
+        panel.y + 158,
+        panel.w - 76,
+        "center"
+    )
 
     local breakdownX = panel.x + 58
     local valueX = panel.x + panel.w - 58
@@ -3305,12 +3503,19 @@ function ui.drawResults(game)
     end
 
     drawButton(buttons.replay, "Replay", { 0.1, 0.14, 0.18, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.small)
-    drawButton(buttons.leaderboard, "Leaderboard", { 0.1, 0.14, 0.18, 0.98 }, { 0.56, 0.72, 0.98, 1 }, game.fonts.small)
+    drawButton(
+        buttons.leaderboard,
+        game:isOfflineMode() and "Scores" or "Leaderboard",
+        { 0.1, 0.14, 0.18, 0.98 },
+        { 0.56, 0.72, 0.98, 1 },
+        game.fonts.small
+    )
     drawButton(buttons.editor, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
     drawButton(buttons.menu, "Main Menu", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 end
 
 ui.formatLeaderboardScore = formatLeaderboardScore
+ui.formatLeaderboardRecordedAt = formatLeaderboardRecordedAt
 ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
 ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel

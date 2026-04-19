@@ -15,6 +15,13 @@ assertEqual(ui.formatLeaderboardScore(70.3), "70.300", "leaderboard score keeps 
 assertEqual(ui.formatLeaderboardScore(70.013), "70.013", "leaderboard score keeps thousandths")
 assertEqual(ui.formatLeaderboardScore(70), "70.000", "leaderboard score shows three decimals for integers")
 
+assert(type(ui.formatLeaderboardRecordedAt) == "function", "ui.formatLeaderboardRecordedAt should exist")
+assertEqual(
+    ui.formatLeaderboardRecordedAt(0),
+    os.date("%Y-%m-%d %H:%M", 0),
+    "leaderboard recorded timestamp formats unix seconds"
+)
+
 assert(type(ui.formatLevelSelectLeaderboardPlayerName) == "function", "ui.formatLevelSelectLeaderboardPlayerName should exist")
 assertEqual(
     ui.formatLevelSelectLeaderboardPlayerName("ABCDEFGHIJKLMN"),

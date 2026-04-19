@@ -2,8 +2,19 @@ local profileStorage = {}
 local uuid = require("src.game.uuid")
 
 local PROFILE_FILE = "profile.lua"
+local PROFILE_VERSION = 2
 local PLAYER_ID_PREFIX = "player-"
 local UUID_PATTERN = "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$"
+local PLAY_MODE_ONLINE = "online"
+local PLAY_MODE_OFFLINE = "offline"
+
+local function normalizePlayMode(value)
+    if value == PLAY_MODE_ONLINE or value == PLAY_MODE_OFFLINE then
+        return value
+    end
+
+    return ""
+end
 
 local function isIdentifier(value)
     return type(value) == "string" and value:match("^[%a_][%w_]*$") ~= nil
@@ -103,9 +114,10 @@ local function sanitizeProfile(profile)
     end
 
     local sanitized = {
-        version = 1,
+        version = PROFILE_VERSION,
         player_uuid = resolvedPlayerUuid,
         playerDisplayName = type(profile.playerDisplayName) == "string" and profile.playerDisplayName or "",
+        playMode = normalizePlayMode(profile.playMode),
         debugMode = profile.debugMode == true,
     }
 
@@ -147,6 +159,7 @@ function profileStorage.load()
         or loadedProfile.playerId ~= nil
         or loadedProfile.playerUuid ~= nil
         or loadedProfile.playerDisplayName ~= sanitized.playerDisplayName
+        or loadedProfile.playMode ~= sanitized.playMode
         or loadedProfile.debugMode ~= sanitized.debugMode
 
     if needsSave then

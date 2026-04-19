@@ -1,6 +1,7 @@
 local input = require("src.game.input")
 local mapEditor = require("src.game.map_editor")
 local mapStorage = require("src.game.map_storage")
+local localScoreStorage = require("src.game.local_score_storage")
 local profileStorage = require("src.game.profile_storage")
 local leaderboardClient = require("src.game.leaderboard_client")
 local leaderboardPreviewCache = require("src.game.leaderboard_preview_cache")
@@ -74,6 +75,20 @@ local ONLINE_WRITE_TIMEOUT_SECONDS = 5
 local LEVEL_SELECT_ACTION_STATUS_INFO = "info"
 local LEVEL_SELECT_ACTION_STATUS_SUCCESS = "success"
 local LEVEL_SELECT_ACTION_STATUS_ERROR = "error"
+local PLAY_MODE_ONLINE = "online"
+local PLAY_MODE_OFFLINE = "offline"
+local PROFILE_NAME_MAX_LENGTH = 24
+local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
+local LEADERBOARD_MESSAGE_NO_LOCAL_SCORES = "No local personal scores yet."
+local LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST = "No local personal best yet."
+local LEVEL_SELECT_PREVIEW_TITLE_PERSONAL_BEST = "Personal Best"
+local LEADERBOARD_TITLE_ONLINE = "Online Leaderboard"
+local LEADERBOARD_TITLE_PERSONAL = "Personal Scores"
+local LEADERBOARD_TITLE_MAP = "Map Leaderboard"
+local LEADERBOARD_TITLE_MAP_PERSONAL = "Personal Best"
+local RESULTS_MESSAGE_LOCAL_BEST_SAVED = "Saved a new local personal best."
+local RESULTS_MESSAGE_LOCAL_BEST_KEPT = "Your local personal best stays higher."
+local RESULTS_MESSAGE_LOCAL_SAVE_FAILED = "The local personal score could not be saved."
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -171,6 +186,14 @@ local function getProfilePlayerUuid(profile)
     end
 
     return tostring(profile.player_uuid or profile.playerId or profile.playerUuid or "")
+end
+
+local function getProfilePlayMode(profile)
+    if type(profile) ~= "table" then
+        return ""
+    end
+
+    return tostring(profile.playMode or "")
 end
 
 local function deepCopy(value)
@@ -290,9 +313,17 @@ function Game.new()
     }
 
     self.profile = profile
+    self.localScoreboard = localScoreStorage.load()
     self.onlineConfig = leaderboardClient.getConfig()
     logOnlineConfig(self.onlineConfig)
-    self.screen = trim(profile.playerDisplayName) ~= "" and "menu" or "profile_setup"
+    self.screen = "profile_setup"
+    if trim(profile.playerDisplayName) ~= "" then
+        if getProfilePlayMode(profile) == PLAY_MODE_ONLINE or getProfilePlayMode(profile) == PLAY_MODE_OFFLINE then
+            self.screen = "menu"
+        else
+            self.screen = "profile_mode_setup"
+        end
+    end
     self.levelComplete = false
     self.failureReason = nil
     self.world = nil
@@ -352,6 +383,8 @@ function Game.new()
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
     self.profileSetupError = nil
+    self.profileModeSelection = getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE
+    self.profileModeSetupError = nil
     self.playOverlayMode = nil
     self.leaderboardState = {
         status = LEADERBOARD_STATUS_IDLE,
@@ -362,7 +395,7 @@ function Game.new()
     }
     self.leaderboardReturnScreen = "menu"
     self.leaderboardMapUuid = nil
-    self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardTitle = self:getLeaderboardTitle(nil)
     self.leaderboardHoverInfo = nil
     self.leaderboardCacheByScope = {}
     self.leaderboardNextFetchAtByScope = {}
@@ -437,6 +470,7 @@ function Game:buildLeaderboardState(status, message, rawEntries, fetchedAt)
             LEADERBOARD_CACHE_DURATION_SECONDS
         ),
         scope = type(rawEntries) == "table" and rawEntries.scope or (self.leaderboardMapUuid and LEADERBOARD_SCOPE_MAP or LEADERBOARD_SCOPE_GLOBAL),
+        refreshLabel = type(rawEntries) == "table" and rawEntries.refreshLabel or nil,
     }
 end
 
@@ -454,6 +488,13 @@ function Game:isLeaderboardFetchAllowed()
 end
 
 function Game:getActiveOnlineConfig()
+    if not self:isOnlineMode() then
+        return {
+            isConfigured = false,
+            errors = { "Offline mode is enabled." },
+        }
+    end
+
     local resolvedConfig = self:reloadOnlineConfig()
     if resolvedConfig and resolvedConfig.isConfigured then
         return resolvedConfig
@@ -464,6 +505,236 @@ function Game:getActiveOnlineConfig()
     end
 
     return resolvedConfig
+end
+
+function Game:isPlayModeConfigured()
+    local playMode = getProfilePlayMode(self.profile)
+    return playMode == PLAY_MODE_ONLINE or playMode == PLAY_MODE_OFFLINE
+end
+
+function Game:isOfflineMode()
+    return getProfilePlayMode(self.profile) == PLAY_MODE_OFFLINE
+end
+
+function Game:isOnlineMode()
+    return getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE
+end
+
+function Game:getLeaderboardButtonLabel()
+    if self:isOfflineMode() then
+        return "Personal Scores"
+    end
+
+    return LEADERBOARD_TITLE_ONLINE
+end
+
+function Game:getLeaderboardTitle(mapUuid)
+    if mapUuid and mapUuid ~= "" then
+        if self:isOfflineMode() then
+            return LEADERBOARD_TITLE_MAP_PERSONAL
+        end
+
+        return LEADERBOARD_TITLE_MAP
+    end
+
+    if self:isOfflineMode() then
+        return LEADERBOARD_TITLE_PERSONAL
+    end
+
+    return LEADERBOARD_TITLE_ONLINE
+end
+
+function Game:getPlayModeButtonLabel()
+    if self:isOfflineMode() then
+        return "Mode: Offline"
+    end
+
+    return "Mode: Online"
+end
+
+function Game:getLocalScoreEntry(mapUuid)
+    if not mapUuid or mapUuid == "" then
+        return nil
+    end
+
+    local scoreboard = self.localScoreboard or {}
+    local entriesByMap = scoreboard.entries_by_map or scoreboard.entriesByMap or {}
+    local entry = entriesByMap[mapUuid]
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    return entry
+end
+
+function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
+    if not mapUuid or mapUuid == "" or type(scoreEntry) ~= "table" then
+        return nil
+    end
+
+    return {
+        display_name = self.profile.playerDisplayName or "Unknown",
+        player_uuid = getProfilePlayerUuid(self.profile),
+        score = tonumber(scoreEntry.score or 0) or 0,
+        rank = rank or 1,
+        map_uuid = mapUuid,
+        updated_at = tonumber(scoreEntry.updated_at or 0) or 0,
+    }
+end
+
+function Game:buildLocalLeaderboardPayload(mapUuid)
+    local latestUpdatedAt = nil
+    local payload = {
+        entries = {},
+        map_uuid = mapUuid,
+        scope = mapUuid and LEADERBOARD_SCOPE_MAP or LEADERBOARD_SCOPE_GLOBAL,
+        refreshLabel = LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY,
+    }
+
+    if mapUuid and mapUuid ~= "" then
+        local scoreEntry = self:getLocalScoreEntry(mapUuid)
+        if not scoreEntry then
+            return payload, nil
+        end
+
+        local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
+        payload.entries[1] = localEntry
+        return payload, tonumber(scoreEntry.updated_at or 0) or 0
+    end
+
+    local entriesByMap = self.localScoreboard and (self.localScoreboard.entries_by_map or self.localScoreboard.entriesByMap) or {}
+    for entryMapUuid, scoreEntry in pairs(entriesByMap or {}) do
+        local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
+        if localEntry then
+            payload.entries[#payload.entries + 1] = localEntry
+            local updatedAt = tonumber(scoreEntry.updated_at or 0) or 0
+            if latestUpdatedAt == nil or updatedAt > latestUpdatedAt then
+                latestUpdatedAt = updatedAt
+            end
+        end
+    end
+
+    table.sort(payload.entries, function(a, b)
+        if a.score ~= b.score then
+            return a.score > b.score
+        end
+
+        local aUpdatedAt = tonumber(a.updated_at or 0) or 0
+        local bUpdatedAt = tonumber(b.updated_at or 0) or 0
+        if aUpdatedAt ~= bUpdatedAt then
+            return aUpdatedAt > bUpdatedAt
+        end
+
+        return tostring(a.map_uuid or "") < tostring(b.map_uuid or "")
+    end)
+
+    for index, entry in ipairs(payload.entries) do
+        entry.rank = index
+    end
+
+    return payload, latestUpdatedAt
+end
+
+function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
+    local localScoreEntry = self:getLocalScoreEntry(mapUuid)
+    if not localScoreEntry then
+        return {
+            topEntries = {},
+            pinnedPlayerEntry = nil,
+            hasCache = false,
+            showCachedEntries = true,
+            isLoading = false,
+            nextRefreshAt = nil,
+            message = LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST,
+            refreshLabel = LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY,
+            title = LEVEL_SELECT_PREVIEW_TITLE_PERSONAL_BEST,
+        }
+    end
+
+    local localEntry = normalizeLeaderboardEntry(
+        self:buildLocalLeaderboardEntry(mapUuid, localScoreEntry, 1),
+        mapUuid,
+        1
+    )
+    if localEntry then
+        localEntry.mapName = self:getMapNameByUuid(localEntry.mapUuid)
+    end
+
+    return {
+        topEntries = localEntry and { localEntry } or {},
+        pinnedPlayerEntry = nil,
+        hasCache = localEntry ~= nil,
+        showCachedEntries = true,
+        isLoading = false,
+        nextRefreshAt = nil,
+        message = localEntry and nil or LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST,
+        refreshLabel = LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY,
+        title = LEVEL_SELECT_PREVIEW_TITLE_PERSONAL_BEST,
+    }
+end
+
+function Game:updateLocalScoreboard(summary)
+    local updatedScoreboard, isNewBest = localScoreStorage.updateBestScore(self.localScoreboard or {}, summary or {})
+    self.localScoreboard = updatedScoreboard
+
+    if not isNewBest then
+        return true, false
+    end
+
+    local savedScoreboard, saveError = localScoreStorage.save(updatedScoreboard)
+    if not savedScoreboard then
+        return false, true, saveError
+    end
+
+    self.localScoreboard = savedScoreboard
+    return true, true
+end
+
+function Game:clearOnlineRequestState()
+    self.activeLeaderboardRequestId = nil
+    self.activeLeaderboardRequestStartedAt = nil
+    self.activeLeaderboardRequestScopeKey = nil
+    self.activeLevelSelectPreviewRequestId = nil
+    self.activeLevelSelectPreviewRequestStartedAt = nil
+    self.activeLevelSelectPreviewRequestMapUuid = nil
+    self.activeMarketplaceRequestId = nil
+    self.activeMarketplaceRequestStartedAt = nil
+    self.activeMarketplaceRequestScopeKey = nil
+    self.activeFavoriteMapRequestId = nil
+    self.activeFavoriteMapRequestStartedAt = nil
+    self.activeFavoriteMapMapUuid = nil
+    self.activeUploadMapRequestId = nil
+    self.activeUploadMapRequestStartedAt = nil
+    self.activeScoreSubmitRequestId = nil
+    self.activeScoreSubmitRequestStartedAt = nil
+end
+
+function Game:setPlayMode(playMode)
+    if playMode ~= PLAY_MODE_ONLINE and playMode ~= PLAY_MODE_OFFLINE then
+        return false, "Select online or offline mode before continuing."
+    end
+
+    local previousPlayMode = self.profile.playMode
+    self.profile.playMode = playMode
+    local ok, saveError = self:saveProfile()
+    if not ok then
+        self.profile.playMode = previousPlayMode
+        return false, saveError or "The play mode could not be saved."
+    end
+
+    self.profileModeSelection = playMode
+    self.profileModeSetupError = nil
+    self:clearOnlineRequestState()
+    self:clearLevelSelectLeaderboardFlip()
+    if self:isOfflineMode() then
+        self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
+    end
+    return true
+end
+
+function Game:togglePlayMode()
+    local nextPlayMode = self:isOfflineMode() and PLAY_MODE_ONLINE or PLAY_MODE_OFFLINE
+    return self:setPlayMode(nextPlayMode)
 end
 
 function Game:setLevelSelectActionState(status, message)
@@ -682,6 +953,10 @@ function Game:clearLevelSelectLeaderboardFlip()
 end
 
 function Game:getLevelSelectPreviewDisplayState(mapUuid)
+    if self:isOfflineMode() then
+        return self:getLocalLevelSelectPreviewDisplayState(mapUuid)
+    end
+
     local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
     local previewState = self.levelSelectPreviewState or {}
     local shouldShowCachedEntries = levelSelectPreviewLogic.shouldShowCachedEntries(previewState, mapUuid, cacheEntry ~= nil)
@@ -742,6 +1017,8 @@ function Game:getLevelSelectPreviewDisplayState(mapUuid)
             LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
         ),
         message = message,
+        refreshLabel = nil,
+        title = "Leaderboard",
     }
 end
 
@@ -1363,7 +1640,12 @@ function Game:updateLeaderboardFetchState()
         end
     end
 
-    if self.screen == "leaderboard" and self.activeLeaderboardRequestId == nil and not self:isLeaderboardCacheFresh() and self:isLeaderboardFetchAllowed() then
+    if self:isOnlineMode()
+        and self.screen == "leaderboard"
+        and self.activeLeaderboardRequestId == nil
+        and not self:isLeaderboardCacheFresh()
+        and self:isLeaderboardFetchAllowed()
+    then
         local onlineConfig = self:getActiveOnlineConfig()
         if not onlineConfig.isConfigured then
             self.leaderboardState = self:buildLeaderboardState(
@@ -1386,21 +1668,23 @@ function Game:updateLeaderboardFetchState()
         previewMapUuid and self:isLevelSelectPreviewCacheFresh(previewMapUuid) or false,
         previewMapUuid and self:isLevelSelectPreviewFetchAllowed(previewMapUuid) or false
     ) then
-        local onlineConfig = self:getActiveOnlineConfig()
-        if onlineConfig.isConfigured then
-            self:beginLevelSelectPreviewFetch(onlineConfig, previewMapUuid)
-        elseif self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
-            self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
-                hasResolvedInitialRemoteAttempt = true,
-            })
-        else
-            self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
-                hasResolvedInitialRemoteAttempt = true,
-            })
+        if self:isOnlineMode() then
+            local onlineConfig = self:getActiveOnlineConfig()
+            if onlineConfig.isConfigured then
+                self:beginLevelSelectPreviewFetch(onlineConfig, previewMapUuid)
+            elseif self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
+                self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                    hasResolvedInitialRemoteAttempt = true,
+                })
+            else
+                self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                    hasResolvedInitialRemoteAttempt = true,
+                })
+            end
         end
     end
 
-    if self.screen == "level_select" and self:isLevelSelectMarketplaceMode() then
+    if self:isOnlineMode() and self.screen == "level_select" and self:isLevelSelectMarketplaceMode() then
         local scopeDetails = self:getMarketplaceScopeDetails()
         local scopeKey = scopeDetails.scopeKey
         local onlineConfig = self:getActiveOnlineConfig()
@@ -1462,7 +1746,7 @@ function Game:appendProfileNameInput(text)
     end
 
     local nextValue = self.profileSetupNameBuffer .. cleanText
-    if #nextValue <= 24 then
+    if #nextValue <= PROFILE_NAME_MAX_LENGTH then
         self.profileSetupNameBuffer = nextValue
         self.profileSetupError = nil
     end
@@ -1489,21 +1773,37 @@ function Game:confirmProfileSetup()
     end
 
     self.profileSetupError = nil
+    self.profileModeSetupError = nil
+    self.screen = "profile_mode_setup"
+    return true
+end
+
+function Game:cycleProfileModeSelection(direction)
+    if direction == nil or direction == 0 then
+        return
+    end
+
+    if self.profileModeSelection == PLAY_MODE_OFFLINE then
+        self.profileModeSelection = PLAY_MODE_ONLINE
+    else
+        self.profileModeSelection = PLAY_MODE_OFFLINE
+    end
+    self.profileModeSetupError = nil
+end
+
+function Game:confirmProfileModeSelection()
+    local ok, saveError = self:setPlayMode(self.profileModeSelection)
+    if not ok then
+        self.profileModeSetupError = saveError or "The play mode could not be saved."
+        return false, self.profileModeSetupError
+    end
+
     self:openMenu()
     return true
 end
 
 function Game:submitResultsScore()
     self.resultsOnlineState = nil
-
-    local onlineConfig = self:reloadOnlineConfig()
-    if not onlineConfig.isConfigured then
-        self.resultsOnlineState = {
-            status = "disabled",
-            message = getLeaderboardUnavailableMessage(),
-        }
-        return
-    end
 
     if not self.levelComplete then
         self.resultsOnlineState = {
@@ -1513,10 +1813,36 @@ function Game:submitResultsScore()
         return
     end
 
+    local localScoreSaved, isNewLocalBest, localSaveError = self:updateLocalScoreboard(self.resultsSummary or {})
+    if not localScoreSaved then
+        self.resultsOnlineState = {
+            status = "error",
+            message = localSaveError or RESULTS_MESSAGE_LOCAL_SAVE_FAILED,
+        }
+        return
+    end
+
+    if self:isOfflineMode() then
+        self.resultsOnlineState = {
+            status = isNewLocalBest and "submitted" or "kept",
+            message = isNewLocalBest and RESULTS_MESSAGE_LOCAL_BEST_SAVED or RESULTS_MESSAGE_LOCAL_BEST_KEPT,
+        }
+        return
+    end
+
+    local onlineConfig = self:reloadOnlineConfig()
+    if not onlineConfig.isConfigured then
+        self.resultsOnlineState = {
+            status = "disabled",
+            message = "Saved locally. " .. getLeaderboardUnavailableMessage(),
+        }
+        return
+    end
+
     if self:isDebugModeEnabled() then
         self.resultsOnlineState = {
             status = "skipped",
-            message = "Debug mode is enabled, so the online score upload was skipped.",
+            message = "Saved locally. Debug mode is enabled, so the online score upload was skipped.",
         }
         return
     end
@@ -1536,7 +1862,8 @@ function Game:canUploadMapDescriptor(mapDescriptor)
 end
 
 function Game:isUploadSelectedMapAvailable(mapDescriptor)
-    return self.levelSelectMode == LEVEL_SELECT_MODE_LIBRARY
+    return self:isOnlineMode()
+        and self.levelSelectMode == LEVEL_SELECT_MODE_LIBRARY
         and self.levelSelectFilter == "user"
         and self:canUploadMapDescriptor(mapDescriptor or self:getSelectedLevelMap())
 end
@@ -1786,6 +2113,15 @@ function Game:refreshMarketplaceData()
 end
 
 function Game:refreshLeaderboard()
+    if self:isOfflineMode() then
+        local payload, fetchedAt = self:buildLocalLeaderboardPayload(self.leaderboardMapUuid)
+        self.leaderboardState = self:buildLeaderboardState(LEADERBOARD_STATUS_READY, nil, payload, fetchedAt)
+        if self.leaderboardState.totalEntries == 0 then
+            self.leaderboardState.message = self.leaderboardMapUuid and LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST or LEADERBOARD_MESSAGE_NO_LOCAL_SCORES
+        end
+        return
+    end
+
     local onlineConfig = self:getActiveOnlineConfig()
     local cacheEntry = self:getLeaderboardCacheEntry()
     if not onlineConfig.isConfigured then
@@ -1827,7 +2163,7 @@ function Game:openLeaderboard(options)
     self.screen = "leaderboard"
     self.leaderboardReturnScreen = openOptions.returnScreen or "menu"
     self.leaderboardMapUuid = openOptions.mapUuid
-    self.leaderboardTitle = openOptions.title or (self.leaderboardMapUuid and "Map Leaderboard" or "Online Leaderboard")
+    self.leaderboardTitle = openOptions.title or self:getLeaderboardTitle(self.leaderboardMapUuid)
     self.leaderboardHoverInfo = nil
     self:refreshLeaderboard()
 end
@@ -1838,7 +2174,7 @@ function Game:openLeaderboardForMap(mapUuid, mapName)
     end
 
     self.leaderboardMapUuid = mapUuid
-    self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardTitle = self:getLeaderboardTitle(mapUuid)
     self.leaderboardHoverInfo = nil
     self:refreshLeaderboard()
 end
@@ -1882,7 +2218,7 @@ end
 
 function Game:clearLeaderboardMapFilter()
     self.leaderboardMapUuid = nil
-    self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardTitle = self:getLeaderboardTitle(nil)
     self.leaderboardHoverInfo = nil
     self:refreshLeaderboard()
 end
@@ -1965,6 +2301,10 @@ function Game:isLevelSelectMarketplaceMode()
 end
 
 function Game:isOnlineMapsAvailable()
+    if not self:isOnlineMode() then
+        return false
+    end
+
     local onlineConfig = self:getActiveOnlineConfig()
     return onlineConfig and onlineConfig.isConfigured == true
 end
@@ -2037,6 +2377,11 @@ function Game:setLevelSelectMode(mode)
 end
 
 function Game:toggleLevelSelectMode()
+    if not self:isOnlineMode() then
+        self:setLevelSelectMode(LEVEL_SELECT_MODE_LIBRARY)
+        return
+    end
+
     if self:isLevelSelectMarketplaceMode() then
         self:setLevelSelectMode(LEVEL_SELECT_MODE_LIBRARY)
         return
@@ -2230,6 +2575,11 @@ end
 function Game:openMenu()
     if not self:isProfileComplete() then
         self.screen = "profile_setup"
+        return
+    end
+
+    if not self:isPlayModeConfigured() then
+        self.screen = "profile_mode_setup"
         return
     end
 
@@ -2456,6 +2806,8 @@ function Game:draw()
         ui.drawMenu(self)
     elseif self.screen == "profile_setup" then
         ui.drawProfileSetup(self)
+    elseif self.screen == "profile_mode_setup" then
+        ui.drawProfileModeSetup(self)
     elseif self.screen == "level_select" then
         ui.drawLevelSelect(self)
     elseif self.screen == "leaderboard" then
@@ -2480,7 +2832,7 @@ end
 
 function Game:keypressed(key)
     if key == "escape" then
-        if self.screen == "profile_setup" or self.screen == "menu" then
+        if self.screen == "profile_setup" or self.screen == "profile_mode_setup" or self.screen == "menu" then
             love.event.quit()
         elseif self.screen == "leaderboard" then
             self:returnFromLeaderboard()
@@ -2507,6 +2859,17 @@ function Game:keypressed(key)
         return
     end
 
+    if self.screen == "profile_mode_setup" then
+        if key == "left" or key == "up" then
+            self:cycleProfileModeSelection(-1)
+        elseif key == "right" or key == "down" then
+            self:cycleProfileModeSelection(1)
+        elseif key == "return" then
+            self:confirmProfileModeSelection()
+        end
+        return
+    end
+
     if self.screen == "menu" then
         if key == "return" or key == "space" then
             self:openLevelSelect()
@@ -2515,7 +2878,9 @@ function Game:keypressed(key)
         elseif key == "d" then
             self:toggleDebugMode()
         elseif key == "l" then
-            self:openLeaderboard({ returnScreen = "menu", title = "Online Leaderboard" })
+            self:openLeaderboard({ returnScreen = "menu" })
+        elseif key == "o" then
+            self:togglePlayMode()
         end
         return
     end
@@ -2638,7 +3003,6 @@ function Game:keypressed(key)
             self:openLeaderboard({
                 returnScreen = "results",
                 mapUuid = self.resultsSummary and self.resultsSummary.mapUuid or nil,
-                title = "Online Leaderboard",
             })
             return
         end
@@ -2717,12 +3081,25 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self.screen == "profile_mode_setup" then
+        local action = ui.getProfileModeSetupActionAt(self, viewportX, viewportY)
+        if action == PLAY_MODE_ONLINE or action == PLAY_MODE_OFFLINE then
+            self.profileModeSelection = action
+            self:confirmProfileModeSelection()
+        elseif action == "confirm_mode" then
+            self:confirmProfileModeSelection()
+        end
+        return
+    end
+
     if self.screen == "menu" then
         local action = ui.getMenuActionAt(self, viewportX, viewportY)
         if action == "play" then
             self:openLevelSelect()
         elseif action == "leaderboard" then
-            self:openLeaderboard({ returnScreen = "menu", title = "Online Leaderboard" })
+            self:openLeaderboard({ returnScreen = "menu" })
+        elseif action == "toggle_play_mode" then
+            self:togglePlayMode()
         elseif action == "editor" then
             self:openEditorBlank()
         elseif action == "debug" then
@@ -2823,7 +3200,6 @@ function Game:mousepressed(x, y, button)
             self:openLeaderboard({
                 returnScreen = "results",
                 mapUuid = self.resultsSummary and self.resultsSummary.mapUuid or nil,
-                title = "Online Leaderboard",
             })
         elseif hit == "menu" then
             self:openMenu()
