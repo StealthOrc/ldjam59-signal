@@ -710,7 +710,7 @@ function world:buildMinimumDistanceLookup()
         local goalColor = train.goalColor
         local bestDistance = nil
 
-        if startEdge and startEdge.targetType == "junction" then
+        if startEdge then
             local queue = {
                 {
                     edgeId = startEdge.id,
@@ -731,7 +731,20 @@ function world:buildMinimumDistanceLookup()
                 end
 
                 local currentEdge = self.edges[current.edgeId]
-                if not currentEdge or currentEdge.targetType ~= "junction" then
+                if not currentEdge then
+                    goto continue_distance_search
+                end
+
+                if currentEdge.targetType == "exit" then
+                    if containsColorId(currentEdge.colors, goalColor) or nearestColorId(currentEdge.color) == goalColor then
+                        if not bestDistance or current.distance < bestDistance then
+                            bestDistance = current.distance
+                        end
+                    end
+                    goto continue_distance_search
+                end
+
+                if currentEdge.targetType ~= "junction" then
                     goto continue_distance_search
                 end
 
@@ -1380,12 +1393,12 @@ function world:updateCollisionState()
 
     for firstIndex = 1, #self.trains - 1 do
         local firstTrain = self.trains[firstIndex]
-        if not self:isTrainCleared(firstTrain) then
+        if firstTrain.spawned and not firstTrain.completed then
             local firstCars = self:getTrainCarriagePositions(firstTrain)
 
             for secondIndex = firstIndex + 1, #self.trains do
                 local secondTrain = self.trains[secondIndex]
-                if not self:isTrainCleared(secondTrain) then
+                if secondTrain.spawned and not secondTrain.completed then
                     local secondCars = self:getTrainCarriagePositions(secondTrain)
 
                     for _, firstCar in ipairs(firstCars) do
@@ -1709,6 +1722,35 @@ function world:drawInputTrack(track, isActive)
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
     local stripeColors = buildTrackStripeColors(track.colors, isActive)
+    local renderedPoints = self:getRenderedTrackPoints(track)
+    if #renderedPoints < 2 then
+        return
+    end
+
+    local points = flattenPoints(renderedPoints)
+
+    graphics.setLineStyle("rough")
+    graphics.setColor(0.17, 0.21, 0.24, 0.95)
+    graphics.setLineWidth(self.trackWidth + 10)
+    graphics.line(points)
+
+    if stripeColors then
+        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
+    else
+        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
+    end
+end
+
+function world:drawStandaloneTrack(track, isActive)
+    local graphics = love.graphics
+    local trackColor = isActive and track.color or track.darkColor
+    local trackAlpha = isActive and 0.96 or 0.72
+    local stripeColors = nil
+
+    if not track.adoptInputColor then
+        stripeColors = buildTrackStripeColors(track.colors, isActive)
+    end
+
     local renderedPoints = self:getRenderedTrackPoints(track)
     if #renderedPoints < 2 then
         return
@@ -2065,6 +2107,7 @@ function world:drawTrain(train)
     local carriages = self:getTrainCarriagePositions(train)
     local width = self.carriageLength
     local height = 18
+    local outlineWidth = 2
     local alpha = 1
 
     if train.exiting and self.exitFadeDuration > 0 then
@@ -2084,6 +2127,7 @@ function world:drawTrain(train)
         graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95 * alpha)
         graphics.rectangle("fill", -width * 0.5, -height * 0.5, width, height, 5, 5)
         graphics.setColor(train.color[1], train.color[2], train.color[3], alpha)
+        graphics.setLineWidth(outlineWidth)
         graphics.rectangle("line", -width * 0.5, -height * 0.5, width, height, 5, 5)
         graphics.setColor(0.94, 0.96, 0.98, 0.9 * alpha)
         graphics.rectangle("fill", -width * 0.22, -height * 0.28, width * 0.44, height * 0.56, 3, 3)
@@ -2110,6 +2154,7 @@ end
 function world:draw()
     local graphics = love.graphics
     local highlightedEdgeIds = self:getHighlightedEdgeIds()
+    local drawnEdgeIds = {}
 
     graphics.setColor(0.08, 0.1, 0.12, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
@@ -2118,17 +2163,29 @@ function world:draw()
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
             self:drawOutputTrack(junction, outputIndex, outputTrack and highlightedEdgeIds[outputTrack.id] == true)
+            if outputTrack then
+                drawnEdgeIds[outputTrack.id] = true
+            end
         end
 
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
             self:drawInputTrack(inputTrack, inputTrack and highlightedEdgeIds[inputTrack.id] == true)
+            if inputTrack then
+                drawnEdgeIds[inputTrack.id] = true
+            end
         end
 
         self:drawCrossing(junction)
 
         for inputIndex = 1, #junction.inputs do
             self:drawTrackSignal(junction, inputIndex)
+        end
+    end
+
+    for _, track in pairs(self.edges or {}) do
+        if track and not drawnEdgeIds[track.id] then
+            self:drawStandaloneTrack(track, highlightedEdgeIds[track.id] == true)
         end
     end
 
