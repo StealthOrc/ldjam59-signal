@@ -2,6 +2,8 @@ local profileStorage = {}
 local uuid = require("src.game.uuid")
 
 local PROFILE_FILE = "profile.lua"
+local PLAYER_ID_PREFIX = "player-"
+local UUID_PATTERN = "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$"
 
 local function isIdentifier(value)
     return type(value) == "string" and value:match("^[%a_][%w_]*$") ~= nil
@@ -78,10 +80,23 @@ local function serializeValue(value, indent)
     return table.concat(lines, "\n")
 end
 
+local function normalizePlayerId(value)
+    if type(value) ~= "string" then
+        return ""
+    end
+
+    local normalizedValue = value:gsub("^" .. PLAYER_ID_PREFIX, "")
+    if normalizedValue:match(UUID_PATTERN) then
+        return string.lower(normalizedValue)
+    end
+
+    return ""
+end
+
 local function sanitizeProfile(profile)
     local sanitized = {
         version = 1,
-        playerId = type(profile.playerId) == "string" and profile.playerId or "",
+        playerId = normalizePlayerId(profile.playerId),
         playerDisplayName = type(profile.playerDisplayName) == "string" and profile.playerDisplayName or "",
         debugMode = profile.debugMode == true,
     }

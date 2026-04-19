@@ -2,13 +2,50 @@ local input = require("src.game.input")
 local mapEditor = require("src.game.map_editor")
 local mapStorage = require("src.game.map_storage")
 local profileStorage = require("src.game.profile_storage")
-local simpleboardsClient = require("src.game.simpleboards_client")
+local leaderboardClient = require("src.game.leaderboard_client")
 local world = require("src.game.world")
 local ui = require("src.game.ui")
 local json = require("src.game.json")
 
 local Game = {}
 Game.__index = Game
+local ONLINE_CONFIG_LOG_PREFIX = "[Leaderboard]"
+local LEADERBOARD_CACHE_DURATION_SECONDS = 60
+local LEADERBOARD_FETCH_TIMEOUT_SECONDS = 5
+local LEADERBOARD_ENTRY_LIMIT = 50
+local LEADERBOARD_THREAD_FILE = "src/game/leaderboard_fetch_thread.lua"
+local LEADERBOARD_REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
+local LEADERBOARD_RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
+local LEADERBOARD_SCOPE_GLOBAL = "global"
+local LEADERBOARD_SCOPE_MAP_PREFIX = "map:"
+local LEADERBOARD_STATUS_IDLE = "idle"
+local LEADERBOARD_STATUS_LOADING = "loading"
+local LEADERBOARD_STATUS_READY = "ready"
+local LEADERBOARD_STATUS_ERROR = "error"
+local LEADERBOARD_STATUS_DISABLED = "disabled"
+local LEADERBOARD_SCOPE_MAP = "map"
+local LEADERBOARD_MESSAGE_LOADING = "Loading leaderboard..."
+local LEADERBOARD_MESSAGE_EMPTY = "No entries were found for this leaderboard yet."
+local LEADERBOARD_MESSAGE_FETCH_FAILED = "The leaderboard could not be loaded."
+local LEADERBOARD_MESSAGE_NO_DATA = "No data right now."
+local LEADERBOARD_MAP_NAME_UNKNOWN = "Unknown Map"
+
+local function getNowSeconds()
+    if love and love.timer and love.timer.getTime then
+        return love.timer.getTime()
+    end
+
+    return os.clock()
+end
+
+local function drainChannel(channel)
+    if not channel then
+        return
+    end
+
+    while channel:pop() ~= nil do
+    end
+end
 
 local function findLevelSelectIndex(game, maps)
     local fallbackIndex = #maps > 0 and 1 or nil
@@ -57,60 +94,64 @@ local function trimLastUtf8Character(value)
     return (value or ""):gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
 end
 
-local function extractMapUuidFromMetadata(metadata)
-    if type(metadata) ~= "string" then
-        return nil
-    end
-
-    local trimmedMetadata = trim(metadata)
-    if trimmedMetadata == "" then
-        return nil
-    end
-
-    if trimmedMetadata:sub(1, 1) == "{" then
-        local decoded = json.decode(trimmedMetadata)
-        if type(decoded) == "table" then
-            return decoded.mapUuid
-        end
-    end
-
-    return trimmedMetadata
-end
-
-local function normalizeLeaderboardEntries(entries, mapUuid)
+local function normalizeLeaderboardEntries(payload)
     local normalized = {}
 
-    if type(entries) ~= "table" then
+    if type(payload) ~= "table" then
         return normalized
     end
 
-    local sourceEntries = entries.entries or entries
+    local sourceEntries = payload.entries or payload
+    local fallbackMapUuid = payload.map_uuid
     if type(sourceEntries) ~= "table" then
         return normalized
     end
 
     for _, entry in ipairs(sourceEntries) do
-        local entryMapUuid = extractMapUuidFromMetadata(entry.metadata)
-        if not mapUuid or entryMapUuid == mapUuid then
-            normalized[#normalized + 1] = {
-                playerDisplayName = entry.playerDisplayName or entry.playerName or "Unknown",
-                playerId = entry.playerId,
-                score = tonumber(entry.score or 0) or 0,
-                metadata = entry.metadata,
-                mapUuid = entryMapUuid,
-                createdAt = entry.createdAt or entry.created_at,
-            }
-        end
+        normalized[#normalized + 1] = {
+            playerDisplayName = entry.display_name or entry.playerDisplayName or "Unknown",
+            playerUuid = entry.player_uuid or entry.playerUuid or "",
+            mapCount = tonumber(entry.map_count) or 0,
+            score = tonumber(entry.score or 0) or 0,
+            rank = tonumber(entry.rank) or (#normalized + 1),
+            mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
+            updatedAt = entry.updated_at or entry.updatedAt,
+        }
     end
 
-    table.sort(normalized, function(firstEntry, secondEntry)
-        if firstEntry.score == secondEntry.score then
-            return tostring(firstEntry.playerDisplayName or "") < tostring(secondEntry.playerDisplayName or "")
-        end
-        return firstEntry.score > secondEntry.score
-    end)
-
     return normalized
+end
+
+local function getLeaderboardScopeKey(mapUuid)
+    if mapUuid and mapUuid ~= "" then
+        return LEADERBOARD_SCOPE_MAP_PREFIX .. mapUuid
+    end
+
+    return LEADERBOARD_SCOPE_GLOBAL
+end
+
+local function describeConfigSource(onlineConfig, key)
+    local sourceByKey = onlineConfig and onlineConfig.sourceByKey or {}
+    return sourceByKey[key] or "missing"
+end
+
+local function logOnlineConfig(onlineConfig)
+    local config = onlineConfig or {}
+    local statusText = config.isConfigured and "ready" or "incomplete"
+    local apiKeySource = describeConfigSource(config, "API_KEY")
+    local apiBaseUrlSource = describeConfigSource(config, "API_BASE_URL")
+
+    print(string.format(
+        "%s startup status=%s apiKeySource=%s apiBaseUrlSource=%s",
+        ONLINE_CONFIG_LOG_PREFIX,
+        statusText,
+        apiKeySource,
+        apiBaseUrlSource
+    ))
+
+    for _, errorMessage in ipairs(config.errors or {}) do
+        print(string.format("%s config error: %s", ONLINE_CONFIG_LOG_PREFIX, errorMessage))
+    end
 end
 
 function Game.new()
@@ -133,13 +174,15 @@ function Game.new()
     }
 
     self.profile = profile
-    self.onlineConfig = simpleboardsClient.getConfig()
+    self.onlineConfig = leaderboardClient.getConfig()
+    logOnlineConfig(self.onlineConfig)
     self.screen = trim(profile.playerDisplayName) ~= "" and "menu" or "profile_setup"
     self.levelComplete = false
     self.failureReason = nil
     self.world = nil
     self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
     self.availableMaps = {}
+    self.mapNameByUuid = {}
     self.currentMapDescriptor = nil
     self.currentRunOrigin = nil
     self.levelSelectIssue = nil
@@ -154,14 +197,27 @@ function Game.new()
     self.profileSetupError = nil
     self.playOverlayMode = nil
     self.leaderboardState = {
-        status = "idle",
+        status = LEADERBOARD_STATUS_IDLE,
         message = nil,
         entries = {},
         totalEntries = 0,
+        fetchedAt = nil,
     }
     self.leaderboardReturnScreen = "menu"
     self.leaderboardMapUuid = nil
     self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardHoverInfo = nil
+    self.leaderboardCacheByScope = {}
+    self.leaderboardNextFetchAtByScope = {}
+    self.leaderboardRequestSequence = 0
+    self.activeLeaderboardRequestId = nil
+    self.activeLeaderboardRequestStartedAt = nil
+    self.activeLeaderboardRequestScopeKey = nil
+    self.leaderboardWorkerThread = nil
+    self.leaderboardRequestChannel = love.thread.getChannel(LEADERBOARD_REQUEST_CHANNEL_NAME)
+    self.leaderboardResponseChannel = love.thread.getChannel(LEADERBOARD_RESPONSE_CHANNEL_NAME)
+    drainChannel(self.leaderboardRequestChannel)
+    drainChannel(self.leaderboardResponseChannel)
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -170,8 +226,223 @@ function Game.new()
 end
 
 function Game:reloadOnlineConfig()
-    self.onlineConfig = simpleboardsClient.getConfig()
+    local loadedConfig = leaderboardClient.getConfig()
+    if loadedConfig.isConfigured or not (self.onlineConfig and self.onlineConfig.isConfigured) then
+        self.onlineConfig = loadedConfig
+    end
     return self.onlineConfig
+end
+
+function Game:getLeaderboardCacheEntry(scopeKey)
+    local resolvedScopeKey = scopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
+    return self.leaderboardCacheByScope[resolvedScopeKey] or {
+        payload = nil,
+        fetchedAt = nil,
+    }
+end
+
+function Game:setLeaderboardCacheEntry(scopeKey, payload, fetchedAt)
+    self.leaderboardCacheByScope[scopeKey] = {
+        payload = payload,
+        fetchedAt = fetchedAt,
+    }
+end
+
+function Game:getFilteredLeaderboardEntries(payload)
+    local normalizedEntries = normalizeLeaderboardEntries(payload)
+
+    for _, entry in ipairs(normalizedEntries) do
+        entry.mapName = self:getMapNameByUuid(entry.mapUuid)
+    end
+
+    return normalizedEntries
+end
+
+function Game:buildLeaderboardState(status, message, rawEntries, fetchedAt)
+    local filteredEntries = self:getFilteredLeaderboardEntries(rawEntries)
+    local resolvedMessage = message
+
+    if status == LEADERBOARD_STATUS_READY and #filteredEntries == 0 then
+        resolvedMessage = LEADERBOARD_MESSAGE_EMPTY
+    end
+
+    return {
+        status = status,
+        message = resolvedMessage,
+        entries = filteredEntries,
+        totalEntries = #filteredEntries,
+        fetchedAt = fetchedAt,
+        scope = type(rawEntries) == "table" and rawEntries.scope or (self.leaderboardMapUuid and LEADERBOARD_SCOPE_MAP or LEADERBOARD_SCOPE_GLOBAL),
+    }
+end
+
+function Game:isLeaderboardCacheFresh()
+    local cacheEntry = self:getLeaderboardCacheEntry()
+    if not cacheEntry.payload or not cacheEntry.fetchedAt then
+        return false
+    end
+
+    return (getNowSeconds() - cacheEntry.fetchedAt) < LEADERBOARD_CACHE_DURATION_SECONDS
+end
+
+function Game:isLeaderboardFetchAllowed()
+    return getNowSeconds() >= (self.leaderboardNextFetchAtByScope[getLeaderboardScopeKey(self.leaderboardMapUuid)] or 0)
+end
+
+function Game:getActiveOnlineConfig()
+    local resolvedConfig = self:reloadOnlineConfig()
+    if resolvedConfig and resolvedConfig.isConfigured then
+        return resolvedConfig
+    end
+
+    if self.onlineConfig and self.onlineConfig.isConfigured then
+        return self.onlineConfig
+    end
+
+    return resolvedConfig
+end
+
+function Game:ensureLeaderboardWorker()
+    local existingThread = self.leaderboardWorkerThread
+    if existingThread and existingThread:isRunning() and not existingThread:getError() then
+        return true
+    end
+
+    self.leaderboardWorkerThread = love.thread.newThread(LEADERBOARD_THREAD_FILE)
+    self.leaderboardWorkerThread:start()
+    return true
+end
+
+function Game:beginLeaderboardFetch(onlineConfig)
+    if self.activeLeaderboardRequestId ~= nil then
+        return
+    end
+
+    self:ensureLeaderboardWorker()
+    local requestScopeKey = getLeaderboardScopeKey(self.leaderboardMapUuid)
+    local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
+
+    self.leaderboardState = self:buildLeaderboardState(
+        LEADERBOARD_STATUS_LOADING,
+        LEADERBOARD_MESSAGE_LOADING,
+        cacheEntry.payload,
+        cacheEntry.fetchedAt
+    )
+
+    self.leaderboardRequestSequence = self.leaderboardRequestSequence + 1
+    self.activeLeaderboardRequestId = self.leaderboardRequestSequence
+    self.activeLeaderboardRequestStartedAt = getNowSeconds()
+    self.activeLeaderboardRequestScopeKey = requestScopeKey
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "fetch",
+        requestId = self.activeLeaderboardRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            limit = LEADERBOARD_ENTRY_LIMIT,
+            mapUuid = self.leaderboardMapUuid,
+        },
+    }))
+end
+
+function Game:applyLeaderboardFetchResult(response)
+    local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
+    local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
+    if response.ok and type(response.payload) == "table" then
+        local fetchedAt = getNowSeconds()
+        self:setLeaderboardCacheEntry(requestScopeKey, response.payload, fetchedAt)
+        self.leaderboardNextFetchAtByScope[requestScopeKey] = fetchedAt + LEADERBOARD_CACHE_DURATION_SECONDS
+        if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
+            self.leaderboardState = self:buildLeaderboardState(LEADERBOARD_STATUS_READY, nil, response.payload, fetchedAt)
+        end
+        return
+    end
+
+    self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
+    local fetchMessage = response.error or LEADERBOARD_MESSAGE_FETCH_FAILED
+    if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
+        self.leaderboardState = self:buildLeaderboardState(
+            LEADERBOARD_STATUS_ERROR,
+            fetchMessage,
+            cacheEntry.payload,
+            cacheEntry.fetchedAt
+        )
+    end
+end
+
+function Game:updateLeaderboardFetchState()
+    local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
+    local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
+
+    if self.leaderboardWorkerThread and self.activeLeaderboardRequestId ~= nil then
+        local threadError = self.leaderboardWorkerThread:getError()
+        if threadError then
+            self.activeLeaderboardRequestId = nil
+            self.activeLeaderboardRequestStartedAt = nil
+            self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
+            if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
+                self.leaderboardState = self:buildLeaderboardState(
+                    LEADERBOARD_STATUS_ERROR,
+                    threadError,
+                    cacheEntry.payload,
+                    cacheEntry.fetchedAt
+                )
+            end
+            self.activeLeaderboardRequestScopeKey = nil
+            self.leaderboardWorkerThread = nil
+            return
+        end
+    end
+
+    if self.activeLeaderboardRequestId ~= nil and self.activeLeaderboardRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeLeaderboardRequestStartedAt
+        if elapsedSeconds >= LEADERBOARD_FETCH_TIMEOUT_SECONDS then
+            self.activeLeaderboardRequestId = nil
+            self.activeLeaderboardRequestStartedAt = nil
+            self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
+            local hasCachedEntries = cacheEntry.payload ~= nil
+            if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
+                self.leaderboardState = self:buildLeaderboardState(
+                    hasCachedEntries and LEADERBOARD_STATUS_READY or LEADERBOARD_STATUS_ERROR,
+                    hasCachedEntries and nil or LEADERBOARD_MESSAGE_NO_DATA,
+                    cacheEntry.payload,
+                    cacheEntry.fetchedAt
+                )
+            end
+            self.activeLeaderboardRequestScopeKey = nil
+            return
+        end
+    end
+
+    while true do
+        local encodedResponse = self.leaderboardResponseChannel:pop()
+        if not encodedResponse then
+            break
+        end
+
+        local decodedResponse = json.decode(encodedResponse)
+        if type(decodedResponse) == "table" and decodedResponse.requestId == self.activeLeaderboardRequestId then
+            self.activeLeaderboardRequestId = nil
+            self.activeLeaderboardRequestStartedAt = nil
+            self:applyLeaderboardFetchResult(decodedResponse)
+            self.activeLeaderboardRequestScopeKey = nil
+        end
+    end
+
+    if self.screen == "leaderboard" and self.activeLeaderboardRequestId == nil and not self:isLeaderboardCacheFresh() and self:isLeaderboardFetchAllowed() then
+        local onlineConfig = self:getActiveOnlineConfig()
+        if not onlineConfig.isConfigured then
+            self.leaderboardState = self:buildLeaderboardState(
+                LEADERBOARD_STATUS_DISABLED,
+                table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
+                cacheEntry.payload,
+                cacheEntry.fetchedAt
+            )
+            return
+        end
+
+        self:beginLeaderboardFetch(onlineConfig)
+    end
 end
 
 function Game:isProfileComplete()
@@ -244,7 +515,7 @@ function Game:submitResultsScore()
     if not onlineConfig.isConfigured then
         self.resultsOnlineState = {
             status = "disabled",
-            message = table.concat(onlineConfig.errors or { "SimpleBoards is not configured." }, " "),
+            message = table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
         }
         return
     end
@@ -266,11 +537,11 @@ function Game:submitResultsScore()
     end
 
     local summary = self.resultsSummary or {}
-    local _, submitError = simpleboardsClient.submitScore({
-        playerId = self.profile.playerId,
+    local response, submitError, statusCode = leaderboardClient.submitScore({
+        playerUuid = self.profile.playerId,
         playerDisplayName = self.profile.playerDisplayName,
-        score = tostring(summary.finalScore or 0),
-        metadata = summary.mapUuid or "",
+        score = summary.finalScore or 0,
+        mapUuid = summary.mapUuid,
     }, onlineConfig)
 
     if submitError then
@@ -282,48 +553,48 @@ function Game:submitResultsScore()
     end
 
     self.resultsOnlineState = {
-        status = "submitted",
-        message = "Score uploaded successfully.",
+        status = statusCode == 202 and "kept" or "submitted",
+        message = statusCode == 202
+            and "Score was valid, but your online best for this map is already higher."
+            or "Score uploaded successfully.",
     }
 end
 
 function Game:refreshLeaderboard()
-    self.leaderboardState = {
-        status = "loading",
-        message = "Loading leaderboard...",
-        entries = {},
-        totalEntries = 0,
-    }
-
-    local onlineConfig = self:reloadOnlineConfig()
+    local onlineConfig = self:getActiveOnlineConfig()
+    local cacheEntry = self:getLeaderboardCacheEntry()
     if not onlineConfig.isConfigured then
-        self.leaderboardState = {
-            status = "disabled",
-            message = table.concat(onlineConfig.errors or { "SimpleBoards is not configured." }, " "),
-            entries = {},
-            totalEntries = 0,
-        }
+        self.leaderboardState = self:buildLeaderboardState(
+            LEADERBOARD_STATUS_DISABLED,
+            table.concat(onlineConfig.errors or { "The online leaderboard is not configured." }, " "),
+            cacheEntry.payload,
+            cacheEntry.fetchedAt
+        )
         return
     end
 
-    local entries, fetchError = simpleboardsClient.fetchLeaderboard(onlineConfig)
-    if not entries then
-        self.leaderboardState = {
-            status = "error",
-            message = fetchError or "The leaderboard could not be loaded.",
-            entries = {},
-            totalEntries = 0,
-        }
+    if self:isLeaderboardCacheFresh() then
+        self.leaderboardState = self:buildLeaderboardState(
+            LEADERBOARD_STATUS_READY,
+            nil,
+            cacheEntry.payload,
+            cacheEntry.fetchedAt
+        )
         return
     end
 
-    local filteredEntries = normalizeLeaderboardEntries(entries, self.leaderboardMapUuid)
-    self.leaderboardState = {
-        status = "ready",
-        message = #filteredEntries > 0 and nil or "No entries were found for this leaderboard yet.",
-        entries = filteredEntries,
-        totalEntries = #filteredEntries,
-    }
+    if not self:isLeaderboardFetchAllowed() then
+        local fallbackMessage = cacheEntry.payload and nil or LEADERBOARD_MESSAGE_NO_DATA
+        self.leaderboardState = self:buildLeaderboardState(
+            cacheEntry.payload and LEADERBOARD_STATUS_READY or LEADERBOARD_STATUS_ERROR,
+            fallbackMessage,
+            cacheEntry.payload,
+            cacheEntry.fetchedAt
+        )
+        return
+    end
+
+    self:beginLeaderboardFetch(onlineConfig)
 end
 
 function Game:openLeaderboard(options)
@@ -332,6 +603,62 @@ function Game:openLeaderboard(options)
     self.leaderboardReturnScreen = openOptions.returnScreen or "menu"
     self.leaderboardMapUuid = openOptions.mapUuid
     self.leaderboardTitle = openOptions.title or (self.leaderboardMapUuid and "Map Leaderboard" or "Online Leaderboard")
+    self.leaderboardHoverInfo = nil
+    self:refreshLeaderboard()
+end
+
+function Game:openLeaderboardForMap(mapUuid, mapName)
+    if not mapUuid or mapUuid == "" then
+        return
+    end
+
+    self.leaderboardMapUuid = mapUuid
+    self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardHoverInfo = nil
+    self:refreshLeaderboard()
+end
+
+function Game:getLeaderboardCycleMapUuids()
+    local mapUuids = {}
+
+    for _, descriptor in ipairs(self.availableMaps or {}) do
+        if descriptor.mapUuid and descriptor.mapUuid ~= "" then
+            mapUuids[#mapUuids + 1] = descriptor.mapUuid
+        end
+    end
+
+    return mapUuids
+end
+
+function Game:cycleLeaderboardMapFilter()
+    local mapUuids = self:getLeaderboardCycleMapUuids()
+    if #mapUuids == 0 then
+        self:clearLeaderboardMapFilter()
+        return
+    end
+
+    local nextMapUuid = mapUuids[1]
+    if self.leaderboardMapUuid and self.leaderboardMapUuid ~= "" then
+        for index, mapUuid in ipairs(mapUuids) do
+            if mapUuid == self.leaderboardMapUuid then
+                nextMapUuid = mapUuids[index + 1]
+                break
+            end
+        end
+    end
+
+    if not nextMapUuid then
+        self:clearLeaderboardMapFilter()
+        return
+    end
+
+    self:openLeaderboardForMap(nextMapUuid)
+end
+
+function Game:clearLeaderboardMapFilter()
+    self.leaderboardMapUuid = nil
+    self.leaderboardTitle = "Online Leaderboard"
+    self.leaderboardHoverInfo = nil
     self:refreshLeaderboard()
 end
 
@@ -357,6 +684,21 @@ end
 
 function Game:refreshMaps()
     self.availableMaps = mapStorage.listMaps()
+    self.mapNameByUuid = {}
+
+    for _, descriptor in ipairs(self.availableMaps) do
+        if descriptor.mapUuid and descriptor.mapUuid ~= "" then
+            self.mapNameByUuid[descriptor.mapUuid] = descriptor.displayName or descriptor.name or LEADERBOARD_MAP_NAME_UNKNOWN
+        end
+    end
+end
+
+function Game:getMapNameByUuid(mapUuid)
+    if not mapUuid or mapUuid == "" then
+        return LEADERBOARD_MAP_NAME_UNKNOWN
+    end
+
+    return self.mapNameByUuid[mapUuid] or LEADERBOARD_MAP_NAME_UNKNOWN
 end
 
 function Game:getLevelSelectMaps()
@@ -616,6 +958,8 @@ function Game:openResults()
 end
 
 function Game:update(dt)
+    self:updateLeaderboardFetchState()
+
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
         return
@@ -719,9 +1063,7 @@ function Game:keypressed(key)
     end
 
     if self.screen == "leaderboard" then
-        if key == "r" then
-            self:refreshLeaderboard()
-        elseif key == "m" then
+        if key == "m" then
             self:returnFromLeaderboard()
         end
         return
@@ -799,7 +1141,7 @@ function Game:keypressed(key)
             self:openLeaderboard({
                 returnScreen = "results",
                 mapUuid = self.resultsSummary and self.resultsSummary.mapUuid or nil,
-                title = "Current Map Leaderboard",
+                title = "Online Leaderboard",
             })
             return
         end
@@ -896,8 +1238,16 @@ function Game:mousepressed(x, y, button)
         local action = ui.getLeaderboardActionAt(self, viewportX, viewportY)
         if action == "back" then
             self:returnFromLeaderboard()
-        elseif action == "refresh" then
-            self:refreshLeaderboard()
+            return
+        end
+        if action == "cycle_filter" then
+            self:cycleLeaderboardMapFilter()
+            return
+        end
+
+        local mapHit = ui.getLeaderboardMapHitAt(self, viewportX, viewportY)
+        if mapHit then
+            self:openLeaderboardForMap(mapHit.mapUuid, mapHit.mapName)
         end
         return
     end
@@ -955,7 +1305,7 @@ function Game:mousepressed(x, y, button)
             self:openLeaderboard({
                 returnScreen = "results",
                 mapUuid = self.resultsSummary and self.resultsSummary.mapUuid or nil,
-                title = "Current Map Leaderboard",
+                title = "Online Leaderboard",
             })
         elseif hit == "menu" then
             self:openMenu()
@@ -982,6 +1332,12 @@ function Game:mousepressed(x, y, button)
 end
 
 function Game:mousemoved(x, y)
+    if self.screen == "leaderboard" then
+        local viewportX, viewportY = self:toViewportPosition(x, y)
+        self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
+        return
+    end
+
     if self.screen == "level_select" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.levelSelectFilterHoverId = ui.getLevelSelectFilterHoverId(self, viewportX, viewportY)

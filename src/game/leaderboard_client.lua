@@ -1,40 +1,52 @@
 local envLoader = require("src.game.env_loader")
 local json = require("src.game.json")
 
-local simpleboardsClient = {}
+local leaderboardClient = {}
 
-local SCRIPT_FILE = "simpleboards_request.ps1"
-local REQUEST_FILE = "simpleboards_request.json"
+local SCRIPT_FILE = "leaderboard_request.ps1"
+local REQUEST_FILE = "leaderboard_request.json"
+local REQUEST_MODE_SUBMIT = "submit"
 
 local POWERSHELL_SCRIPT = [[
 param(
     [string]$Mode,
     [string]$ApiKey,
-    [string]$LeaderboardId,
+    [string]$ApiBaseUrl,
+    [string]$EndpointPath,
     [string]$BodyPath
 )
 
 $ErrorActionPreference = 'Stop'
 $headers = @{ 'x-api-key' = $ApiKey }
+$uri = $ApiBaseUrl.TrimEnd('/') + $EndpointPath
 
 try {
     if ($Mode -eq 'submit') {
         $body = Get-Content -Raw -Path $BodyPath
-        $result = Invoke-RestMethod -Method Post -Uri 'https://api.simpleboards.dev/api/entries' -Headers $headers -ContentType 'application/json' -Body $body
-    }
-    elseif ($Mode -eq 'fetch') {
-        $uri = ('https://api.simpleboards.dev/api/leaderboards/{0}/entries' -f $LeaderboardId)
-        $result = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+        $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body
     }
     else {
         throw ('Unsupported mode: ' + $Mode)
     }
 
-    @{ ok = $true; data = $result } | ConvertTo-Json -Depth 12 -Compress
+    $data = $null
+    if ($response.Content -and $response.Content.Trim().Length -gt 0) {
+        $data = $response.Content | ConvertFrom-Json
+    }
+
+    @{ ok = $true; status = [int]$response.StatusCode; data = $data } | ConvertTo-Json -Depth 12 -Compress
 }
 catch {
     $detail = ''
+    $statusCode = $null
     if ($_.Exception.Response) {
+        try {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        catch {
+            $statusCode = $null
+        }
+
         try {
             $stream = $_.Exception.Response.GetResponseStream()
             if ($stream) {
@@ -49,10 +61,10 @@ catch {
 
     $message = $_.Exception.Message
     if ($detail -and $detail.Trim().Length -gt 0) {
-        $message = $message + ' | ' + $detail.Trim()
+        $message = $detail.Trim()
     }
 
-    @{ ok = $false; error = $message } | ConvertTo-Json -Depth 6 -Compress
+    @{ ok = $false; status = $statusCode; error = $message } | ConvertTo-Json -Depth 8 -Compress
     exit 1
 }
 ]]
@@ -71,10 +83,15 @@ local function quoteArgument(value)
 end
 
 local function ensurePowerShellScript()
-    if not love.filesystem.getInfo(SCRIPT_FILE, "file") then
+    local existingScript = nil
+    if love.filesystem.getInfo(SCRIPT_FILE, "file") then
+        existingScript = love.filesystem.read(SCRIPT_FILE)
+    end
+
+    if existingScript ~= POWERSHELL_SCRIPT then
         local ok, writeError = love.filesystem.write(SCRIPT_FILE, POWERSHELL_SCRIPT)
         if not ok then
-            return nil, writeError or "The SimpleBoards helper script could not be written."
+            return nil, writeError or "The leaderboard helper script could not be written."
         end
     end
 
@@ -92,18 +109,21 @@ local function runCommand(command)
     return output
 end
 
-local function normalizeRemoteErrorMessage(message)
-    local text = tostring(message or "")
-    local lowerText = string.lower(text)
-
-    if lowerText:find("key not found", 1, true) then
-        return "SimpleBoards could not find this key. Check whether API_KEY and LEADERBOARD_ID are correct and belong to the same leaderboard."
+local function extractJsonError(message)
+    local decoded = json.decode(tostring(message or ""))
+    if type(decoded) == "table" and type(decoded.error) == "string" and decoded.error ~= "" then
+        return decoded.error
     end
 
+    return tostring(message or "")
+end
+
+local function normalizeRemoteErrorMessage(message)
+    local text = extractJsonError(message)
     return text ~= "" and text or "The online request failed."
 end
 
-local function runPowerShell(mode, config, payload)
+local function runPowerShell(mode, config, endpointPath, payload)
     if not isWindows() then
         return nil, "Online score sync currently requires Windows PowerShell."
     end
@@ -113,14 +133,10 @@ local function runPowerShell(mode, config, payload)
         return nil, scriptError
     end
 
-    local requestPath
-    if payload ~= nil then
-        local requestBody = json.encode(payload)
-        local ok, writeError = love.filesystem.write(REQUEST_FILE, requestBody)
-        if not ok then
-            return nil, writeError or "The score payload could not be written."
-        end
-        requestPath = absoluteSavePath(REQUEST_FILE)
+    local requestBody = json.encode(payload)
+    local ok, writeError = love.filesystem.write(REQUEST_FILE, requestBody)
+    if not ok then
+        return nil, writeError or "The score payload could not be written."
     end
 
     local command = table.concat({
@@ -130,10 +146,12 @@ local function runPowerShell(mode, config, payload)
         quoteArgument(mode),
         "-ApiKey",
         quoteArgument(config.apiKey),
-        "-LeaderboardId",
-        quoteArgument(config.leaderboardId),
+        "-ApiBaseUrl",
+        quoteArgument(config.apiBaseUrl),
+        "-EndpointPath",
+        quoteArgument(endpointPath),
         "-BodyPath",
-        quoteArgument(requestPath or ""),
+        quoteArgument(absoluteSavePath(REQUEST_FILE)),
     }, " ")
 
     local output, runError = runCommand(command)
@@ -150,56 +168,40 @@ local function runPowerShell(mode, config, payload)
         return nil, normalizeRemoteErrorMessage(response.error)
     end
 
-    return response.data
+    return response.data, nil, response.status
 end
 
 local function normalizeConfig(config)
     local resolvedConfig = config or envLoader.load()
     if not resolvedConfig.isConfigured then
-        return nil, table.concat(resolvedConfig.errors or { "SimpleBoards is not configured." }, " ")
+        return nil, table.concat(resolvedConfig.errors or { "The online leaderboard is not configured." }, " ")
     end
     return resolvedConfig
 end
 
-function simpleboardsClient.getConfig()
+function leaderboardClient.getConfig()
     return envLoader.load()
 end
 
-function simpleboardsClient.submitScore(submission, config)
+function leaderboardClient.submitScore(submission, config)
     local resolvedConfig, configError = normalizeConfig(config)
     if not resolvedConfig then
         return nil, configError
     end
 
+    local mapUuid = tostring(submission.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The score could not be uploaded because the map UUID is missing."
+    end
+
+    local endpointPath = string.format("/api/maps/%s/score", mapUuid)
     local payload = {
-        leaderboardId = resolvedConfig.leaderboardId,
-        playerId = submission.playerId,
-        playerDisplayName = submission.playerDisplayName,
-        score = tostring(submission.score or "0"),
-        metadata = submission.metadata or "",
+        player_uuid = tostring(submission.playerUuid or ""),
+        display_name = tostring(submission.playerDisplayName or ""),
+        score = tonumber(submission.score or 0) or 0,
     }
 
-    return runPowerShell("submit", resolvedConfig, payload)
+    return runPowerShell(REQUEST_MODE_SUBMIT, resolvedConfig, endpointPath, payload)
 end
 
-function simpleboardsClient.fetchLeaderboard(config)
-    local resolvedConfig, configError = normalizeConfig(config)
-    if not resolvedConfig then
-        return nil, configError
-    end
-
-    local response, fetchError = runPowerShell("fetch", resolvedConfig)
-    if not response then
-        return nil, fetchError or "The leaderboard could not be loaded."
-    end
-
-    if type(response) == "table" and type(response.entries) == "table" then
-        return response.entries
-    end
-
-    return response
-end
-
-return simpleboardsClient
-
-
+return leaderboardClient

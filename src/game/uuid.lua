@@ -35,7 +35,7 @@ function uuid.generateV4()
 end
 
 function uuid.generatePlayerId()
-    return "player-" .. uuid.generateV4()
+    return uuid.generateV4()
 end
 
 return uuid

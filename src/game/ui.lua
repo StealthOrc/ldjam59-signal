@@ -61,6 +61,54 @@ local PLAY_OVERLAY = {
     sectionGap = 14,
 }
 
+local MENU_LAYOUT = {
+    buttonWidth = 320,
+    buttonHeight = 56,
+    buttonGap = 16,
+    firstButtonY = 248,
+    debugMarginX = 36,
+    debugMarginY = 36,
+    debugWidth = 240,
+    debugHeight = 48,
+    footerY = 654,
+}
+
+local LEADERBOARD_LOADING = {
+    spinnerRadius = 18,
+    spinnerThickness = 4,
+    spinnerArcLength = math.pi * 1.35,
+    spinnerSpeed = 3.2,
+    emptyStateYOffset = 180,
+    emptySpinnerYOffset = 34,
+    emptyTextYOffset = 68,
+}
+
+local LEADERBOARD_LAYOUT = {
+    panelX = 36,
+    panelY = 100,
+    panelMargin = 72,
+    contentPadding = 28,
+    titlePadding = 24,
+    headerY = 116,
+    rowYOffset = 28,
+    rowHeight = 34,
+    rowGap = 8,
+    rowRadius = 10,
+    rankWidth = 40,
+    mapGap = 28,
+    mapWidth = 260,
+    playerXOffset = 52,
+    playerRightPadding = 36,
+    scoreWidth = 120,
+    tooltipWidth = 360,
+    tooltipHeight = 62,
+    tooltipOffsetY = 18,
+    filterBadgeY = 74,
+    filterBadgeHeight = 28,
+    filterBadgePaddingX = 16,
+    filterBadgeMaxWidth = 460,
+}
+
 local function pointInRect(x, y, rect)
     return x >= rect.x
         and x <= rect.x + rect.w
@@ -115,6 +163,143 @@ local function drawMetalPanel(rect, innerAlpha)
     graphics.setColor(PANEL_COLORS.panelInnerLine[1], PANEL_COLORS.panelInnerLine[2], PANEL_COLORS.panelInnerLine[3], PANEL_COLORS.panelInnerLine[4])
     graphics.rectangle("line", rect.x + 4, rect.y + 4, rect.w - 8, rect.h - 8, 17, 17)
     graphics.setLineWidth(1)
+end
+
+local function drawLoadingSpinner(centerX, centerY, color)
+    local graphics = love.graphics
+    local tint = color or { 0.48, 0.92, 0.62, 1 }
+    local startAngle = (love.timer.getTime() or 0) * LEADERBOARD_LOADING.spinnerSpeed
+    local endAngle = startAngle + LEADERBOARD_LOADING.spinnerArcLength
+
+    graphics.setColor(tint[1], tint[2], tint[3], tint[4] or 1)
+    graphics.setLineWidth(LEADERBOARD_LOADING.spinnerThickness)
+    graphics.arc("line", "open", centerX, centerY, LEADERBOARD_LOADING.spinnerRadius, startAngle, endAngle)
+    graphics.setLineWidth(1)
+end
+
+local function getLeaderboardPanelRect(game)
+    return {
+        x = LEADERBOARD_LAYOUT.panelX,
+        y = LEADERBOARD_LAYOUT.panelY,
+        w = game.viewport.w - LEADERBOARD_LAYOUT.panelMargin,
+        h = game.viewport.h - 148,
+    }
+end
+
+local function shouldShowLeaderboardMapColumn(game)
+    local state = game.leaderboardState or {}
+    return state.scope == "global"
+end
+
+local function getLeaderboardContentLayout(game)
+    local panel = getLeaderboardPanelRect(game)
+    local contentX = panel.x + LEADERBOARD_LAYOUT.contentPadding
+    local contentW = panel.w - (LEADERBOARD_LAYOUT.contentPadding * 2)
+    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
+    local mapX = scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap
+    local playerX = contentX + LEADERBOARD_LAYOUT.playerXOffset
+    local playerRightEdge = shouldShowLeaderboardMapColumn(game)
+        and (mapX - LEADERBOARD_LAYOUT.mapGap)
+        or scoreX
+    local playerWidth = playerRightEdge - playerX - LEADERBOARD_LAYOUT.playerRightPadding
+
+    return {
+        panel = panel,
+        contentX = contentX,
+        contentW = contentW,
+        mapX = mapX,
+        scoreX = scoreX,
+        playerX = playerX,
+        playerWidth = playerWidth,
+    }
+end
+
+local function getLeaderboardFilterBadgeRect(game)
+    local panel = getLeaderboardPanelRect(game)
+    local filterText = game.leaderboardMapUuid
+        and string.format("Current Map: %s", game:getMapNameByUuid(game.leaderboardMapUuid))
+        or "All Maps"
+    local badgeWidth = math.min(
+        LEADERBOARD_LAYOUT.filterBadgeMaxWidth,
+        game.fonts.small:getWidth(filterText) + (LEADERBOARD_LAYOUT.filterBadgePaddingX * 2)
+    )
+
+    return {
+        x = panel.x + math.floor((panel.w - badgeWidth) * 0.5 + 0.5),
+        y = panel.y + LEADERBOARD_LAYOUT.filterBadgeY,
+        w = badgeWidth,
+        h = LEADERBOARD_LAYOUT.filterBadgeHeight,
+        text = filterText,
+    }
+end
+
+local function buildLeaderboardRowRects(game, entries)
+    local layout = getLeaderboardContentLayout(game)
+    local rects = {}
+    local maxEntries = math.min(12, #(entries or {}))
+    local rowY = layout.panel.y + LEADERBOARD_LAYOUT.headerY + LEADERBOARD_LAYOUT.rowYOffset
+
+    for index = 1, maxEntries do
+        local entry = entries[index]
+        local rowRect = {
+            entry = entry,
+            row = {
+                x = layout.contentX,
+                y = rowY - 6,
+                w = layout.contentW,
+                h = LEADERBOARD_LAYOUT.rowHeight,
+            },
+            player = {
+                x = layout.playerX,
+                y = rowY,
+                w = layout.playerWidth,
+                h = game.fonts.small:getHeight() + 8,
+            },
+            map = shouldShowLeaderboardMapColumn(game) and {
+                x = layout.mapX,
+                y = rowY,
+                w = LEADERBOARD_LAYOUT.mapWidth,
+                h = game.fonts.small:getHeight() + 8,
+            } or nil,
+        }
+
+        rects[#rects + 1] = rowRect
+        rowY = rowY + LEADERBOARD_LAYOUT.rowHeight + LEADERBOARD_LAYOUT.rowGap
+    end
+
+    return rects
+end
+
+local function drawLeaderboardTooltip(game, hoverInfo)
+    if not hoverInfo or not hoverInfo.text or hoverInfo.text == "" then
+        return
+    end
+
+    local graphics = love.graphics
+    local tooltipX = math.min(game.viewport.w - LEADERBOARD_LAYOUT.tooltipWidth - 24, math.max(24, hoverInfo.x - (LEADERBOARD_LAYOUT.tooltipWidth * 0.5)))
+    local tooltipY = math.min(game.viewport.h - LEADERBOARD_LAYOUT.tooltipHeight - 24, hoverInfo.y + LEADERBOARD_LAYOUT.tooltipOffsetY)
+
+    graphics.setColor(0.06, 0.08, 0.12, 0.98)
+    graphics.rectangle("fill", tooltipX, tooltipY, LEADERBOARD_LAYOUT.tooltipWidth, LEADERBOARD_LAYOUT.tooltipHeight, 14, 14)
+    graphics.setColor(0.32, 0.42, 0.52, 1)
+    graphics.rectangle("line", tooltipX, tooltipY, LEADERBOARD_LAYOUT.tooltipWidth, LEADERBOARD_LAYOUT.tooltipHeight, 14, 14)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    graphics.printf(hoverInfo.label, tooltipX + 16, tooltipY + 10, LEADERBOARD_LAYOUT.tooltipWidth - 32, "left")
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(hoverInfo.text, tooltipX + 16, tooltipY + 28, LEADERBOARD_LAYOUT.tooltipWidth - 32, "left")
+end
+
+local function getMenuDebugButton(game)
+    return {
+        id = "debug",
+        x = MENU_LAYOUT.debugMarginX,
+        y = game.viewport.h - MENU_LAYOUT.debugMarginY - MENU_LAYOUT.debugHeight,
+        w = MENU_LAYOUT.debugWidth,
+        h = MENU_LAYOUT.debugHeight,
+        label = game:isDebugModeEnabled() and "Debug Mode: On" or "Debug Mode: Off",
+    }
 end
 
 local function getPlayInfoOverlayRect(game)
@@ -978,46 +1163,39 @@ local function drawLevelSelectEmptyState(game, filterId)
 end
 
 local function getMenuButtons(game)
-    local centerX = game.viewport.w * 0.5 - 160
+    local centerX = math.floor((game.viewport.w - MENU_LAYOUT.buttonWidth) * 0.5 + 0.5)
+    local buttonY = MENU_LAYOUT.firstButtonY
     return {
         {
             id = "play",
             x = centerX,
-            y = 248,
-            w = 320,
-            h = 56,
+            y = buttonY,
+            w = MENU_LAYOUT.buttonWidth,
+            h = MENU_LAYOUT.buttonHeight,
             label = "Level Select",
         },
         {
             id = "leaderboard",
             x = centerX,
-            y = 320,
-            w = 320,
-            h = 56,
+            y = buttonY + MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap,
+            w = MENU_LAYOUT.buttonWidth,
+            h = MENU_LAYOUT.buttonHeight,
             label = "Online Leaderboard",
         },
         {
             id = "editor",
             x = centerX,
-            y = 392,
-            w = 320,
-            h = 56,
+            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 2),
+            w = MENU_LAYOUT.buttonWidth,
+            h = MENU_LAYOUT.buttonHeight,
             label = "Map Editor",
-        },
-        {
-            id = "debug",
-            x = centerX,
-            y = 464,
-            w = 320,
-            h = 56,
-            label = game:isDebugModeEnabled() and "Debug Mode: On" or "Debug Mode: Off",
         },
         {
             id = "quit",
             x = centerX,
-            y = 536,
-            w = 320,
-            h = 56,
+            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 3),
+            w = MENU_LAYOUT.buttonWidth,
+            h = MENU_LAYOUT.buttonHeight,
             label = "Quit",
         },
     }
@@ -1035,7 +1213,6 @@ end
 local function getLeaderboardActionRects(game)
     return {
         back = { x = 42, y = 38, w = 148, h = 42 },
-        refresh = { x = game.viewport.w - 190, y = 38, w = 148, h = 42 },
     }
 end
 
@@ -1064,6 +1241,10 @@ function ui.getMenuActionAt(game, x, y)
         end
     end
 
+    if pointInRect(x, y, getMenuDebugButton(game)) then
+        return "debug"
+    end
+
     return nil
 end
 
@@ -1079,9 +1260,65 @@ function ui.getLeaderboardActionAt(game, x, y)
     if pointInRect(x, y, buttons.back) then
         return "back"
     end
-    if pointInRect(x, y, buttons.refresh) then
-        return "refresh"
+    if pointInRect(x, y, getLeaderboardFilterBadgeRect(game)) then
+        return "cycle_filter"
     end
+    return nil
+end
+
+function ui.getLeaderboardHoverInfoAt(game, x, y)
+    local state = game.leaderboardState or { entries = {} }
+    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
+
+    for _, rowRect in ipairs(rowRects) do
+        if pointInRect(x, y, rowRect.player) then
+            return {
+                x = x,
+                y = y,
+                label = "Player ID",
+                text = rowRect.entry.playerUuid or "No player ID",
+            }
+        end
+
+        if rowRect.map and pointInRect(x, y, rowRect.map) then
+            local mapCount = tonumber(rowRect.entry.mapCount) or 0
+            local mapLabel = mapCount > 1
+                and string.format("Latest map UUID, %d maps total", mapCount)
+                or "Latest map UUID"
+            return {
+                x = x,
+                y = y,
+                label = mapLabel,
+                text = rowRect.entry.mapUuid or "No map UUID",
+            }
+        end
+    end
+
+    if pointInRect(x, y, getLeaderboardFilterBadgeRect(game)) then
+        return {
+            x = x,
+            y = y,
+            label = game.leaderboardMapUuid and "Map UUID" or "Map Filter",
+            text = game.leaderboardMapUuid or "Click to cycle through all maps.",
+        }
+    end
+
+    return nil
+end
+
+function ui.getLeaderboardMapHitAt(game, x, y)
+    local state = game.leaderboardState or { entries = {} }
+    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
+
+    for _, rowRect in ipairs(rowRects) do
+        if rowRect.map and pointInRect(x, y, rowRect.map) and rowRect.entry.mapUuid and rowRect.entry.mapUuid ~= "" then
+            return {
+                mapUuid = rowRect.entry.mapUuid,
+                mapName = rowRect.entry.mapName,
+            }
+        end
+    end
+
     return nil
 end
 
@@ -1199,6 +1436,7 @@ end
 function ui.drawMenu(game)
     local graphics = love.graphics
     local buttons = getMenuButtons(game)
+    local debugButton = getMenuDebugButton(game)
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -1221,31 +1459,16 @@ function ui.drawMenu(game)
         "center"
     )
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf(
-        string.format("Signed in as %s", game.profile and game.profile.playerDisplayName or "Unknown"),
-        0,
-        220,
-        game.viewport.w,
-        "center"
-    )
-
-    local onlineText = game.onlineConfig and game.onlineConfig.isConfigured and "Online sync ready" or "Online sync needs API_KEY + LEADERBOARD_ID in .env"
-    local onlineColor = game.onlineConfig and game.onlineConfig.isConfigured and { 0.48, 0.92, 0.62, 1 } or { 0.99, 0.78, 0.32, 1 }
-    graphics.setColor(onlineColor[1], onlineColor[2], onlineColor[3], onlineColor[4])
-    graphics.printf(onlineText, 0, 238, game.viewport.w, "center")
-
     for _, rect in ipairs(buttons) do
-        local strokeColor = rect.id == "debug"
-            and (game:isDebugModeEnabled() and { 0.99, 0.78, 0.32, 1 } or { 0.3, 0.42, 0.54, 1 })
-            or { 0.48, 0.92, 0.62, 1 }
-        drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, strokeColor, game.fonts.body)
+        drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
     end
 
+    local debugStrokeColor = game:isDebugModeEnabled() and { 0.99, 0.78, 0.32, 1 } or { 0.3, 0.42, 0.54, 1 }
+    drawButton(debugButton, debugButton.label, { 0.09, 0.11, 0.15, 0.98 }, debugStrokeColor, game.fonts.small)
+
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf("Enter starts. L opens the leaderboard. D toggles debug mode. Esc quits.", 0, 654, game.viewport.w, "center")
+    graphics.printf("Enter starts. L opens the leaderboard. D toggles debug mode. Esc quits.", 0, MENU_LAYOUT.footerY, game.viewport.w, "center")
 end
 
 function ui.drawProfileSetup(game)
@@ -1316,86 +1539,109 @@ end
 
 function ui.drawLeaderboard(game)
     local graphics = love.graphics
-    local panel = {
-        x = 36,
-        y = 100,
-        w = game.viewport.w - 72,
-        h = game.viewport.h - 148,
-    }
+    local layout = getLeaderboardContentLayout(game)
+    local panel = layout.panel
     local buttons = getLeaderboardActionRects(game)
     local state = game.leaderboardState or { status = "idle", entries = {} }
-    local contentX = panel.x + 28
-    local contentW = panel.w - 56
+    local hasEntries = #(state.entries or {}) > 0
+    local contentX = layout.contentX
+    local contentW = layout.contentW
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
     drawMetalPanel(panel, 0.98)
 
     drawButton(buttons.back, "Back", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.small)
-    drawButton(buttons.refresh, "Refresh", { 0.1, 0.14, 0.18, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.small)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(0.97, 0.98, 1, 1)
     graphics.printf(game.leaderboardTitle or "Online Leaderboard", panel.x + 24, panel.y + 24, panel.w - 48, "center")
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    local subtitle = game.leaderboardMapUuid and "Filtered to the current map's UUID." or "Showing all downloaded SimpleBoards entries."
-    graphics.printf(subtitle, panel.x + 24, panel.y + 70, panel.w - 48, "center")
+    local badgeRect = getLeaderboardFilterBadgeRect(game)
 
-    if state.status ~= "ready" then
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.1, 0.14, 0.18, 0.98)
+    graphics.rectangle("fill", badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 14, 14)
+    graphics.setColor(game.leaderboardMapUuid and 0.56 or 0.3, game.leaderboardMapUuid and 0.72 or 0.42, game.leaderboardMapUuid and 0.98 or 0.54, 1)
+    graphics.rectangle("line", badgeRect.x, badgeRect.y, badgeRect.w, badgeRect.h, 14, 14)
+    graphics.setColor(0.9, 0.94, 0.98, 1)
+    graphics.printf(
+        badgeRect.text,
+        badgeRect.x + LEADERBOARD_LAYOUT.filterBadgePaddingX,
+        badgeRect.y + 6,
+        badgeRect.w - (LEADERBOARD_LAYOUT.filterBadgePaddingX * 2),
+        "center"
+    )
+
+    if state.status ~= "ready" and not hasEntries then
+        if state.status == "loading" then
+            drawLoadingSpinner(
+                panel.x + panel.w * 0.5,
+                panel.y + LEADERBOARD_LOADING.emptyStateYOffset + LEADERBOARD_LOADING.emptySpinnerYOffset,
+                { 0.48, 0.92, 0.62, 1 }
+            )
+        end
+
         love.graphics.setFont(game.fonts.body)
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf(state.message or "The leaderboard is not ready.", contentX, panel.y + 180, contentW, "center")
+        graphics.setColor(state.status == "loading" and 0.84 or 0.99, state.status == "loading" and 0.88 or 0.78, state.status == "loading" and 0.92 or 0.32, 1)
+        graphics.printf(
+            state.message or "The leaderboard is not ready.",
+            contentX,
+            panel.y + LEADERBOARD_LOADING.emptyStateYOffset + LEADERBOARD_LOADING.emptyTextYOffset,
+            contentW,
+            "center"
+        )
         return
     end
 
-    if #(state.entries or {}) == 0 then
+    if not hasEntries then
         love.graphics.setFont(game.fonts.body)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf(state.message or "No entries are available yet.", contentX, panel.y + 180, contentW, "center")
         return
     end
 
-    local headerY = panel.y + 116
+    local headerY = panel.y + LEADERBOARD_LAYOUT.headerY
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(0.68, 0.74, 0.8, 1)
     graphics.print("#", contentX, headerY)
-    graphics.print("Player", contentX + 52, headerY)
-    graphics.printf("Score", contentX + contentW - 180, headerY, 80, "right")
-    graphics.printf(game.leaderboardMapUuid and "Created" or "Map UUID", contentX + contentW - 96, headerY, 96, "right")
-
-    local rowY = headerY + 28
-    local maxEntries = math.min(12, #(state.entries or {}))
-    for index = 1, maxEntries do
-        local entry = state.entries[index]
-        graphics.setColor(0.1, 0.13, 0.17, 0.94)
-        graphics.rectangle("fill", contentX, rowY - 6, contentW, 34, 10, 10)
-        graphics.setColor(0.26, 0.34, 0.42, 1)
-        graphics.rectangle("line", contentX, rowY - 6, contentW, 34, 10, 10)
-
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.print(tostring(index), contentX + 12, rowY + 2)
-        graphics.printf(entry.playerDisplayName or "Unknown", contentX + 52, rowY + 2, contentW - 260, "left")
-        graphics.printf(formatScore(entry.score or 0), contentX + contentW - 180, rowY + 2, 80, "right")
-
-        local tailText = game.leaderboardMapUuid and (entry.createdAt or "-") or ((entry.mapUuid and entry.mapUuid:sub(1, 8)) or "-")
-        graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.printf(tailText, contentX + contentW - 96, rowY + 2, 96, "right")
-
-        rowY = rowY + 42
+    graphics.print("Player", layout.playerX, headerY)
+    graphics.printf("Score", layout.scoreX, headerY, LEADERBOARD_LAYOUT.scoreWidth, "center")
+    if shouldShowLeaderboardMapColumn(game) then
+        graphics.printf("Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
     end
 
-    if #(state.entries or {}) > maxEntries then
+    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
+    for _, rowRect in ipairs(rowRects) do
+        local entry = rowRect.entry
+        local rowY = rowRect.player.y
+        graphics.setColor(0.1, 0.13, 0.17, 0.94)
+        graphics.rectangle("fill", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
+        graphics.setColor(0.26, 0.34, 0.42, 1)
+        graphics.rectangle("line", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
+
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(tostring(entry.rank or 0), contentX + 12, rowY + 2)
+        graphics.printf(entry.playerDisplayName or "Unknown", rowRect.player.x, rowY + 2, rowRect.player.w, "left")
+        graphics.printf(formatScore(entry.score or 0), layout.scoreX, rowY + 2, LEADERBOARD_LAYOUT.scoreWidth, "center")
+        if rowRect.map then
+            graphics.setColor(0.72, 0.78, 0.84, 1)
+            graphics.printf(entry.mapName or "Unknown Map", rowRect.map.x, rowY + 2, rowRect.map.w, "left")
+        end
+    end
+
+    if #(state.entries or {}) > #rowRects then
         graphics.setColor(0.68, 0.74, 0.8, 1)
         graphics.printf(
-            string.format("%d more entry/entries hidden. Refresh later to compare again.", #(state.entries or {}) - maxEntries),
+            string.format("%d more entry/entries hidden.", #(state.entries or {}) - #rowRects),
             contentX,
             panel.y + panel.h - 44,
             contentW,
             "center"
         )
     end
+
+    drawLeaderboardTooltip(game, game.leaderboardHoverInfo)
 end
 
 function ui.drawLevelSelect(game)
@@ -1589,7 +1835,7 @@ function ui.drawResults(game)
     love.graphics.setFont(game.fonts.small)
     local onlineState = game.resultsOnlineState or {}
     local onlineColor = { 0.72, 0.78, 0.84, 1 }
-    if onlineState.status == "submitted" then
+    if onlineState.status == "submitted" or onlineState.status == "kept" then
         onlineColor = { 0.48, 0.92, 0.62, 1 }
     elseif onlineState.status == "error" or onlineState.status == "disabled" then
         onlineColor = { 0.99, 0.78, 0.32, 1 }
