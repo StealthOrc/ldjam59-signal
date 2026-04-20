@@ -116,6 +116,7 @@ for _, controlType in ipairs(controlTypes) do
     local clickedCenter = simulation:handleClick(centerX, centerY, 1, true)
     assertEqual(clickedCenter, true, controlType .. " prep center click should be consumed")
     assertEqual(junction.activeInputIndex, 2, controlType .. " prep center click should cycle the selected input")
+    assertEqual(simulation.interactionCount, 0, controlType .. " prep center click should not count as an interaction")
 
     if controlType == "relay" then
         assertEqual(junction.activeOutputIndex, 2, controlType .. " prep center click should keep the coupled output mapping in sync")
@@ -139,6 +140,7 @@ for _, controlType in ipairs(controlTypes) do
         assertEqual(clickedSelector, true, controlType .. " prep output selector click should be consumed")
         assertEqual(junction.activeOutputIndex, 2, controlType .. " prep output selector click should cycle the selected output")
     end
+    assertEqual(simulation.interactionCount, 0, controlType .. " prep selector click should not count as an interaction")
 
     assertNoPreparationSideEffects(junction, controlType)
 end
