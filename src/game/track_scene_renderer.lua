@@ -838,20 +838,12 @@ function renderer.drawTrain(scene, train)
     local graphics = love.graphics
     local carriages = scene:getTrainCarriagePositions(train)
     local width = scene.carriageLength
-    local height = 18
+    local height = scene.carriageHeight or 18
     local outlineWidth = 2
-    local alpha = 1
-
-    if train.exiting and scene.exitFadeDuration > 0 then
-        alpha = clamp((train.exitFadeRemaining or 0) / scene.exitFadeDuration, 0, 1)
-    end
-
-    if alpha <= 0 then
-        return
-    end
 
     for carriageIndex = #carriages, 1, -1 do
         local carriage = carriages[carriageIndex]
+        local alpha = carriage.alpha or 1
 
         graphics.push()
         graphics.translate(carriage.x, carriage.y)
