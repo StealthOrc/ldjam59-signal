@@ -139,6 +139,8 @@ assertEqual(
 )
 
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
+assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
+assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 
 love.graphics = love.graphics or {}
 love.graphics.setFont = function()
@@ -317,5 +319,92 @@ assertEqual(speedHover.title, "Fast Section", "play hover identifies speed-modif
 
 hoverGame.playPhase = "play"
 assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
+
+local levelSelectDescriptor = {
+    previewLevel = {
+        timeLimit = 45,
+        junctions = {
+            { control = { type = "direct" } },
+            { control = { type = "delayed" } },
+            { control = { type = "trip" } },
+        },
+        trains = {
+            { deadline = nil },
+            { deadline = 18 },
+        },
+    },
+}
+
+local levelSelectBadges = ui.getLevelSelectBadges(levelSelectDescriptor)
+local badgeLabels = {}
+local badgeByLabel = {}
+for _, badge in ipairs(levelSelectBadges) do
+    badgeLabels[#badgeLabels + 1] = badge.label
+    badgeByLabel[badge.label] = badge
+end
+
+assertEqual(
+    table.concat(badgeLabels, ","),
+    "Direct,Delay,Trip,Deadline,Express",
+    "level select badges include renamed delay plus deadline and express"
+)
+assertEqual(
+    badgeByLabel.Direct.tooltipText,
+    "This map contains a direct junction.",
+    "direct badge tooltip explains the direct junction"
+)
+assertEqual(
+    badgeByLabel.Delay.tooltipText,
+    "This map contains a delay junction.",
+    "delay badge tooltip explains the delay junction"
+)
+
+local levelSelectGame = {
+    viewport = { w = 1280, h = 720 },
+    fonts = {
+        title = makeFont(12, 24),
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+    levelSelectMode = "library",
+    levelSelectFilter = "all",
+    levelSelectSelectedId = "builtin:badge_test.lua",
+    levelSelectSelectedMapUuid = "badge-test",
+    levelSelectVisualIndex = 1,
+    levelSelectTargetVisualIndex = 1,
+    levelSelectIssue = nil,
+    availableMaps = {
+        {
+            id = "builtin:badge_test.lua",
+            mapUuid = "badge-test",
+            source = "builtin",
+            mapKind = "tutorial",
+            name = "Badge Test",
+            displayName = "Badge Test",
+            previewLevel = levelSelectDescriptor.previewLevel,
+        },
+    },
+}
+
+local delayBadgeHover = nil
+for y = 360, 390 do
+    for x = 500, 780 do
+        local hoverInfo = ui.getLevelSelectHoverInfoAt(levelSelectGame, x, y)
+        if hoverInfo and hoverInfo.title == "Delay Junction" then
+            delayBadgeHover = hoverInfo
+            break
+        end
+    end
+    if delayBadgeHover then
+        break
+    end
+end
+
+assert(delayBadgeHover ~= nil, "level select hover should detect delay badge tooltips")
+assertEqual(
+    delayBadgeHover.text,
+    "This map contains a delay junction.",
+    "level select hover uses the badge tooltip copy"
+)
 
 print("ui formatting tests passed")

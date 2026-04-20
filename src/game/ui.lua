@@ -85,12 +85,66 @@ local PREVIEW_COLORS = {
 
 local CONTROL_SHORT_LABELS = {
     direct = "Direct",
-    delayed = "Timer",
+    delayed = "Delay",
     pump = "Charge",
     spring = "Spring",
     relay = "Relay",
     trip = "Trip",
     crossbar = "Cross",
+}
+
+local LEVEL_SELECT_BADGE_DEFINITIONS = {
+    direct = {
+        label = "Direct",
+        tooltipTitle = "Direct Junction",
+        tooltipText = "This map contains a direct junction.",
+    },
+    delayed = {
+        label = "Delay",
+        tooltipTitle = "Delay Junction",
+        tooltipText = "This map contains a delay junction.",
+    },
+    pump = {
+        label = "Charge",
+        tooltipTitle = "Charge Junction",
+        tooltipText = "This map contains a charge junction.",
+    },
+    spring = {
+        label = "Spring",
+        tooltipTitle = "Spring Junction",
+        tooltipText = "This map contains a spring junction.",
+    },
+    relay = {
+        label = "Relay",
+        tooltipTitle = "Relay Junction",
+        tooltipText = "This map contains a relay junction.",
+    },
+    trip = {
+        label = "Trip",
+        tooltipTitle = "Trip Junction",
+        tooltipText = "This map contains a trip junction.",
+    },
+    crossbar = {
+        label = "Cross",
+        tooltipTitle = "Crossbar Junction",
+        tooltipText = "This map contains a crossbar junction.",
+    },
+    deadline = {
+        label = "Deadline",
+        tooltipTitle = "Map Deadline",
+        tooltipText = "This map has an overall deadline.",
+        fillColor = { 0.98, 0.66, 0.28, 0.98 },
+        lineColor = { 0.99, 0.86, 0.44, 1 },
+        textColor = { 0.2, 0.12, 0.02, 1 },
+    },
+    express = {
+        label = "Express",
+        tooltipTitle = "Express Train",
+        tooltipText = "This map contains at least one train with a deadline.",
+        fillColor = { 0.38, 0.94, 0.86, 0.98 },
+        lineColor = { 0.74, 0.99, 0.95, 1 },
+        textColor = { 0.05, 0.16, 0.14, 1 },
+    },
 }
 
 local PANEL_COLORS = {
@@ -855,7 +909,7 @@ local function getJunctionTooltipTitle(junction)
         pump = "Charge Junction",
         spring = "Spring Junction",
         relay = "Relay Junction",
-        trip = "Trap Junction",
+        trip = "Trip Junction",
         crossbar = "Crossbar Junction",
     }
 
@@ -1496,6 +1550,67 @@ local function appendUniqueControl(controls, seen, controlType)
     end
 end
 
+local function mapHasLevelDeadline(descriptor)
+    local level = descriptor and descriptor.previewLevel or nil
+    return level and level.timeLimit ~= nil
+end
+
+local function mapHasExpressTrain(descriptor)
+    local level = descriptor and descriptor.previewLevel or nil
+    for _, train in ipairs(level and level.trains or {}) do
+        if train.deadline ~= nil then
+            return true
+        end
+    end
+    return false
+end
+
+local function buildLevelSelectBadges(descriptor)
+    local badges = {}
+
+    for _, controlType in ipairs(getMapControlTypes(descriptor)) do
+        local definition = LEVEL_SELECT_BADGE_DEFINITIONS[controlType] or {}
+        badges[#badges + 1] = {
+            key = controlType,
+            controlType = controlType,
+            label = definition.label or CONTROL_SHORT_LABELS[controlType] or controlType,
+            tooltipTitle = definition.tooltipTitle or (definition.label or controlType),
+            tooltipText = definition.tooltipText or string.format("This map contains %s.", definition.label or controlType),
+            fillColor = definition.fillColor,
+            lineColor = definition.lineColor,
+            textColor = definition.textColor,
+        }
+    end
+
+    if mapHasLevelDeadline(descriptor) then
+        local definition = LEVEL_SELECT_BADGE_DEFINITIONS.deadline
+        badges[#badges + 1] = {
+            key = "deadline",
+            label = definition.label,
+            tooltipTitle = definition.tooltipTitle,
+            tooltipText = definition.tooltipText,
+            fillColor = definition.fillColor,
+            lineColor = definition.lineColor,
+            textColor = definition.textColor,
+        }
+    end
+
+    if mapHasExpressTrain(descriptor) then
+        local definition = LEVEL_SELECT_BADGE_DEFINITIONS.express
+        badges[#badges + 1] = {
+            key = "express",
+            label = definition.label,
+            tooltipTitle = definition.tooltipTitle,
+            tooltipText = definition.tooltipText,
+            fillColor = definition.fillColor,
+            lineColor = definition.lineColor,
+            textColor = definition.textColor,
+        }
+    end
+
+    return badges
+end
+
 getMapControlTypes = function(descriptor)
     local controls = {}
     local seen = {}
@@ -1650,7 +1765,6 @@ local function drawMapPreview(descriptor, rect)
 end
 
 local function buildCardBadges(game, descriptor, maxWidth)
-    local controls = getMapControlTypes(descriptor)
     local font = game.fonts.small
     local badges = {}
     local totalWidth = 0
@@ -1680,12 +1794,18 @@ local function buildCardBadges(game, descriptor, maxWidth)
         })
     end
 
-    for _, controlType in ipairs(controls) do
-        local label = CONTROL_SHORT_LABELS[controlType] or controlType
+    for _, badgeDefinition in ipairs(buildLevelSelectBadges(descriptor)) do
+        local label = badgeDefinition.label
         local appended = appendBadge({
-            controlType = controlType,
+            key = badgeDefinition.key,
+            controlType = badgeDefinition.controlType,
             label = label,
             width = font:getWidth(label) + 22,
+            tooltipTitle = badgeDefinition.tooltipTitle,
+            tooltipText = badgeDefinition.tooltipText,
+            fillColor = badgeDefinition.fillColor,
+            lineColor = badgeDefinition.lineColor,
+            textColor = badgeDefinition.textColor,
         })
         if not appended then
             break
@@ -2106,9 +2226,22 @@ local function buildLevelSelectCardRects(game)
             rects[#rects].badgeRow = {
                 x = x + math.floor((width - badgeTotalWidth) * 0.5 + 0.5),
                 y = badgeY,
-                widths = badgeWidths,
+                badges = badgeWidths,
                 totalWidth = badgeTotalWidth,
             }
+            local badgeRects = {}
+            local badgeX = rects[#rects].badgeRow.x
+            for _, badge in ipairs(badgeWidths) do
+                badgeRects[#badgeRects + 1] = {
+                    badge = badge,
+                    x = badgeX,
+                    y = badgeY,
+                    w = badge.width,
+                    h = badgeH,
+                }
+                badgeX = badgeX + badge.width + 6
+            end
+            rects[#rects].badgeRow.badgeRects = badgeRects
         end
     end
 
@@ -2131,8 +2264,8 @@ local function drawControlBadges(game, descriptor, x, y, maxWidth, badgeRow)
     local widths = {}
     local totalWidth = 0
 
-    if badgeRow and badgeRow.widths then
-        widths = badgeRow.widths
+    if badgeRow and badgeRow.badges then
+        widths = badgeRow.badges
         totalWidth = badgeRow.totalWidth or 0
     else
         widths, totalWidth = buildCardBadges(game, descriptor, maxWidth)
@@ -2151,6 +2284,24 @@ local function drawControlBadges(game, descriptor, x, y, maxWidth, badgeRow)
         graphics.printf(badge.label, badgeX, y + 3, badge.width, "center")
         badgeX = badgeX + badge.width + 6
     end
+end
+
+local function getLevelSelectBadgeHoverInfo(game, x, y)
+    for _, rect in ipairs(buildLevelSelectCardRects(game)) do
+        local badgeRow = rect.badgeRow
+        for _, badgeRect in ipairs(badgeRow and badgeRow.badgeRects or {}) do
+            if pointInRect(x, y, badgeRect) then
+                return {
+                    x = badgeRect.x + badgeRect.w * 0.5,
+                    y = badgeRect.y,
+                    title = badgeRect.badge.tooltipTitle or badgeRect.badge.label,
+                    text = badgeRect.badge.tooltipText or badgeRect.badge.label,
+                }
+            end
+        end
+    end
+
+    return nil
 end
 
 local function drawLevelSelectChrome(game)
@@ -2911,6 +3062,14 @@ function ui.getLevelSelectHoverId(game, x, y)
     end
 
     return nil
+end
+
+function ui.getLevelSelectHoverInfoAt(game, x, y)
+    if game.levelSelectIssue then
+        return nil
+    end
+
+    return getLevelSelectBadgeHoverInfo(game, x, y)
 end
 
 local function getPlayBackRect(game)
@@ -4017,6 +4176,10 @@ function ui.drawLevelSelect(game)
         drawButton(overlay.edit, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
         drawButton(overlay.cancel, "Cancel", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
     end
+
+    if game.levelSelectHoverInfo and not game.levelSelectIssue then
+        drawPlayTooltip(game, game.levelSelectHoverInfo)
+    end
 end
 
 function ui.drawPlay(game)
@@ -4192,5 +4355,6 @@ ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefres
 ui.getLevelSelectLeaderboardVisibleEntries = getLevelSelectLeaderboardVisibleEntries
 ui.getLevelSelectLeaderboardPinnedRowY = getLevelSelectLeaderboardPinnedRowY
 ui.formatMarketplaceFavoriteLabel = formatMarketplaceFavoriteLabel
+ui.getLevelSelectBadges = buildLevelSelectBadges
 
 return ui
