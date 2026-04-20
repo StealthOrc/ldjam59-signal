@@ -6,7 +6,8 @@ local SCOREBOARD_FILE = "local_scoreboard.json"
 local STORAGE_VERSION = 2
 
 local function sanitizeEntry(mapUuid, entry)
-    local resolvedMapUuid = tostring(mapUuid or entry and entry.map_uuid or "")
+    local entryMapUuid = type(entry) == "table" and tostring(entry.map_uuid or entry.mapUuid or entry.id or "") or ""
+    local resolvedMapUuid = entryMapUuid ~= "" and entryMapUuid or tostring(mapUuid or "")
     if resolvedMapUuid == "" then
         return nil
     end
