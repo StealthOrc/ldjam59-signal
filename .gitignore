@@ -30,6 +30,7 @@ luac.out
 *.so
 *.so.*
 *.dylib
+!third_party/native/windows/x64/https.dll
 
 # Executables
 *.exe

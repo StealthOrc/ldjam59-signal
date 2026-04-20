@@ -1,198 +1,13 @@
 local envLoader = require("src.game.env_loader")
-local json = require("src.game.json")
-local storagePaths = require("src.game.storage_paths")
+local httpTransport = require("src.game.http_transport")
+local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
 
 local leaderboardClient = {}
 
-local SCRIPT_FILE = storagePaths.getTempFilePath("leaderboard_request.ps1")
-local REQUEST_FILE = storagePaths.getTempFilePath("leaderboard_request.json")
-local REQUEST_MODE_SUBMIT = "submit"
-local REQUEST_MODE_UPLOAD_MAP = "upload_map"
-local REQUEST_MODE_FAVORITE_MAP = "favorite_map"
 local MAP_CATEGORY_ONLINE = "online"
 
-local POWERSHELL_SCRIPT = [[
-param(
-    [string]$Mode,
-    [string]$ApiKey,
-    [string]$ApiBaseUrl,
-    [string]$EndpointPath,
-    [string]$BodyPath,
-    [string]$HmacSecret
-)
-
-$ErrorActionPreference = 'Stop'
-$headers = @{ 'x-api-key' = $ApiKey }
-$uri = $ApiBaseUrl.TrimEnd('/') + $EndpointPath
-
-try {
-    if ($Mode -eq 'submit' -or $Mode -eq 'upload_map' -or $Mode -eq 'favorite_map') {
-        $body = Get-Content -Raw -Path $BodyPath
-        if ($HmacSecret -and $HmacSecret.Trim().Length -gt 0) {
-            $encoding = [System.Text.Encoding]::UTF8
-            $hmac = [System.Security.Cryptography.HMACSHA256]::new($encoding.GetBytes($HmacSecret))
-            try {
-                $signatureBytes = $hmac.ComputeHash($encoding.GetBytes($body))
-            }
-            finally {
-                $hmac.Dispose()
-            }
-            $signature = [System.BitConverter]::ToString($signatureBytes).Replace('-', '').ToLowerInvariant()
-            $headers['x-signature'] = 'sha256=' + $signature
-        }
-        $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body
-    }
-    else {
-        throw ('Unsupported mode: ' + $Mode)
-    }
-
-    $data = $null
-    if ($response.Content -and $response.Content.Trim().Length -gt 0) {
-        $data = $response.Content | ConvertFrom-Json
-    }
-
-    @{ ok = $true; status = [int]$response.StatusCode; data = $data } | ConvertTo-Json -Depth 12 -Compress
-}
-catch {
-    $detail = ''
-    $statusCode = $null
-    if ($_.Exception.Response) {
-        try {
-            $statusCode = [int]$_.Exception.Response.StatusCode
-        }
-        catch {
-            $statusCode = $null
-        }
-
-        try {
-            $stream = $_.Exception.Response.GetResponseStream()
-            if ($stream) {
-                $reader = New-Object System.IO.StreamReader($stream)
-                $detail = $reader.ReadToEnd()
-            }
-        }
-        catch {
-            $detail = ''
-        }
-    }
-
-    $message = $_.Exception.Message
-    if ($detail -and $detail.Trim().Length -gt 0) {
-        $message = $detail.Trim()
-    }
-
-    @{ ok = $false; status = $statusCode; error = $message } | ConvertTo-Json -Depth 8 -Compress
-    exit 1
-}
-]]
-
-local function isWindows()
-    return package.config:sub(1, 1) == "\\"
-end
-
-local function absoluteSavePath(relativePath)
-    local separator = package.config:sub(1, 1)
-    return love.filesystem.getSaveDirectory() .. separator .. relativePath:gsub("/", separator)
-end
-
-local function quoteArgument(value)
-    return '"' .. tostring(value or ""):gsub('"', '""') .. '"'
-end
-
-local function ensurePowerShellScript()
-    storagePaths.ensureTempDirectory()
-    local existingScript = nil
-    if love.filesystem.getInfo(SCRIPT_FILE, "file") then
-        existingScript = love.filesystem.read(SCRIPT_FILE)
-    end
-
-    if existingScript ~= POWERSHELL_SCRIPT then
-        local ok, writeError = love.filesystem.write(SCRIPT_FILE, POWERSHELL_SCRIPT)
-        if not ok then
-            return nil, writeError or "The leaderboard helper script could not be written."
-        end
-    end
-
-    return absoluteSavePath(SCRIPT_FILE)
-end
-
-local function runCommand(command)
-    local handle = io.popen(command .. " 2>&1")
-    if not handle then
-        return nil, "PowerShell could not be started."
-    end
-
-    local output = handle:read("*a") or ""
-    handle:close()
-    return output
-end
-
-local function extractJsonError(message)
-    local decoded = json.decode(tostring(message or ""))
-    if type(decoded) == "table" and type(decoded.error) == "string" and decoded.error ~= "" then
-        return decoded.error
-    end
-
-    return tostring(message or "")
-end
-
-local function normalizeRemoteErrorMessage(message)
-    local text = extractJsonError(message)
-    return text ~= "" and text or "The online request failed."
-end
-
-local function runPowerShell(mode, config, endpointPath, payload)
-    if not isWindows() then
-        return nil, "Online score sync currently requires Windows PowerShell."
-    end
-
-    local scriptPath, scriptError = ensurePowerShellScript()
-    if not scriptPath then
-        return nil, scriptError
-    end
-
-    storagePaths.ensureTempDirectory()
-    local requestBody = json.encode(payload)
-    local ok, writeError = love.filesystem.write(REQUEST_FILE, requestBody)
-    if not ok then
-        return nil, writeError or "The score payload could not be written."
-    end
-
-    local command = table.concat({
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File",
-        quoteArgument(scriptPath),
-        "-Mode",
-        quoteArgument(mode),
-        "-ApiKey",
-        quoteArgument(config.apiKey),
-        "-ApiBaseUrl",
-        quoteArgument(config.apiBaseUrl),
-        "-EndpointPath",
-        quoteArgument(endpointPath),
-        "-BodyPath",
-        quoteArgument(absoluteSavePath(REQUEST_FILE)),
-        "-HmacSecret",
-        quoteArgument(config.hmacSecret),
-    }, " ")
-
-    local output, runError = runCommand(command)
-    if love.filesystem.remove then
-        love.filesystem.remove(REQUEST_FILE)
-    end
-    if not output then
-        return nil, runError
-    end
-
-    local response, decodeError = json.decode(output)
-    if not response then
-        return nil, normalizeRemoteErrorMessage(decodeError or output)
-    end
-
-    if response.ok ~= true then
-        return nil, normalizeRemoteErrorMessage(response.error)
-    end
-
-    return response.data, nil, response.status
+local function normalizeBaseUrl(baseUrl)
+    return tostring(baseUrl or ""):gsub("/+$", "")
 end
 
 local function normalizeConfig(config)
@@ -201,6 +16,15 @@ local function normalizeConfig(config)
         return nil, table.concat(resolvedConfig.errors or { "The online leaderboard is not configured." }, " ")
     end
     return resolvedConfig
+end
+
+local function postJson(config, endpointPath, payload)
+    return httpTransport.postJson({
+        url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
+        apiKey = config.apiKey,
+        hmacSecret = config.hmacSecret,
+        payload = payload,
+    })
 end
 
 function leaderboardClient.getConfig()
@@ -225,7 +49,7 @@ function leaderboardClient.submitScore(submission, config)
         score = tonumber(submission.score or 0) or 0,
     }
 
-    return runPowerShell(REQUEST_MODE_SUBMIT, resolvedConfig, endpointPath, payload)
+    return postJson(resolvedConfig, endpointPath, payload)
 end
 
 function leaderboardClient.uploadMap(submission, config)
@@ -261,7 +85,7 @@ function leaderboardClient.uploadMap(submission, config)
         map = submission.map,
     }
 
-    return runPowerShell(REQUEST_MODE_UPLOAD_MAP, resolvedConfig, "/api/maps", payload)
+    return postJson(resolvedConfig, "/api/maps", payload)
 end
 
 function leaderboardClient.favoriteMap(submission, config)
@@ -281,12 +105,17 @@ function leaderboardClient.favoriteMap(submission, config)
     end
 
     local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
-    local payload = {
-        liked = submission.liked == true,
-        player_uuid = playerUuid,
-    }
+    local payload = marketplaceFavoriteLogic.buildRequestPayload(playerUuid)
+    if submission.liked == true then
+        return postJson(resolvedConfig, endpointPath, payload)
+    end
 
-    return runPowerShell(REQUEST_MODE_FAVORITE_MAP, resolvedConfig, endpointPath, payload)
+    return httpTransport.deleteJson({
+        url = normalizeBaseUrl(resolvedConfig.apiBaseUrl) .. endpointPath,
+        apiKey = resolvedConfig.apiKey,
+        hmacSecret = resolvedConfig.hmacSecret,
+        payload = payload,
+    })
 end
 
 return leaderboardClient

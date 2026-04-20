@@ -50,4 +50,18 @@ function previewLogic.shouldShowCachedEntries(previewState, mapUuid, hasCache)
     return true
 end
 
+function previewLogic.getPayloadToPersistAfterFetch(payload, existingCacheEntry)
+    local resolvedPayload = type(payload) == "table" and payload or {}
+    local hasPayloadData = #(resolvedPayload.top_entries or {}) > 0 or type(resolvedPayload.player_entry) == "table"
+    if hasPayloadData or type(existingCacheEntry) ~= "table" then
+        return resolvedPayload
+    end
+
+    return {
+        top_entries = type(existingCacheEntry.top_entries) == "table" and existingCacheEntry.top_entries or {},
+        player_entry = type(existingCacheEntry.player_entry) == "table" and existingCacheEntry.player_entry or nil,
+        target_rank = tonumber(existingCacheEntry.target_rank) or nil,
+    }
+end
+
 return previewLogic
