@@ -274,6 +274,7 @@ function leaderboardClient.favoriteMap(submission, config)
 
     local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
     local payload = {
+        liked = submission.liked == true,
         player_uuid = playerUuid,
     }
 

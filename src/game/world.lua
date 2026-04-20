@@ -12,6 +12,10 @@ local COLOR_OPTIONS = {
 local RELAY_FLASH_DURATION = 0.28
 local TRIP_FLASH_DURATION = 0.28
 local CROSSBAR_FLASH_DURATION = 0.28
+local SPRING_RELEASE_DURATION = 0.42
+local ICON_PRESS_STIFFNESS = 118
+local ICON_PRESS_DAMPING = 15
+local ICON_PRESS_IMPULSE = 15
 local roadTypes = require("src.game.road_types")
 local trackSceneRenderer = require("src.game.track_scene_renderer")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
@@ -437,6 +441,33 @@ function world.new(viewportW, viewportH, levelSource)
     self.elapsedTime = 0
     self.failureTrain = nil
     self.interactionCount = 0
+    self.chargeImage = nil
+    self.crossImage = nil
+    self.directImage = nil
+    self.relayImage = nil
+    self.springImage = nil
+    self.tripImage = nil
+
+    local function loadOptionalImage(path)
+        if not (love and love.graphics and love.filesystem and love.filesystem.getInfo(path, "file")) then
+            return nil
+        end
+
+        local ok, image = pcall(love.graphics.newImage, path)
+        if ok and image then
+            image:setFilter("linear", "linear")
+            return image
+        end
+
+        return nil
+    end
+
+    self.chargeImage = loadOptionalImage("assets/Charge.png")
+    self.crossImage = loadOptionalImage("assets/cross.png")
+    self.directImage = loadOptionalImage("assets/direct.png")
+    self.relayImage = loadOptionalImage("assets/relay.png")
+    self.springImage = loadOptionalImage("assets/spring.png")
+    self.tripImage = loadOptionalImage("assets/trip.png")
 
     self.level = self:normalizeLevel(levelSource or {})
 
@@ -764,6 +795,8 @@ function world:buildJunction(definition, existing)
         crossingRadius = self.crossingRadius,
         activeInputIndex = clamp(existing and existing.activeInputIndex or definition.activeInputIndex or 1, 1, math.max(1, #inputs)),
         activeOutputIndex = clamp(existing and existing.activeOutputIndex or definition.activeOutputIndex or 1, 1, math.max(1, #outputs)),
+        selectorPress = existing and existing.selectorPress or 0,
+        selectorPressVelocity = existing and existing.selectorPressVelocity or 0,
         control = {
             type = controlDefinition.type or "direct",
             delay = controlDefinition.delay or 0,
@@ -776,6 +809,7 @@ function world:buildJunction(definition, existing)
             remainingDelay = existing and existing.control.remainingDelay or 0,
             remainingHold = existing and existing.control.remainingHold or 0,
             returnInputIndex = existing and existing.control.returnInputIndex or 1,
+            releaseTimer = existing and existing.control.releaseTimer or 0,
             remainingTrips = existing and existing.control.remainingTrips or 0,
             pendingResetTrainId = existing and existing.control.pendingResetTrainId or nil,
             pendingResetEdgeId = existing and existing.control.pendingResetEdgeId or nil,
@@ -783,6 +817,8 @@ function world:buildJunction(definition, existing)
             decayHold = existing and existing.control.decayHold or 0,
             decayTimer = existing and existing.control.decayTimer or 0,
             flashTimer = existing and existing.control.flashTimer or 0,
+            iconPress = existing and existing.control.iconPress or 0,
+            iconPressVelocity = existing and existing.control.iconPressVelocity or 0,
         },
         inputs = inputs,
         outputs = outputs,
@@ -799,6 +835,68 @@ end
 
 function world:registerInteraction()
     self.interactionCount = (self.interactionCount or 0) + 1
+end
+
+function world:triggerPressAnimation(stateTable, valueKey, velocityKey, strength, baseLift)
+    if not stateTable then
+        return
+    end
+
+    local impulse = (strength or 1) * ICON_PRESS_IMPULSE
+    stateTable[valueKey] = math.min(1.2, (stateTable[valueKey] or 0) + (baseLift or 0.08))
+    stateTable[velocityKey] = (stateTable[velocityKey] or 0) + impulse
+end
+
+function world:pressJunctionIcon(junction, strength)
+    if not (junction and junction.control) then
+        return
+    end
+
+    self:triggerPressAnimation(junction.control, "iconPress", "iconPressVelocity", strength, 0.1)
+end
+
+function world:pressOutputSelector(junction, strength)
+    if not junction then
+        return
+    end
+
+    self:triggerPressAnimation(junction, "selectorPress", "selectorPressVelocity", strength, 0.08)
+end
+
+function world:updatePressAnimation(stateTable, valueKey, velocityKey, dt)
+    if not stateTable then
+        return
+    end
+
+    local press = stateTable[valueKey] or 0
+    local velocity = stateTable[velocityKey] or 0
+
+    if math.abs(press) < 0.0005 and math.abs(velocity) < 0.005 then
+        stateTable[valueKey] = 0
+        stateTable[velocityKey] = 0
+        return
+    end
+
+    local acceleration = -ICON_PRESS_STIFFNESS * press - ICON_PRESS_DAMPING * velocity
+    velocity = velocity + acceleration * dt
+    press = press + velocity * dt
+
+    stateTable[valueKey] = press
+    stateTable[velocityKey] = velocity
+end
+
+function world:updateJunctionIconAnimation(control, dt)
+    self:updatePressAnimation(control, "iconPress", "iconPressVelocity", dt)
+end
+
+local function getControlIconScale(control)
+    local press = clamp(control and control.iconPress or 0, -0.4, 1.2)
+    return 1 - press * 0.25
+end
+
+local function getSelectorIconScale(junction)
+    local press = clamp(junction and junction.selectorPress or 0, -0.4, 1.2)
+    return 1 - press * 0.25
 end
 
 function world:doesEdgeAcceptGoalColor(inputEdge, outputEdge, goalColor)
@@ -1251,6 +1349,7 @@ function world:activateControl(junction)
         control.returnInputIndex = junction.activeInputIndex
         self:cycleInput(junction)
         control.remainingHold = control.holdTime
+        control.releaseTimer = 0
         control.armed = true
         return true
     end
@@ -1310,6 +1409,7 @@ function world:handleClick(x, y, button, isPreparationPhase)
                 changed = self:cycleOutput(junction, 1)
             end
             if changed then
+                self:pressOutputSelector(junction, 1)
                 self:registerInteraction()
             end
             return true
@@ -1317,6 +1417,7 @@ function world:handleClick(x, y, button, isPreparationPhase)
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
             if self:canActivateControl(junction, isPreparationPhase) and self:activateControl(junction) then
+                self:pressJunctionIcon(junction, 1)
                 self:registerInteraction()
             end
             return true
@@ -1328,6 +1429,8 @@ end
 
 function world:updateControlState(junction, dt)
     local control = junction.control
+    self:updateJunctionIconAnimation(control, dt)
+    self:updatePressAnimation(junction, "selectorPress", "selectorPressVelocity", dt)
 
     if control.type == "delayed" and control.armed then
         control.remainingDelay = math.max(0, control.remainingDelay - dt)
@@ -1352,11 +1455,19 @@ function world:updateControlState(junction, dt)
         return
     end
 
-    if control.type == "spring" and control.armed then
-        control.remainingHold = math.max(0, control.remainingHold - dt)
-        if control.remainingHold <= 0 then
-            control.armed = false
-            junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+    if control.type == "spring" then
+        if control.armed then
+            control.remainingHold = math.max(0, control.remainingHold - dt)
+            if control.remainingHold <= 0 then
+                control.armed = false
+                control.releaseTimer = SPRING_RELEASE_DURATION
+                junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+            end
+            return
+        end
+
+        if control.releaseTimer > 0 then
+            control.releaseTimer = math.max(0, control.releaseTimer - dt)
         end
         return
     end
@@ -2035,6 +2146,441 @@ end
 
 function world:drawOutputTrack(junction, outputIndex, isActive)
     return trackSceneRenderer.drawOutputTrack(self, junction, outputIndex, isActive)
+end
+
+local function getTimerRatio(armed, remaining, duration)
+    if duration <= 0 then
+        return armed and 1 or 0
+    end
+
+    if not armed then
+        return 0
+    end
+
+    return clamp(remaining / duration, 0, 1)
+end
+
+local function drawTimerPie(graphics, centerX, centerY, radius, color, ratio)
+    local fillRatio = clamp(ratio or 0, 0, 1)
+
+    graphics.setColor(color[1], color[2], color[3], 0.12)
+    graphics.circle("fill", centerX, centerY, radius)
+
+    if fillRatio >= 0.999 then
+        graphics.setColor(color[1], color[2], color[3], 0.3)
+        graphics.circle("fill", centerX, centerY, radius)
+    elseif fillRatio > 0.001 then
+        graphics.setColor(color[1], color[2], color[3], 0.3)
+        graphics.arc(
+            "fill",
+            centerX,
+            centerY,
+            radius,
+            -math.pi * 0.5,
+            -math.pi * 0.5 + math.pi * 2 * fillRatio
+        )
+    end
+
+    graphics.setColor(color[1], color[2], color[3], 0.92)
+    graphics.setLineWidth(3)
+    graphics.circle("line", centerX, centerY, radius + 1.5)
+end
+
+local function drawStripedSector(graphics, centerX, centerY, radius, startAngle, endAngle, colors, alpha)
+    local palette = colors or {}
+    if #palette == 0 or endAngle <= startAngle then
+        return
+    end
+
+    local totalAngle = endAngle - startAngle
+    local segmentAngle = totalAngle / #palette
+
+    for index, stripeColor in ipairs(palette) do
+        local segmentStart = startAngle + segmentAngle * (index - 1)
+        local segmentEnd = startAngle + segmentAngle * index
+        graphics.setColor(stripeColor[1], stripeColor[2], stripeColor[3], alpha)
+        graphics.arc("fill", centerX, centerY, radius, segmentStart, segmentEnd)
+    end
+end
+
+local function drawStripedCircleOutline(graphics, centerX, centerY, radius, colors, alpha, lineWidth)
+    local palette = colors or {}
+    if #palette == 0 then
+        return
+    end
+
+    local segmentAngle = (math.pi * 2) / #palette
+    graphics.setLineWidth(lineWidth or 3)
+    for index, stripeColor in ipairs(palette) do
+        local segmentStart = -math.pi * 0.5 + segmentAngle * (index - 1)
+        local segmentEnd = -math.pi * 0.5 + segmentAngle * index
+        graphics.setColor(stripeColor[1], stripeColor[2], stripeColor[3], alpha)
+        graphics.arc("line", centerX, centerY, radius, segmentStart, segmentEnd)
+    end
+end
+
+local function getJunctionInputStyle(junction, inputIndex)
+    local resolvedInputIndex = clamp(inputIndex or junction.activeInputIndex or 1, 1, math.max(1, #junction.inputs))
+    local inputTrack = junction.inputs[resolvedInputIndex]
+    if not inputTrack then
+        return { 0.4, 0.4, 0.4 }, nil
+    end
+
+    return inputTrack.color or { 0.4, 0.4, 0.4 }, buildTrackStripeColors(inputTrack.colors, true)
+end
+
+local function drawJunctionTimerPie(graphics, centerX, centerY, radius, primaryColor, stripeColors, ratio, drawOutline, drawBackground)
+    local fillRatio = clamp(ratio or 0, 0, 1)
+    local fillAlpha = 1
+    local outlineRadius = radius - 0.5
+
+    if drawBackground == true then
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.12)
+        graphics.circle("fill", centerX, centerY, radius)
+    end
+
+    if fillRatio >= 0.999 then
+        if stripeColors then
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, fillAlpha)
+        else
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], fillAlpha)
+            graphics.circle("fill", centerX, centerY, radius)
+        end
+    elseif fillRatio > 0.001 then
+        local endAngle = -math.pi * 0.5 + math.pi * 2 * fillRatio
+        if stripeColors then
+            drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, endAngle, stripeColors, fillAlpha)
+        else
+            graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], fillAlpha)
+            graphics.arc("fill", centerX, centerY, radius, -math.pi * 0.5, endAngle)
+        end
+    end
+
+    if drawOutline == false then
+        return
+    end
+
+    if stripeColors then
+        drawStripedCircleOutline(graphics, centerX, centerY, outlineRadius, stripeColors, 0.96, 3)
+    else
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.92)
+        graphics.setLineWidth(3)
+        graphics.circle("line", centerX, centerY, outlineRadius)
+    end
+end
+
+local function drawHourglassIcon(graphics, centerX, centerY, size, progress, color)
+    local clampedProgress = clamp(progress or 0, 0, 1)
+    local halfWidth = size * 0.48
+    local halfHeight = size * 0.64
+    local neckWidth = size * 0.12
+    local inset = size * 0.13
+    local sourceFill = 1 - clampedProgress
+    local targetFill = clampedProgress
+    local angle = math.pi * clampedProgress
+    local sinAngle = math.sin(angle)
+    local cosAngle = math.cos(angle)
+    local streamAlpha = math.sin(clampedProgress * math.pi)
+    local chamberOffset = halfHeight * 0.42
+
+    local function rotateLocal(x, y)
+        return centerX + x * cosAngle - y * sinAngle, centerY + x * sinAngle + y * cosAngle
+    end
+
+    local chamberAX, chamberAY = rotateLocal(0, -chamberOffset)
+    local chamberBX, chamberBY = rotateLocal(0, chamberOffset)
+    local sourceCenterX, sourceCenterY = chamberBX, chamberBY
+    local targetCenterX, targetCenterY = chamberAX, chamberAY
+    local sourceBaseY = sourceCenterY + size * 0.18
+    local targetBaseY = targetCenterY + size * 0.18
+    local sourceWidth = size * (0.08 + sourceFill * 0.18)
+    local targetWidth = size * (0.08 + targetFill * 0.18)
+    local sourceTipY = sourceBaseY - size * (0.04 + sourceFill * 0.18)
+    local targetTipY = targetBaseY - size * (0.04 + targetFill * 0.18)
+    local middleY = centerY + size * 0.1
+    local middleWidth = size * (0.03 + streamAlpha * 0.07)
+    local middleTipY = middleY - size * (0.04 + streamAlpha * 0.08)
+
+    graphics.stencil(function()
+        graphics.push()
+        graphics.translate(centerX, centerY)
+        graphics.rotate(angle)
+        graphics.polygon(
+            "fill",
+            -halfWidth + inset,
+            -halfHeight + inset,
+            halfWidth - inset,
+            -halfHeight + inset,
+            0,
+            -size * 0.06
+        )
+        graphics.polygon(
+            "fill",
+            -halfWidth + inset,
+            halfHeight - inset,
+            halfWidth - inset,
+            halfHeight - inset,
+            0,
+            size * 0.06
+        )
+        graphics.pop()
+    end, "replace", 1)
+
+    graphics.setStencilTest("greater", 0)
+
+    if sourceFill > 0.02 then
+        graphics.setColor(color[1], color[2], color[3], 0.94)
+        graphics.polygon(
+            "fill",
+            sourceCenterX - sourceWidth,
+            sourceBaseY,
+            sourceCenterX + sourceWidth,
+            sourceBaseY,
+            sourceCenterX,
+            sourceTipY
+        )
+    end
+
+    if targetFill > 0.02 then
+        graphics.setColor(color[1], color[2], color[3], 0.94)
+        graphics.polygon(
+            "fill",
+            targetCenterX - targetWidth,
+            targetBaseY,
+            targetCenterX + targetWidth,
+            targetBaseY,
+            targetCenterX,
+            targetTipY
+        )
+    end
+
+    if streamAlpha > 0.04 then
+        graphics.setColor(color[1], color[2], color[3], 0.82 * streamAlpha)
+        graphics.polygon(
+            "fill",
+            centerX - middleWidth,
+            middleY,
+            centerX + middleWidth,
+            middleY,
+            centerX,
+            middleTipY
+        )
+
+        graphics.setLineWidth(2)
+        graphics.setColor(color[1], color[2], color[3], 0.88 * streamAlpha)
+        graphics.line(centerX, centerY - size * 0.08, centerX, middleTipY)
+    end
+
+    graphics.setStencilTest()
+
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.rotate(angle)
+
+    graphics.setLineWidth(2.4)
+    graphics.setColor(0.05, 0.06, 0.08, 0.96)
+    graphics.line(-halfWidth, -halfHeight, halfWidth, -halfHeight)
+    graphics.line(-halfWidth, halfHeight, halfWidth, halfHeight)
+    graphics.line(-halfWidth, -halfHeight, -neckWidth, 0, -halfWidth, halfHeight)
+    graphics.line(halfWidth, -halfHeight, neckWidth, 0, halfWidth, halfHeight)
+
+    graphics.pop()
+end
+
+local function drawSpringIcon(graphics, springImage, centerX, centerY, size, compression, releaseProgress, color)
+    local clampedCompression = clamp(compression or 0, 0, 1)
+    if springImage then
+        local imageWidth, imageHeight = springImage:getDimensions()
+        local baseScale = math.min((size * 1.18) / imageWidth, (size * 2) / imageHeight)
+        local animatedCompression = clampedCompression
+        local yOffset = size * 0.14 * animatedCompression
+
+        if releaseProgress and releaseProgress > 0 then
+            local t = clamp(releaseProgress, 0, 1)
+            local relax = 1 - (1 - t) ^ 3
+            local rebound = math.sin(t * math.pi) * math.exp(-2.2 * t)
+            animatedCompression = math.max(0, 1 - relax - 0.16 * rebound)
+            yOffset = size * 0.14 * animatedCompression - size * 0.2 * rebound
+        end
+
+        local scaleX = baseScale * lerp(1, 1.08, animatedCompression)
+        local scaleY = baseScale * lerp(1, 0.7, animatedCompression)
+
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(
+            springImage,
+            centerX,
+            centerY + yOffset,
+            0,
+            scaleX,
+            scaleY,
+            imageWidth * 0.5,
+            imageHeight * 0.5
+        )
+        return
+    end
+
+    local fullHeight = size * 1.12
+    local compressedHeight = size * 0.64
+    local coilHeight = lerp(fullHeight, compressedHeight, clampedCompression)
+    local coilWidth = size * 0.48
+    local turnCount = 4.35
+    local sampleCount = 88
+    local hookLength = size * 0.16
+    local points = {}
+
+    if releaseProgress and releaseProgress > 0 then
+        local damped = math.cos(releaseProgress * math.pi * 4.2) * math.exp(-4.1 * releaseProgress)
+        coilHeight = fullHeight - (fullHeight - compressedHeight) * damped
+    end
+
+    coilHeight = clamp(coilHeight, size * 0.34, size * 1.28)
+
+    for index = 0, sampleCount do
+        local ratio = index / sampleCount
+        local angle = ratio * math.pi * 2 * turnCount
+        local x = math.sin(angle) * coilWidth
+        local y = lerp(-coilHeight * 0.5, coilHeight * 0.5, ratio)
+        points[#points + 1] = x
+        points[#points + 1] = y
+    end
+
+    local topX = points[1]
+    local topY = points[2]
+    local bottomX = points[#points - 1]
+    local bottomY = points[#points]
+
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.setLineWidth(3.1)
+    graphics.setColor(0.05, 0.06, 0.08, 1)
+
+    graphics.line(topX + hookLength * 0.35, topY - hookLength, topX, topY)
+    graphics.line(points)
+    graphics.line(bottomX, bottomY, bottomX + hookLength * 0.4, bottomY + hookLength)
+
+    graphics.pop()
+end
+
+local function drawRelayIcon(graphics, relayImage, centerX, centerY, size, flashAlpha)
+    if relayImage then
+        local imageWidth, imageHeight = relayImage:getDimensions()
+        local baseScale = math.min((size * 1.45) / imageWidth, (size * 1.45) / imageHeight)
+        local pulseScale = 1 + flashAlpha * 0.06
+
+        graphics.setColor(1, 1, 1, 0.96)
+        graphics.draw(
+            relayImage,
+            centerX,
+            centerY,
+            0,
+            baseScale * pulseScale,
+            baseScale * pulseScale,
+            imageWidth * 0.5,
+            imageHeight * 0.5
+        )
+        return
+    end
+
+    graphics.setColor(0.05, 0.06, 0.08, 1)
+    graphics.printf("R", centerX - size * 0.4, centerY - size * 0.24, size * 0.8, "center")
+end
+
+local function drawStaticJunctionIcon(graphics, image, centerX, centerY, size, scaleMultiplier, alpha)
+    if not image then
+        return false
+    end
+
+    local imageWidth, imageHeight = image:getDimensions()
+    local scale = math.min((size * scaleMultiplier) / imageWidth, (size * scaleMultiplier) / imageHeight)
+    graphics.setColor(1, 1, 1, alpha or 1)
+    graphics.draw(
+        image,
+        centerX,
+        centerY,
+        0,
+        scale,
+        scale,
+        imageWidth * 0.5,
+        imageHeight * 0.5
+    )
+    return true
+end
+
+local function withIconScale(graphics, centerX, centerY, iconScale, drawFn)
+    graphics.push()
+    graphics.translate(centerX, centerY)
+    graphics.scale(iconScale, iconScale)
+    graphics.translate(-centerX, -centerY)
+    drawFn()
+    graphics.pop()
+end
+
+local function getControlBubbleLayout(junction)
+    local bubbleRadius = junction.crossingRadius - 4
+    local bubbleX = junction.mergePoint.x
+    local bubbleY = junction.mergePoint.y
+
+    return bubbleX, bubbleY, bubbleRadius
+end
+
+local function drawControlBubble(graphics, junction, ringColor)
+    local junctionX = junction.mergePoint.x
+    local junctionY = junction.mergePoint.y
+    local bubbleX, bubbleY, bubbleRadius = getControlBubbleLayout(junction)
+    local dx = bubbleX - junctionX
+    local dy = bubbleY - junctionY
+    local distance = math.sqrt(dx * dx + dy * dy)
+
+    if distance > 0.001 then
+        local nx = dx / distance
+        local ny = dy / distance
+        local startX = junctionX + nx * (junction.crossingRadius + 4)
+        local startY = junctionY + ny * (junction.crossingRadius + 4)
+        local endX = bubbleX - nx * (bubbleRadius + 1)
+        local endY = bubbleY - ny * (bubbleRadius + 1)
+
+        graphics.setLineStyle("rough")
+        graphics.setLineWidth(8)
+        graphics.setColor(0.05, 0.06, 0.08, 0.92)
+        graphics.line(startX, startY, endX, endY)
+        graphics.setLineWidth(3)
+        graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.65)
+        graphics.line(startX, startY, endX, endY)
+    end
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.9)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius)
+
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.12)
+    graphics.circle("fill", bubbleX, bubbleY, bubbleRadius)
+
+    graphics.setColor(ringColor[1], ringColor[2], ringColor[3], 0.88)
+    graphics.setLineWidth(3)
+    graphics.circle("line", bubbleX, bubbleY, bubbleRadius)
+
+    return bubbleX, bubbleY, bubbleRadius
+end
+
+local function drawJunctionCircle(graphics, junction, primaryColor, stripeColors)
+    local centerX, centerY, radius = getControlBubbleLayout(junction)
+    local backgroundAlpha = 0.28
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.9)
+    graphics.circle("fill", centerX, centerY, radius)
+
+    if stripeColors then
+        drawStripedSector(graphics, centerX, centerY, radius, -math.pi * 0.5, math.pi * 1.5, stripeColors, backgroundAlpha)
+        drawStripedCircleOutline(graphics, centerX, centerY, radius, stripeColors, 0.92, 3)
+    else
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], backgroundAlpha)
+        graphics.circle("fill", centerX, centerY, radius)
+        graphics.setColor(primaryColor[1], primaryColor[2], primaryColor[3], 0.88)
+        graphics.setLineWidth(3)
+        graphics.circle("line", centerX, centerY, radius)
+    end
+
+    return centerX, centerY, radius
 end
 
 function world:drawControlOverlay(junction)

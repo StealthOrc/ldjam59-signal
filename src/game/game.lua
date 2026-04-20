@@ -71,6 +71,8 @@ local LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING = "Loading online maps..."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH = "Type a map name, UUID, code, or creator to search."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED = "The online maps could not be loaded."
 local ONLINE_WRITE_TIMEOUT_SECONDS = 5
+local MARKETPLACE_FAVORITE_ANIMATION_DURATION_SECONDS = 0.55
+local MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA = 1
 local LEVEL_SELECT_ACTION_STATUS_INFO = "info"
 local LEVEL_SELECT_ACTION_STATUS_SUCCESS = "success"
 local LEVEL_SELECT_ACTION_STATUS_ERROR = "error"
@@ -350,6 +352,9 @@ function Game.new()
     self.activeFavoriteMapRequestId = nil
     self.activeFavoriteMapRequestStartedAt = nil
     self.activeFavoriteMapMapUuid = nil
+    self.activeFavoriteMapPreviousState = nil
+    self.pendingFavoriteMapDesiredState = nil
+    self.marketplaceFavoriteAnimationByMap = {}
     self.activeUploadMapRequestId = nil
     self.activeUploadMapRequestStartedAt = nil
     self.activeScoreSubmitRequestId = nil
@@ -984,7 +989,7 @@ function Game:beginMarketplaceFetch(onlineConfig, scopeDetails)
     }))
 end
 
-function Game:beginFavoriteMapRequest(onlineConfig, mapUuid)
+function Game:beginFavoriteMapRequest(onlineConfig, mapUuid, likedByPlayer)
     if self.activeFavoriteMapRequestId ~= nil then
         return false
     end
@@ -1003,6 +1008,7 @@ function Game:beginFavoriteMapRequest(onlineConfig, mapUuid)
             hmacSecret = onlineConfig.hmacSecret,
             mapUuid = mapUuid,
             mode = "favorite_map",
+            liked = likedByPlayer == true,
             player_uuid = getProfilePlayerUuid(self.profile),
         },
     }))
@@ -1169,10 +1175,7 @@ function Game:updateLeaderboardFetchState()
             end
 
             if self.activeFavoriteMapRequestId ~= nil then
-                self.activeFavoriteMapRequestId = nil
-                self.activeFavoriteMapRequestStartedAt = nil
-                self.activeFavoriteMapMapUuid = nil
-                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, threadError)
+                self:failMarketplaceFavoriteRequest(threadError)
             end
 
             if self.activeUploadMapRequestId ~= nil then
@@ -1254,10 +1257,7 @@ function Game:updateLeaderboardFetchState()
     if self.activeFavoriteMapRequestId ~= nil and self.activeFavoriteMapRequestStartedAt ~= nil then
         local elapsedSeconds = getNowSeconds() - self.activeFavoriteMapRequestStartedAt
         if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
-            self.activeFavoriteMapRequestId = nil
-            self.activeFavoriteMapRequestStartedAt = nil
-            self.activeFavoriteMapMapUuid = nil
-            self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The like request timed out.")
+            self:failMarketplaceFavoriteRequest("The like request timed out.")
         end
     end
 
@@ -1308,26 +1308,48 @@ function Game:updateLeaderboardFetchState()
             self:applyMarketplaceFetchResult(decodedResponse, responseScopeKey)
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "favorite_map" and decodedResponse.requestId == self.activeFavoriteMapRequestId then
             local mapUuid = self.activeFavoriteMapMapUuid
+            local previousState = self.activeFavoriteMapPreviousState
             self.activeFavoriteMapRequestId = nil
             self.activeFavoriteMapRequestStartedAt = nil
             self.activeFavoriteMapMapUuid = nil
+            self.activeFavoriteMapPreviousState = nil
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
-                local favoriteCount = tonumber(decodedResponse.payload.favorite_count or 0) or 0
+                local responseMapUuid = tostring(decodedResponse.payload.map_uuid or mapUuid or "")
+                local favoriteCount = tonumber(decodedResponse.payload.favorite_count)
                 local likedByPlayer = decodedResponse.payload.liked_by_player == true
-                self:updateMarketplaceFavoriteState(decodedResponse.payload.map_uuid or mapUuid, favoriteCount, likedByPlayer)
+                local targetLikedByPlayer = previousState and (previousState.likedByPlayer ~= true) or true
+                if favoriteCount == nil then
+                    local resolvedPreviousFavoriteCount = previousState and tonumber(previousState.favoriteCount) or 0
+                    favoriteCount = targetLikedByPlayer
+                        and math.max(0, resolvedPreviousFavoriteCount + MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+                        or math.max(0, resolvedPreviousFavoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+                end
+                self:updateMarketplaceFavoriteState(responseMapUuid, favoriteCount, likedByPlayer)
                 if decodedResponse.payload.accepted == true then
+                    local actionMessage = likedByPlayer
+                        and string.format("Map liked. It now has %d vote(s).", favoriteCount)
+                        or string.format("Like removed. It now has %d vote(s).", favoriteCount)
                     self:setLevelSelectActionState(
                         LEVEL_SELECT_ACTION_STATUS_SUCCESS,
-                        string.format("Map liked. It now has %d vote(s).", favoriteCount)
+                        actionMessage
                     )
                 else
-                    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, "You already liked this map.")
+                    local shouldRestorePreviousState = likedByPlayer ~= targetLikedByPlayer
+                    if shouldRestorePreviousState then
+                        self:restoreMarketplaceFavoriteState(previousState)
+                    end
+                    self:setLevelSelectActionState(
+                        LEVEL_SELECT_ACTION_STATUS_INFO,
+                        likedByPlayer and "The map was already liked." or "The like was already removed."
+                    )
+                end
+                if self:processQueuedMarketplaceFavoriteState(responseMapUuid) then
+                    return
                 end
             else
-                self:setLevelSelectActionState(
-                    LEVEL_SELECT_ACTION_STATUS_ERROR,
-                    decodedResponse.error or "The like request failed."
-                )
+                self:restoreMarketplaceFavoriteState(previousState)
+                self.pendingFavoriteMapDesiredState = nil
+                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, decodedResponse.error or "The like request failed.")
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "upload_map" and decodedResponse.requestId == self.activeUploadMapRequestId then
             self.activeUploadMapRequestId = nil
@@ -1707,6 +1729,160 @@ function Game:updateMarketplaceFavoriteState(mapUuid, favoriteCount, likedByPlay
     end
 end
 
+function Game:getMarketplaceFavoriteAnimation(mapUuid)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        return nil
+    end
+
+    local animationState = self.marketplaceFavoriteAnimationByMap[resolvedMapUuid]
+    if type(animationState) ~= "table" then
+        return nil
+    end
+
+    local elapsedSeconds = getNowSeconds() - (tonumber(animationState.startedAt) or 0)
+    local progress = elapsedSeconds / MARKETPLACE_FAVORITE_ANIMATION_DURATION_SECONDS
+    if progress >= 1 then
+        self.marketplaceFavoriteAnimationByMap[resolvedMapUuid] = nil
+        return nil
+    end
+
+    if progress < 0 then
+        progress = 0
+    end
+
+    return {
+        delta = tonumber(animationState.delta or 0) or 0,
+        progress = progress,
+    }
+end
+
+function Game:startMarketplaceFavoriteAnimation(mapUuid, delta)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        return
+    end
+
+    self.marketplaceFavoriteAnimationByMap[resolvedMapUuid] = {
+        delta = tonumber(delta or 0) or 0,
+        startedAt = getNowSeconds(),
+    }
+end
+
+function Game:applyOptimisticMarketplaceFavorite(mapUuid, favoriteCount, likedByPlayer)
+    self:updateMarketplaceFavoriteState(mapUuid, favoriteCount, likedByPlayer == true)
+    local animationDelta = likedByPlayer == true
+        and MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA
+        or -MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA
+    self:startMarketplaceFavoriteAnimation(mapUuid, animationDelta)
+end
+
+function Game:restoreMarketplaceFavoriteState(snapshot)
+    if type(snapshot) ~= "table" then
+        return
+    end
+
+    self:updateMarketplaceFavoriteState(snapshot.mapUuid, snapshot.favoriteCount, snapshot.likedByPlayer)
+    self.marketplaceFavoriteAnimationByMap[tostring(snapshot.mapUuid or "")] = nil
+end
+
+function Game:getMarketplaceFavoriteState(mapUuid)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        return nil
+    end
+
+    for _, cacheEntry in pairs(self.marketplaceCacheByScope) do
+        local payload = type(cacheEntry) == "table" and cacheEntry.payload or nil
+        local entries = type(payload) == "table" and payload.entries or nil
+        if type(entries) == "table" then
+            for _, entry in ipairs(entries) do
+                if tostring(entry.map_uuid or "") == resolvedMapUuid then
+                    return {
+                        favoriteCount = tonumber(entry.favorite_count or 0) or 0,
+                        likedByPlayer = entry.liked_by_player == true,
+                        mapUuid = resolvedMapUuid,
+                    }
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+function Game:queueMarketplaceFavoriteState(mapUuid, likedByPlayer)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        self.pendingFavoriteMapDesiredState = nil
+        return
+    end
+
+    self.pendingFavoriteMapDesiredState = {
+        mapUuid = resolvedMapUuid,
+        likedByPlayer = likedByPlayer == true,
+    }
+end
+
+function Game:processQueuedMarketplaceFavoriteState(mapUuid)
+    local pendingState = self.pendingFavoriteMapDesiredState
+    if type(pendingState) ~= "table" then
+        return false
+    end
+
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" or tostring(pendingState.mapUuid or "") ~= resolvedMapUuid then
+        return false
+    end
+
+    local currentState = self:getMarketplaceFavoriteState(resolvedMapUuid)
+    if type(currentState) ~= "table" then
+        self.pendingFavoriteMapDesiredState = nil
+        return false
+    end
+
+    if currentState.likedByPlayer == (pendingState.likedByPlayer == true) then
+        self.pendingFavoriteMapDesiredState = nil
+        return false
+    end
+
+    local onlineConfig = self:getActiveOnlineConfig()
+    if not onlineConfig.isConfigured then
+        self.pendingFavoriteMapDesiredState = nil
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        return false
+    end
+
+    self.pendingFavoriteMapDesiredState = nil
+    self.activeFavoriteMapPreviousState = currentState
+    local optimisticFavoriteCount = pendingState.likedByPlayer
+        and math.max(0, currentState.favoriteCount + MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+        or math.max(0, currentState.favoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+    self:applyOptimisticMarketplaceFavorite(resolvedMapUuid, optimisticFavoriteCount, pendingState.likedByPlayer)
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_INFO,
+        pendingState.likedByPlayer and "Saving like..." or "Removing like..."
+    )
+    return self:beginFavoriteMapRequest(onlineConfig, resolvedMapUuid, pendingState.likedByPlayer)
+end
+
+function Game:failMarketplaceFavoriteRequest(message)
+    local previousState = self.activeFavoriteMapPreviousState
+    self.activeFavoriteMapRequestId = nil
+    self.activeFavoriteMapRequestStartedAt = nil
+    self.activeFavoriteMapMapUuid = nil
+    self.activeFavoriteMapPreviousState = nil
+    self.pendingFavoriteMapDesiredState = nil
+    self:restoreMarketplaceFavoriteState(previousState)
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_ERROR,
+        message or "The like request failed."
+    )
+end
+
 function Game:favoriteMarketplaceMap(mapDescriptor)
     local selectedMap = mapDescriptor or self:getSelectedLevelMap()
     local sourceEntry = selectedMap and selectedMap.remoteSourceEntry or nil
@@ -1727,14 +1903,6 @@ function Game:favoriteMarketplaceMap(mapDescriptor)
         return
     end
 
-    if sourceEntry.liked_by_player == true then
-        self:setLevelSelectActionState(
-            LEVEL_SELECT_ACTION_STATUS_INFO,
-            "You already liked this map."
-        )
-        return
-    end
-
     local onlineConfig = self:getActiveOnlineConfig()
     if not onlineConfig.isConfigured then
         self:setLevelSelectActionState(
@@ -1745,18 +1913,45 @@ function Game:favoriteMarketplaceMap(mapDescriptor)
     end
 
     if self.activeFavoriteMapRequestId ~= nil then
+        if self.activeFavoriteMapMapUuid ~= mapUuid then
+            self:setLevelSelectActionState(
+                LEVEL_SELECT_ACTION_STATUS_INFO,
+                "Please wait for the current like request."
+            )
+            return
+        end
+
+        local desiredLikedByPlayer = not (sourceEntry.liked_by_player == true)
+        local currentFavoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0
+        local optimisticFavoriteCount = desiredLikedByPlayer
+            and math.max(0, currentFavoriteCount + MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+            or math.max(0, currentFavoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+        self:queueMarketplaceFavoriteState(mapUuid, desiredLikedByPlayer)
+        self:applyOptimisticMarketplaceFavorite(mapUuid, optimisticFavoriteCount, desiredLikedByPlayer)
         self:setLevelSelectActionState(
             LEVEL_SELECT_ACTION_STATUS_INFO,
-            "Please wait for the current like request."
+            desiredLikedByPlayer and "Saving like..." or "Removing like..."
         )
         return
     end
 
+    local wasLikedByPlayer = sourceEntry.liked_by_player == true
+    local previousFavoriteCount = tonumber(sourceEntry.favorite_count or 0) or 0
+    local optimisticFavoriteCount = wasLikedByPlayer
+        and math.max(0, previousFavoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+        or math.max(0, previousFavoriteCount + MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
+    self.activeFavoriteMapPreviousState = {
+        mapUuid = mapUuid,
+        favoriteCount = previousFavoriteCount,
+        likedByPlayer = wasLikedByPlayer,
+    }
+    self.pendingFavoriteMapDesiredState = nil
+    self:applyOptimisticMarketplaceFavorite(mapUuid, optimisticFavoriteCount, not wasLikedByPlayer)
     self:setLevelSelectActionState(
         LEVEL_SELECT_ACTION_STATUS_INFO,
-        "Saving like..."
+        wasLikedByPlayer and "Removing like..." or "Saving like..."
     )
-    self:beginFavoriteMapRequest(onlineConfig, mapUuid)
+    self:beginFavoriteMapRequest(onlineConfig, mapUuid, not wasLikedByPlayer)
 end
 
 function Game:refreshMarketplaceData()
