@@ -131,4 +131,175 @@ assertEqual(
     "marketplace favorite label falls back to zero without a count"
 )
 
+assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
+
+love.graphics = love.graphics or {}
+love.graphics.setFont = function()
+end
+
+local function makeFont(widthPerCharacter, height)
+    return {
+        getWidth = function(_, text)
+            return #tostring(text or "") * widthPerCharacter
+        end,
+        getHeight = function()
+            return height
+        end,
+    }
+end
+
+local startEdge = {
+    id = "start_edge",
+    path = {
+        points = {
+            { x = 420, y = 200 },
+            { x = 480, y = 200 },
+        },
+        segments = {
+            {
+                a = { x = 420, y = 200 },
+                b = { x = 480, y = 200 },
+                startDistance = 0,
+                length = 60,
+            },
+        },
+    },
+    sourceType = "start",
+}
+
+local exitEdge = {
+    id = "exit_edge",
+    path = {
+        points = {
+            { x = 840, y = 220 },
+            { x = 900, y = 220 },
+        },
+        segments = {
+            {
+                a = { x = 840, y = 220 },
+                b = { x = 900, y = 220 },
+                startDistance = 0,
+                length = 60,
+            },
+        },
+    },
+    targetType = "exit",
+}
+
+local speedEdge = {
+    id = "speed_edge",
+    path = {
+        points = {
+            { x = 720, y = 410 },
+            { x = 920, y = 410 },
+        },
+        segments = {
+            {
+                a = { x = 720, y = 410 },
+                b = { x = 920, y = 410 },
+                startDistance = 0,
+                length = 200,
+            },
+        },
+    },
+    styleSections = {
+        {
+            roadType = "fast",
+            startDistance = 0,
+            endDistance = 200,
+        },
+    },
+}
+
+local testTrain = {
+    spawnTime = 12,
+    deadline = 25,
+    wagonCount = 4,
+    goalColor = "blue",
+    trainColor = "blue",
+    color = { 0.33, 0.8, 0.98 },
+}
+
+local testWorld = {
+    junctionOrder = {
+        {
+            mergePoint = { x = 600, y = 300 },
+            crossingRadius = 20,
+            control = { type = "delayed", delay = 2.25 },
+        },
+    },
+    edges = {
+        start_edge = startEdge,
+        exit_edge = exitEdge,
+        speed_edge = speedEdge,
+    },
+}
+
+function testWorld:getInputEdgeGroups()
+    return {
+        {
+            edge = startEdge,
+            trains = { testTrain },
+        },
+    }
+end
+
+function testWorld:getOutputBadgeGroups()
+    return {
+        {
+            edge = exitEdge,
+            deliveredCount = 1,
+            expectedCount = 3,
+            acceptedColors = { "blue" },
+        },
+    }
+end
+
+function testWorld:isCrossingHit(junction, x, y)
+    local dx = x - junction.mergePoint.x
+    local dy = y - junction.mergePoint.y
+    return (dx * dx) + (dy * dy) <= junction.crossingRadius * junction.crossingRadius
+end
+
+function testWorld:isOutputSelectorHit()
+    return false
+end
+
+local hoverGame = {
+    playPhase = "prepare",
+    viewport = { w = 1280, h = 720 },
+    fonts = {
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+    world = testWorld,
+}
+
+local startHover = ui.getPlayHoverInfoAt(hoverGame, 200, 195)
+assertEqual(startHover.title, "Start Time", "play hover identifies train start times")
+assertEqual(startHover.preferBelow, true, "train start hover prefers showing the tooltip below the row")
+assertEqual(startHover.y, 217, "train start hover anchors below the row instead of from its top edge")
+
+local deadlineHover = ui.getPlayHoverInfoAt(hoverGame, 255, 195)
+assertEqual(deadlineHover.title, "Deadline", "play hover identifies train deadlines")
+assertEqual(deadlineHover.preferBelow, true, "train deadline hover prefers showing the tooltip below the row")
+assertEqual(deadlineHover.y, 217, "train deadline hover anchors below the row instead of from its top edge")
+
+local wagonHover = ui.getPlayHoverInfoAt(hoverGame, 325, 195)
+assertEqual(wagonHover.title, "Wagons & Color", "play hover identifies wagon previews")
+assertEqual(wagonHover.preferBelow, true, "wagon hover prefers showing the tooltip below the row")
+assertEqual(wagonHover.y, 217, "wagon hover anchors below the row instead of from its top edge")
+
+local badgeHover = ui.getPlayHoverInfoAt(hoverGame, 830, 220)
+assertEqual(badgeHover.title, "Expected Trains", "play hover identifies exit badges")
+
+local junctionHover = ui.getPlayHoverInfoAt(hoverGame, 600, 300)
+assertEqual(junctionHover.title, "Delay Junction", "play hover identifies junction controls")
+
+local speedHover = ui.getPlayHoverInfoAt(hoverGame, 810, 414)
+assertEqual(speedHover.title, "Fast Section", "play hover identifies speed-modified track sections")
+
+hoverGame.playPhase = "play"
+assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
+
 print("ui formatting tests passed")

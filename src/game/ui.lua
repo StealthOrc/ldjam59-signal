@@ -1,5 +1,6 @@
 local ui = {}
 local uiControls = require("src.game.ui_controls")
+local roadTypes = require("src.game.road_types")
 
 local LEVEL_SELECT = {
     chromeH = 74,
@@ -115,6 +116,14 @@ local PLAY_OVERLAY = {
     lineGap = 6,
     sectionGap = 14,
 }
+local PLAY_TOOLTIP_LAYOUT = {
+    width = 340,
+    gap = 16,
+    paddingX = 16,
+    paddingY = 14,
+    cornerRadius = 14,
+    dividerGap = 8,
+}
 
 local MENU_LAYOUT = {
     buttonWidth = 320,
@@ -197,6 +206,24 @@ local function pointInRect(x, y, rect)
         and x <= rect.x + rect.w
         and y >= rect.y
         and y <= rect.y + rect.h
+end
+
+local function distanceSquaredToSegment(px, py, ax, ay, bx, by)
+    local dx = bx - ax
+    local dy = by - ay
+    local lengthSquared = dx * dx + dy * dy
+    if lengthSquared <= 0.0001 then
+        local offsetX = px - ax
+        local offsetY = py - ay
+        return (offsetX * offsetX) + (offsetY * offsetY), ax, ay
+    end
+
+    local t = math.max(0, math.min(1, (((px - ax) * dx) + ((py - ay) * dy)) / lengthSquared))
+    local closestX = ax + dx * t
+    local closestY = ay + dy * t
+    local offsetX = px - closestX
+    local offsetY = py - closestY
+    return (offsetX * offsetX) + (offsetY * offsetY), closestX, closestY
 end
 
 local function lerp(a, b, t)
@@ -583,6 +610,75 @@ local function drawLeaderboardTooltip(game, hoverInfo)
     graphics.printf(hoverInfo.text, tooltipX + 16, tooltipY + 28, LEADERBOARD_LAYOUT.tooltipWidth - 32, "left")
 end
 
+local function drawPlayTooltip(game, hoverInfo)
+    if not hoverInfo or not hoverInfo.title or hoverInfo.title == "" or not hoverInfo.text or hoverInfo.text == "" then
+        return
+    end
+
+    local graphics = love.graphics
+    local width = PLAY_TOOLTIP_LAYOUT.width
+    local contentWidth = width - (PLAY_TOOLTIP_LAYOUT.paddingX * 2)
+    local titleLineCount = getWrappedLineCount(game.fonts.body, hoverInfo.title, contentWidth)
+    local bodyLineCount = getWrappedLineCount(game.fonts.small, hoverInfo.text, contentWidth)
+    local titleHeight = titleLineCount * game.fonts.body:getHeight()
+    local bodyHeight = bodyLineCount * game.fonts.small:getHeight()
+    local height = (PLAY_TOOLTIP_LAYOUT.paddingY * 2)
+        + titleHeight
+        + bodyHeight
+        + (PLAY_TOOLTIP_LAYOUT.dividerGap * 2)
+        + 1
+    local tooltipX = clamp(
+        math.floor((hoverInfo.x or 0) - (width * 0.5) + 0.5),
+        18,
+        game.viewport.w - width - 18
+    )
+    local preferredY = math.floor((hoverInfo.y or 0) - height - PLAY_TOOLTIP_LAYOUT.gap + 0.5)
+    local fallbackY = math.floor((hoverInfo.y or 0) + PLAY_TOOLTIP_LAYOUT.gap + 0.5)
+    local tooltipY
+    if hoverInfo.preferBelow then
+        tooltipY = fallbackY <= (game.viewport.h - height - 24) and fallbackY or preferredY
+    else
+        tooltipY = preferredY >= 82 and preferredY or fallbackY
+    end
+    tooltipY = clamp(tooltipY, 82, game.viewport.h - height - 24)
+
+    graphics.setColor(0.06, 0.08, 0.12, 0.98)
+    graphics.rectangle("fill", tooltipX, tooltipY, width, height, PLAY_TOOLTIP_LAYOUT.cornerRadius, PLAY_TOOLTIP_LAYOUT.cornerRadius)
+    graphics.setColor(0.32, 0.42, 0.52, 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle("line", tooltipX, tooltipY, width, height, PLAY_TOOLTIP_LAYOUT.cornerRadius, PLAY_TOOLTIP_LAYOUT.cornerRadius)
+    graphics.setLineWidth(1)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(
+        hoverInfo.title,
+        tooltipX + PLAY_TOOLTIP_LAYOUT.paddingX,
+        tooltipY + PLAY_TOOLTIP_LAYOUT.paddingY,
+        contentWidth,
+        "left"
+    )
+
+    local dividerY = tooltipY + PLAY_TOOLTIP_LAYOUT.paddingY + titleHeight + PLAY_TOOLTIP_LAYOUT.dividerGap
+    graphics.setColor(0.28, 0.4, 0.52, 0.92)
+    graphics.line(
+        tooltipX + PLAY_TOOLTIP_LAYOUT.paddingX,
+        dividerY,
+        tooltipX + width - PLAY_TOOLTIP_LAYOUT.paddingX,
+        dividerY
+    )
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.84, 0.88, 0.92, 1)
+    graphics.printf(
+        hoverInfo.text,
+        tooltipX + PLAY_TOOLTIP_LAYOUT.paddingX,
+        dividerY + PLAY_TOOLTIP_LAYOUT.dividerGap,
+        contentWidth,
+        "left"
+    )
+end
+
 local function getMenuDebugButton(game)
     return {
         id = "debug",
@@ -641,6 +737,105 @@ local function getJunctionHelpText(junction)
     end
 
     return "Click the junction to switch the active input immediately."
+end
+
+local function formatTooltipColorLabel(colorId)
+    local text = tostring(colorId or "")
+    if text == "" then
+        return "unknown"
+    end
+    return text:sub(1, 1):upper() .. text:sub(2)
+end
+
+local function formatColorList(colorIds)
+    local labels = {}
+    for _, colorId in ipairs(colorIds or {}) do
+        labels[#labels + 1] = formatTooltipColorLabel(colorId)
+    end
+
+    if #labels == 0 then
+        return "matching"
+    end
+    if #labels == 1 then
+        return labels[1]
+    end
+    if #labels == 2 then
+        return labels[1] .. " or " .. labels[2]
+    end
+
+    return table.concat(labels, ", ", 1, #labels - 1) .. ", or " .. labels[#labels]
+end
+
+local function getJunctionTooltipTitle(junction)
+    local controlType = junction and junction.control and junction.control.type or "direct"
+    local titles = {
+        direct = "Direct Junction",
+        delayed = "Delay Junction",
+        pump = "Charge Junction",
+        spring = "Spring Junction",
+        relay = "Relay Junction",
+        trip = "Trap Junction",
+        crossbar = "Crossbar Junction",
+    }
+
+    return titles[controlType] or "Junction"
+end
+
+local function getJunctionTooltipText(junction)
+    local control = junction.control or {}
+
+    if control.type == "delayed" then
+        return string.format("Arms a route change that triggers after %.1f seconds instead of switching immediately.", control.delay or 0)
+    end
+    if control.type == "pump" then
+        return string.format("Needs %d clicks to charge before it swaps, then the charge drains over time.", control.target or 0)
+    end
+    if control.type == "spring" then
+        return string.format("Flips the route for %.1f seconds, then springs back to its earlier setting.", control.holdTime or 0)
+    end
+    if control.type == "relay" then
+        return "Rotates the active input and output together so the matching lanes stay linked."
+    end
+    if control.type == "trip" then
+        return string.format("Diverts the next %d train(s), then resets itself automatically.", control.passCount or 1)
+    end
+    if control.type == "crossbar" then
+        return "Rotates mirrored crossing routes together so both sides stay synchronized."
+    end
+
+    return "Switches to the next input as soon as you click it."
+end
+
+local function getSpeedTooltipInfo(roadTypeId, x, y)
+    local config = roadTypes.getConfig(roadTypeId)
+    if not config or config.id == roadTypes.DEFAULT_ID then
+        return nil
+    end
+
+    if config.id == "fast" then
+        return {
+            x = x,
+            y = y,
+            title = "Fast Section",
+            text = "Trains move faster on this marked stretch, so they clear the track sooner.",
+        }
+    end
+
+    if config.id == "slow" then
+        return {
+            x = x,
+            y = y,
+            title = "Slow Section",
+            text = "Trains move slower on this marked stretch, so they stay on the track longer.",
+        }
+    end
+
+    return {
+        x = x,
+        y = y,
+        title = string.format("%s Section", config.label or "Track"),
+        text = "This marked stretch changes how quickly trains move through it.",
+    }
 end
 
 local function getJunctionStateText(junction)
@@ -2606,12 +2801,12 @@ local PREP_TRAIN_ROW_SPACING = 8
 local PREP_TRAIN_ARROW_LENGTH = 19
 local getPrepTrainRowWidth
 
-local function getInputPrepCardRect(game, edge, trainCount)
+local function getInputPrepCardRect(game, edge, trainCount, inputGroups)
     local rowCount = math.max(1, trainCount or 0)
     local height = 20 + rowCount * 44
     local width = 140
 
-    for _, group in ipairs(game.world:getInputEdgeGroups()) do
+    for _, group in ipairs(inputGroups or game.world:getInputEdgeGroups()) do
         if group.edge.id == edge.id then
             for _, train in ipairs(group.trains or {}) do
                 width = math.max(width, getPrepTrainRowWidth(game, train) + 20)
@@ -2669,6 +2864,62 @@ local function getPrepTrainPreviewMetrics(game, train)
         carriageHeight = carriageHeight,
         totalWidth = totalWidth,
     }
+end
+
+local function getPrepTrainRowLayout(game, rowRect, leadText, deadlineText, train)
+    love.graphics.setFont(game.fonts.small)
+
+    local centerY = rowRect.y + rowRect.h * 0.5
+    local leadWidth = game.fonts.small:getWidth(leadText)
+    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
+    local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
+    local metrics = getPrepTrainPreviewMetrics(game, train)
+    local layout = {
+        centerY = centerY,
+        contentStartX = contentStartX,
+        leadWidth = leadWidth,
+        leadTextX = contentStartX,
+        leadTextY = rowRect.y + 9,
+        leadRect = {
+            x = contentStartX - 4,
+            y = rowRect.y + 5,
+            w = leadWidth + 8,
+            h = rowRect.h - 10,
+        },
+        previewX = contentStartX + leadWidth + PREP_TRAIN_ROW_SPACING,
+        previewRect = nil,
+        deadline = nil,
+        metrics = metrics,
+    }
+
+    if deadlineText then
+        local arrowStartX = layout.previewX
+        local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
+        local deadlineTextX = arrowEndX + PREP_TRAIN_ROW_SPACING
+        layout.deadline = {
+            arrowStartX = arrowStartX,
+            arrowEndX = arrowEndX,
+            textX = deadlineTextX,
+            textY = rowRect.y + 9,
+            width = deadlineWidth,
+            rect = {
+                x = arrowStartX - 4,
+                y = rowRect.y + 5,
+                w = (deadlineTextX + deadlineWidth) - arrowStartX + 8,
+                h = rowRect.h - 10,
+            },
+        }
+        layout.previewX = deadlineTextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
+    end
+
+    layout.previewRect = {
+        x = layout.previewX - 4,
+        y = math.floor(centerY - metrics.carriageHeight * 0.5 + 0.5) - 3,
+        w = metrics.totalWidth + 8,
+        h = metrics.carriageHeight + 6,
+    }
+
+    return layout
 end
 
 local function getPrepTrainRowContentWidth(game, train)
@@ -2739,7 +2990,7 @@ end
 
 local function drawTrainRow(game, rowRect, leadText, deadlineText, train)
     local graphics = love.graphics
-    local centerY = rowRect.y + rowRect.h * 0.5
+    local layout = getPrepTrainRowLayout(game, rowRect, leadText, deadlineText, train)
 
     graphics.setColor(0.06, 0.08, 0.1, 0.96)
     graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
@@ -2748,29 +2999,21 @@ local function drawTrainRow(game, rowRect, leadText, deadlineText, train)
     graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 10, 10)
 
     love.graphics.setFont(game.fonts.small)
-    local leadWidth = game.fonts.small:getWidth(leadText)
-    local deadlineWidth = deadlineText and game.fonts.small:getWidth(deadlineText) or 0
-    local contentStartX = rowRect.x + PREP_TRAIN_ROW_SPACING
 
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print(leadText, contentStartX, rowRect.y + 9)
+    graphics.print(leadText, layout.leadTextX, layout.leadTextY)
 
-    local nextX = contentStartX + leadWidth + PREP_TRAIN_ROW_SPACING
-    if deadlineText then
-        local arrowStartX = nextX
-        local arrowEndX = arrowStartX + PREP_TRAIN_ARROW_LENGTH
+    if layout.deadline then
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.setLineWidth(2)
-        graphics.line(arrowStartX, centerY, arrowEndX, centerY)
-        graphics.line(arrowEndX - 4, centerY - 3, arrowEndX, centerY)
-        graphics.line(arrowEndX - 4, centerY + 3, arrowEndX, centerY)
+        graphics.line(layout.deadline.arrowStartX, layout.centerY, layout.deadline.arrowEndX, layout.centerY)
+        graphics.line(layout.deadline.arrowEndX - 4, layout.centerY - 3, layout.deadline.arrowEndX, layout.centerY)
+        graphics.line(layout.deadline.arrowEndX - 4, layout.centerY + 3, layout.deadline.arrowEndX, layout.centerY)
         graphics.setLineWidth(1)
-        nextX = arrowEndX + PREP_TRAIN_ROW_SPACING
-        graphics.print(deadlineText, nextX, rowRect.y + 9)
-        nextX = nextX + deadlineWidth + PREP_TRAIN_ROW_SPACING
+        graphics.print(deadlineText, layout.deadline.textX, layout.deadline.textY)
     end
 
-    drawPrepTrainPreview(game, nextX, centerY, train)
+    drawPrepTrainPreview(game, layout.previewX, layout.centerY, train)
 end
 
 local function drawInputPrepCard(game, group)
@@ -2836,6 +3079,159 @@ local function drawOutputBadge(game, badge)
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.48, 0.92, 0.62, 1)
     graphics.printf(ratioText, rect.x, rect.y + math.floor((rect.h - game.fonts.body:getHeight()) * 0.5 + 0.5), rect.w, "center")
+end
+
+local function getPrepTrainHoverInfo(game, x, y)
+    local inputGroups = game.world:getInputEdgeGroups()
+
+    for _, group in ipairs(inputGroups) do
+        local rect = getInputPrepCardRect(game, group.edge, #(group.trains or {}), inputGroups)
+        local rowHeight = 34
+        local rowGap = 10
+        local rowCount = #(group.trains or {})
+        local totalRowsHeight = rowCount > 0 and (rowCount * rowHeight) + ((rowCount - 1) * rowGap) or 0
+        local rowY = rect.y + math.floor((rect.h - totalRowsHeight) * 0.5 + 0.5)
+
+        for _, train in ipairs(group.trains or {}) do
+            local rowWidth = getPrepTrainRowWidth(game, train)
+            local rowRect = {
+                x = math.floor(rect.x + (rect.w - rowWidth) * 0.5 + 0.5),
+                y = rowY,
+                w = rowWidth,
+                h = rowHeight,
+            }
+            local startText = formatSecondsLabel(train.spawnTime or 0)
+            local deadlineText = train.deadline ~= nil and formatSecondsLabel(train.deadline) or nil
+            local layout = getPrepTrainRowLayout(game, rowRect, startText, deadlineText, train)
+
+            if pointInRect(x, y, layout.leadRect) then
+                return {
+                    x = layout.leadRect.x + layout.leadRect.w * 0.5,
+                    y = rowRect.y + rowRect.h,
+                    preferBelow = true,
+                    title = "Start Time",
+                    text = "This is when the train enters the map from this line.",
+                }
+            end
+
+            if layout.deadline and pointInRect(x, y, layout.deadline.rect) then
+                return {
+                    x = layout.deadline.rect.x + layout.deadline.rect.w * 0.5,
+                    y = rowRect.y + rowRect.h,
+                    preferBelow = true,
+                    title = "Deadline",
+                    text = "This is the latest time the train can arrive without counting as late.",
+                }
+            end
+
+            if pointInRect(x, y, layout.previewRect) then
+                local colorLabel = formatTooltipColorLabel(train.goalColor or train.trainColor)
+                return {
+                    x = layout.previewRect.x + layout.previewRect.w * 0.5,
+                    y = rowRect.y + rowRect.h,
+                    preferBelow = true,
+                    title = "Wagons & Color",
+                    text = string.format(
+                        "Shows how long the train is. The %s color also tells you which matching exit it needs to reach.",
+                        colorLabel
+                    ),
+                }
+            end
+
+            rowY = rowY + rowHeight + rowGap
+        end
+    end
+
+    return nil
+end
+
+local function getOutputBadgeHoverInfo(game, x, y)
+    for _, badge in ipairs(game.world:getOutputBadgeGroups()) do
+        local rect = getOutputBadgeRect(game, badge.edge, badge)
+        if pointInRect(x, y, rect) then
+            return {
+                x = rect.x + rect.w * 0.5,
+                y = rect.y,
+                title = "Expected Trains",
+                text = string.format(
+                    "Shows how many trains this exit expects based on the %s color routes assigned to this line.",
+                    formatColorList(badge.acceptedColors)
+                ),
+            }
+        end
+    end
+
+    return nil
+end
+
+local function getJunctionHoverInfo(game, x, y)
+    for _, junction in ipairs(game.world.junctionOrder or {}) do
+        if game.world:isCrossingHit(junction, x, y) or game.world:isOutputSelectorHit(junction, x, y) then
+            return {
+                x = junction.mergePoint.x,
+                y = junction.mergePoint.y - junction.crossingRadius,
+                title = getJunctionTooltipTitle(junction),
+                text = getJunctionTooltipText(junction),
+            }
+        end
+    end
+
+    return nil
+end
+
+local function getTrackSectionHoverInfo(game, x, y)
+    local bestDistanceSquared = 14 * 14
+    local bestInfo = nil
+
+    for _, edge in pairs(game.world.edges or {}) do
+        for _, section in ipairs(edge.styleSections or {}) do
+            local roadTypeId = roadTypes.normalizeRoadType(section.roadType)
+            if roadTypeId ~= roadTypes.DEFAULT_ID then
+                for _, segment in ipairs(edge.path and edge.path.segments or {}) do
+                    if segment.length > 0 then
+                        local overlapStart = math.max(section.startDistance or 0, segment.startDistance or 0)
+                        local overlapEnd = math.min(
+                            section.endDistance or 0,
+                            (segment.startDistance or 0) + (segment.length or 0)
+                        )
+                        if overlapEnd > overlapStart + 0.0001 then
+                            local startRatio = (overlapStart - segment.startDistance) / segment.length
+                            local endRatio = (overlapEnd - segment.startDistance) / segment.length
+                            local sectionStartX = lerp(segment.a.x, segment.b.x, startRatio)
+                            local sectionStartY = lerp(segment.a.y, segment.b.y, startRatio)
+                            local sectionEndX = lerp(segment.a.x, segment.b.x, endRatio)
+                            local sectionEndY = lerp(segment.a.y, segment.b.y, endRatio)
+                            local distanceSquared, closestX, closestY = distanceSquaredToSegment(
+                                x,
+                                y,
+                                sectionStartX,
+                                sectionStartY,
+                                sectionEndX,
+                                sectionEndY
+                            )
+                            if distanceSquared <= bestDistanceSquared then
+                                bestDistanceSquared = distanceSquared
+                                bestInfo = getSpeedTooltipInfo(roadTypeId, closestX, closestY)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestInfo
+end
+
+function ui.getPlayHoverInfoAt(game, x, y)
+    if not game or game.playPhase ~= "prepare" or not game.world then
+        return nil
+    end
+
+    return getPrepTrainHoverInfo(game, x, y)
+        or getOutputBadgeHoverInfo(game, x, y)
+        or getJunctionHoverInfo(game, x, y)
+        or getTrackSectionHoverInfo(game, x, y)
 end
 
 function ui.getPlayBackHit(_, x, y)
@@ -3335,6 +3731,9 @@ function ui.drawPlay(game)
     )
 
     drawPlayInfoOverlay(game)
+    if game.playPhase == "prepare" and not game.playOverlayMode and game.playHoverInfo then
+        drawPlayTooltip(game, game.playHoverInfo)
+    end
 end
 
 function ui.drawResults(game)
