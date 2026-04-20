@@ -3289,45 +3289,93 @@ local function appendTrackGuideFocusShape(shapes, track, width)
     shapes[#shapes + 1] = polylineShape
 end
 
+local function getGuideTargetJunction(game, step)
+    if not game or not game.world or type(step) ~= "table" then
+        return nil
+    end
+
+    local junctionOrder = game.world.junctionOrder or {}
+    if #junctionOrder == 0 then
+        return nil
+    end
+
+    local targetJunctionId = tostring(step.junctionId or "")
+    if targetJunctionId ~= "" then
+        for _, junction in ipairs(junctionOrder) do
+            if tostring(junction.id or "") == targetJunctionId then
+                return junction
+            end
+        end
+    end
+
+    local targetIndex = tonumber(step.junctionIndex)
+    if targetIndex then
+        targetIndex = math.max(1, math.min(#junctionOrder, math.floor(targetIndex)))
+        return junctionOrder[targetIndex]
+    end
+
+    return junctionOrder[1]
+end
+
+local function buildPlayGuideJunctionShapes(game, step, options)
+    if not game or not game.world or not step then
+        return {}
+    end
+
+    local junction = getGuideTargetJunction(game, step)
+    if not junction then
+        return {}
+    end
+
+    local resolvedOptions = options or {}
+    local includeJunction = resolvedOptions.includeJunction ~= false
+    local includeSelector = resolvedOptions.includeSelector == true
+    local shapes = {}
+
+    if includeJunction then
+        shapes[#shapes + 1] = {
+            kind = "circle",
+            x = junction.mergePoint.x,
+            y = junction.mergePoint.y,
+            radius = (junction.crossingRadius or 20) + 16,
+        }
+    end
+
+    if includeSelector and step.target == "junction_with_selector" then
+        local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
+        if selectorX and selectorY and selectorRadius then
+            shapes[#shapes + 1] = {
+                kind = "circle",
+                x = selectorX,
+                y = selectorY,
+                radius = selectorRadius + 12,
+            }
+        end
+    end
+
+    if step.focusIncomingTracks == true then
+        for _, inputTrack in ipairs(junction.inputs or {}) do
+            appendTrackGuideFocusShape(shapes, inputTrack, 42)
+        end
+    end
+
+    return shapes
+end
+
 local function getPlayGuideFocusShapes(game, step)
     if not game or not game.world or not step then
         return {}
     end
 
+    if step.target == "screen_center" then
+        return {}
+    end
+
     if step.target == "junction" or step.target == "junction_with_selector" then
-        local junction = game.world.junctionOrder and game.world.junctionOrder[1] or nil
-        if not junction then
-            return {}
-        end
-
-        local shapes = {
-            {
-                kind = "circle",
-                x = junction.mergePoint.x,
-                y = junction.mergePoint.y,
-                radius = (junction.crossingRadius or 20) + 16,
-            },
-        }
-
-        if step.target == "junction_with_selector" then
-            local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
-            if selectorX and selectorY and selectorRadius then
-                shapes[#shapes + 1] = {
-                    kind = "circle",
-                    x = selectorX,
-                    y = selectorY,
-                    radius = selectorRadius + 12,
-                }
-            end
-
-            if step.focusIncomingTracks == true then
-                for _, inputTrack in ipairs(junction.inputs or {}) do
-                    appendTrackGuideFocusShape(shapes, inputTrack, 42)
-                end
-            end
-        end
-
-        return shapes
+        return buildPlayGuideJunctionShapes(game, step, {
+            includeJunction = step.focusSelectorOnly ~= true,
+            includeSelector = step.target == "junction_with_selector",
+        })
     end
 
     if step.target == "first_input_card" then
@@ -3359,6 +3407,21 @@ local function getPlayGuideFocusShapes(game, step)
     end
 
     return {}
+end
+
+local function getPlayGuideAnchorShapes(game, step, focusShapes)
+    if not game or not step then
+        return focusShapes or {}
+    end
+
+    if step.anchorTarget == "junction" and (step.target == "junction" or step.target == "junction_with_selector") then
+        return buildPlayGuideJunctionShapes(game, step, {
+            includeJunction = true,
+            includeSelector = false,
+        })
+    end
+
+    return focusShapes or {}
 end
 
 local function getGuideBounds(shapes, viewport)
@@ -3433,13 +3496,19 @@ local function getPlayGuideLayout(game)
         + PLAY_GUIDE_LAYOUT.buttonH
 
     local focusShapes = getPlayGuideFocusShapes(game, step)
-    local bounds = getGuideBounds(focusShapes, game.viewport)
+    local anchorShapes = getPlayGuideAnchorShapes(game, step, focusShapes)
+    local bounds = getGuideBounds(anchorShapes, game.viewport)
     local tooltipX = bounds.centerX - width * 0.5
     local tooltipY = bounds.minY - height - PLAY_GUIDE_LAYOUT.gap
 
-    if step.placement == "right" then
+    if step.placement == "center" then
+        tooltipY = bounds.centerY - height * 0.5
+    elseif step.placement == "right" then
         tooltipX = bounds.maxX + PLAY_GUIDE_LAYOUT.gap
         tooltipY = bounds.centerY - height * 0.5
+    elseif step.placement == "top_right" then
+        tooltipX = bounds.maxX + PLAY_GUIDE_LAYOUT.gap
+        tooltipY = bounds.minY - height - PLAY_GUIDE_LAYOUT.gap
     elseif step.placement == "below" then
         tooltipY = bounds.maxY + PLAY_GUIDE_LAYOUT.gap
     end
@@ -3451,9 +3520,24 @@ local function getPlayGuideLayout(game)
         game.viewport.h - height - PLAY_GUIDE_LAYOUT.margin
     )
 
-    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+    local showSkip = step.hideSkip ~= true and step.showSkip ~= false
+    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonNextW
+    if showSkip then
+        totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+    end
     local buttonsX = tooltipX + math.floor((width - totalButtonWidth) * 0.5 + 0.5)
     local buttonsY = tooltipY + height - PLAY_GUIDE_LAYOUT.paddingY - PLAY_GUIDE_LAYOUT.buttonH
+    local nextX = buttonsX
+    local skipRect = nil
+    if showSkip then
+        skipRect = {
+            x = buttonsX,
+            y = buttonsY,
+            w = PLAY_GUIDE_LAYOUT.buttonSkipW,
+            h = PLAY_GUIDE_LAYOUT.buttonH,
+        }
+        nextX = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap
+    end
 
     return {
         step = step,
@@ -3466,19 +3550,15 @@ local function getPlayGuideLayout(game)
             w = width,
             h = height,
         },
-        skipRect = {
-            x = buttonsX,
-            y = buttonsY,
-            w = PLAY_GUIDE_LAYOUT.buttonSkipW,
-            h = PLAY_GUIDE_LAYOUT.buttonH,
-        },
+        skipRect = skipRect,
         nextRect = {
-            x = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap,
+            x = nextX,
             y = buttonsY,
             w = PLAY_GUIDE_LAYOUT.buttonNextW,
             h = PLAY_GUIDE_LAYOUT.buttonH,
         },
-        nextLabel = stepIndex >= stepCount and "I'm Ready" or "Next",
+        nextLabel = step.nextLabel or (stepIndex >= stepCount and "I'm Ready" or "Next"),
+        skipLabel = step.skipLabel or "Skip",
     }
 end
 
@@ -3517,7 +3597,7 @@ function ui.getPlayGuideActionAt(game, x, y)
         return "next"
     end
 
-    if pointInRect(x, y, layout.skipRect) then
+    if layout.skipRect and pointInRect(x, y, layout.skipRect) then
         return "skip"
     end
 
@@ -4039,13 +4119,15 @@ local function drawPlayGuideOverlay(game)
         "left"
     )
 
-    drawButton(
-        layout.skipRect,
-        "Skip",
-        { 0.11, 0.14, 0.18, 0.98 },
-        { 0.34, 0.4, 0.48, 1 },
-        game.fonts.small
-    )
+    if layout.skipRect then
+        drawButton(
+            layout.skipRect,
+            layout.skipLabel,
+            { 0.11, 0.14, 0.18, 0.98 },
+            { 0.34, 0.4, 0.48, 1 },
+            game.fonts.small
+        )
+    end
     drawButton(
         layout.nextRect,
         layout.nextLabel,

@@ -360,6 +360,36 @@ assert(foundGuideNext, "play guide next button should be detectable")
 assert(foundGuideSkip, "play guide skip button should be detectable")
 hoverGame.playGuide = nil
 
+hoverGame.playGuide = {
+    stepIndex = 1,
+    steps = {
+        {
+            target = "screen_center",
+            placement = "center",
+            hideSkip = true,
+            nextLabel = "Understood",
+            text = "Guide final copy.",
+        },
+    },
+}
+
+local foundCenteredGuideNext = false
+local foundCenteredGuideSkip = false
+for y = 80, hoverGame.viewport.h - 20, 4 do
+    for x = 20, hoverGame.viewport.w - 20, 4 do
+        local action = ui.getPlayGuideActionAt(hoverGame, x, y)
+        if action == "next" then
+            foundCenteredGuideNext = true
+        elseif action == "skip" then
+            foundCenteredGuideSkip = true
+        end
+    end
+end
+
+assert(foundCenteredGuideNext, "single-button play guide should still expose a next action")
+assertEqual(foundCenteredGuideSkip, false, "single-button play guide should not expose a skip action")
+hoverGame.playGuide = nil
+
 local levelSelectDescriptor = {
     previewLevel = {
         timeLimit = 45,
