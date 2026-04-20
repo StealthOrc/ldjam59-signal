@@ -55,9 +55,16 @@ jobs:
           $gitRef = '${{ github.ref }}'
           $defaultVersionPrefix = "0.1"
           $resolvedVersion = $null
+          $releaseTag = $null
 
           if (-not [string]::IsNullOrWhiteSpace($manualVersion)) {
-              $resolvedVersion = $manualVersion.Trim()
+              $trimmedManualVersion = $manualVersion.Trim()
+              if ($trimmedManualVersion.StartsWith("v")) {
+                  $resolvedVersion = $trimmedManualVersion.Substring(1)
+              }
+              else {
+                  $resolvedVersion = $trimmedManualVersion
+              }
           }
           elseif ($gitRef.StartsWith("refs/tags/v")) {
               $resolvedVersion = $gitRef.Substring("refs/tags/v".Length)
@@ -66,7 +73,10 @@ jobs:
               $resolvedVersion = "$defaultVersionPrefix.${{ github.run_number }}"
           }
 
+          $releaseTag = "v$resolvedVersion"
+
           "build_version=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Download LÖVE runtime
         id: download_love
@@ -101,9 +111,11 @@ jobs:
               -OutputRoot $env:OUTPUT_ROOT
 
       - name: Upload ZIP to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.resolve_version.outputs.release_tag }}
+          name: ${{ steps.resolve_version.outputs.release_tag }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           files: ${{ env.OUTPUT_ROOT }}\*_windows.zip
           generate_release_notes: true
 
