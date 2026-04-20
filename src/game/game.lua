@@ -91,6 +91,7 @@ local LEADERBOARD_TITLE_MAP_PERSONAL = "Personal Best"
 local RESULTS_MESSAGE_LOCAL_BEST_SAVED = "Saved a new local personal best."
 local RESULTS_MESSAGE_LOCAL_BEST_KEPT = "Your local personal best stays higher."
 local RESULTS_MESSAGE_LOCAL_SAVE_FAILED = "The local personal score could not be saved."
+local LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE = "Create a local .env or build.env file with API_KEY and API_BASE_URL before uploading maps."
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -567,13 +568,26 @@ function Game:getPlayModeButtonLabel()
 end
 
 function Game:getLocalScoreEntry(mapUuid)
-    if not mapUuid or mapUuid == "" then
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
         return nil
     end
 
     local scoreboard = self.localScoreboard or {}
     local entriesByMap = scoreboard.entries_by_map or scoreboard.entriesByMap or {}
-    local entry = entriesByMap[mapUuid]
+    local entry = entriesByMap[resolvedMapUuid]
+    if type(entry) ~= "table" then
+        for _, candidateEntry in pairs(entriesByMap) do
+            local candidateMapUuid = type(candidateEntry) == "table"
+                and tostring(candidateEntry.map_uuid or candidateEntry.mapUuid or candidateEntry.id or "")
+                or ""
+            if candidateMapUuid == resolvedMapUuid then
+                entry = candidateEntry
+                break
+            end
+        end
+    end
+
     if type(entry) ~= "table" then
         return nil
     end
@@ -1892,10 +1906,40 @@ function Game:canUploadMapDescriptor(mapDescriptor)
         and mapDescriptor.isRemoteImport ~= true
 end
 
+function Game:getUploadConfig()
+    if not self:isOnlineMode() then
+        return {
+            isConfigured = false,
+            errors = { "Offline mode is enabled." },
+        }
+    end
+
+    local uploadConfig = leaderboardClient.getConfig()
+    if uploadConfig.isConfigured and uploadConfig.hasLocalRequiredConfig then
+        return uploadConfig
+    end
+
+    local errors = {}
+    for _, errorMessage in ipairs(uploadConfig.errors or {}) do
+        errors[#errors + 1] = errorMessage
+    end
+
+    if not uploadConfig.hasLocalConfigFile then
+        errors[#errors + 1] = LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE
+    elseif not uploadConfig.hasLocalRequiredConfig then
+        errors[#errors + 1] = LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE
+    end
+
+    uploadConfig.isConfigured = false
+    uploadConfig.errors = errors
+    return uploadConfig
+end
+
 function Game:isUploadSelectedMapAvailable(mapDescriptor)
     return self:isOnlineMode()
         and self.levelSelectMode == LEVEL_SELECT_MODE_LIBRARY
         and self.levelSelectFilter == "user"
+        and self:getUploadConfig().isConfigured
         and self:canUploadMapDescriptor(mapDescriptor or self:getSelectedLevelMap())
 end
 
@@ -1966,7 +2010,7 @@ function Game:uploadSelectedMap()
         return
     end
 
-    local onlineConfig = self:getActiveOnlineConfig()
+    local onlineConfig = self:getUploadConfig()
     if not onlineConfig.isConfigured then
         self:setLevelSelectActionState(
             LEVEL_SELECT_ACTION_STATUS_ERROR,

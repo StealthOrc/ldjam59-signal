@@ -2342,6 +2342,17 @@ local function getLevelSelectLeaderboardPinnedRowY(contentRect, visibleEntryCoun
         + LEVEL_SELECT_LEADERBOARD_CARD.pinnedGap
 end
 
+local function shouldShowLevelSelectLeaderboardMessage(topEntries, pinnedPlayerEntry, previewState)
+    local hasTopEntries = #(topEntries or {}) > 0
+    local hasPinnedEntry = pinnedPlayerEntry ~= nil
+
+    return not hasTopEntries
+        and not hasPinnedEntry
+        and not (previewState and previewState.isLoading)
+        and previewState
+        and previewState.message ~= nil
+end
+
 local function drawLevelSelectLeaderboardBack(game, rect)
     local graphics = love.graphics
     local contentRect = {
@@ -2392,7 +2403,7 @@ local function drawLevelSelectLeaderboardBack(game, rect)
             contentRect.y + math.floor(contentRect.h * 0.56 + 0.5),
             { 0.48, 0.92, 0.62, 1 }
         )
-    elseif previewState.message then
+    elseif shouldShowLevelSelectLeaderboardMessage(topEntries, pinnedPlayerEntry, previewState) then
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
         graphics.printf(

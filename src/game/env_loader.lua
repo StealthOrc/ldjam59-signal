@@ -23,6 +23,16 @@ local SOURCE_SOURCE_DIRECTORY_BUILD = "source directory build.env"
 local SOURCE_SAVE_DIRECTORY = "save directory .env"
 local SOURCE_SAVE_DIRECTORY_BUILD = "save directory build.env"
 local SOURCE_PROCESS_ENVIRONMENT = "process environment"
+local LOCAL_CONFIG_SOURCES = {
+    [SOURCE_WORKING_DIRECTORY] = true,
+    [SOURCE_WORKING_DIRECTORY_BUILD] = true,
+    [SOURCE_LOVE_FILESYSTEM] = true,
+    [SOURCE_LOVE_FILESYSTEM_BUILD] = true,
+    [SOURCE_SOURCE_DIRECTORY] = true,
+    [SOURCE_SOURCE_DIRECTORY_BUILD] = true,
+    [SOURCE_SAVE_DIRECTORY] = true,
+    [SOURCE_SAVE_DIRECTORY_BUILD] = true,
+}
 
 local function trim(value)
     return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -226,6 +236,16 @@ local function applyProcessEnvironment(values, sourceByKey)
     end
 end
 
+local function hasLocalRequiredKeys(sourceByKey)
+    for _, key in ipairs(REQUIRED_KEYS) do
+        if not LOCAL_CONFIG_SOURCES[sourceByKey[key]] then
+            return false
+        end
+    end
+
+    return true
+end
+
 function envLoader.load()
     local values, sourceByKey, loadedSourceCount = readEnvValues()
     local errors = {}
@@ -239,6 +259,8 @@ function envLoader.load()
     local apiKey = values.API_KEY or ""
     local apiBaseUrl = values.API_BASE_URL or ""
     local hmacSecret = values.HMAC_SECRET or ""
+    local hasLocalConfigFile = loadedSourceCount > 0
+    local hasLocalRequiredConfig = hasLocalConfigFile and hasLocalRequiredKeys(sourceByKey)
 
     if apiKey == "" then
         errors[#errors + 1] = "API_KEY is missing. Set it in the process environment or in .env."
@@ -254,6 +276,8 @@ function envLoader.load()
         apiBaseUrl = apiBaseUrl,
         hmacSecret = hmacSecret,
         sourceByKey = sourceByKey,
+        hasLocalConfigFile = hasLocalConfigFile,
+        hasLocalRequiredConfig = hasLocalRequiredConfig,
         isConfigured = #errors == 0,
         errors = errors,
     }
