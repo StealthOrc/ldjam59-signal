@@ -1,0 +1,169 @@
+mapUuid = "029e1fd2-e138-4f6e-909f-e52b7005500b"
+name = "Map 5: Relay Dial"
+template = true
+version = 1
+[editor]
+[editor.endpoints.1]
+colors = ["blue"]
+id = "in_blue"
+kind = "input"
+x = 0.1969
+y = 0.0583
+[editor.endpoints.2]
+colors = ["yellow"]
+id = "in_yellow"
+kind = "input"
+x = 0.5391
+y = 0.0583
+[editor.endpoints.3]
+colors = ["blue", "yellow"]
+id = "out_left"
+kind = "output"
+x = 0.1969
+y = 0.9722
+[editor.endpoints.4]
+colors = ["blue", "yellow"]
+id = "out_right"
+kind = "output"
+x = 0.5391
+y = 0.9722
+[editor.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+control = "relay"
+id = "junction_relay"
+inputEndpointIds = ["in_blue", "in_yellow"]
+outputEndpointIds = ["out_left", "out_right"]
+routes = ["route_blue", "route_yellow"]
+x = 0.3672
+y = 0.4556
+[editor.routes.1]
+color = "blue"
+endEndpointId = "out_left"
+id = "route_blue"
+label = "Blue"
+startEndpointId = "in_blue"
+[editor.routes.1.points.1]
+x = 0.1969
+y = 0.0583
+[editor.routes.1.points.2]
+x = 0.1969
+y = 0.2794
+[editor.routes.1.points.3]
+x = 0.3672
+y = 0.4556
+[editor.routes.1.points.4]
+x = 0.1969
+y = 0.7
+[editor.routes.1.points.5]
+x = 0.1969
+y = 0.9722
+[editor.routes.2]
+color = "yellow"
+endEndpointId = "out_right"
+id = "route_yellow"
+label = "Gold"
+startEndpointId = "in_yellow"
+[editor.routes.2.points.1]
+x = 0.5391
+y = 0.0583
+[editor.routes.2.points.2]
+x = 0.5391
+y = 0.2794
+[editor.routes.2.points.3]
+x = 0.3672
+y = 0.4556
+[editor.routes.2.points.4]
+x = 0.5391
+y = 0.7
+[editor.routes.2.points.5]
+x = 0.5391
+y = 0.9722
+[level]
+description = "The relay dial couples the incoming route and exit lane together, so every click advances both sides in lockstep."
+footer = "Relay dials trade flexibility for speed. You cannot adjust the output selector separately on this junction."
+hint = "Use one click for the near gold train, then another to bring the blue line and left exit back together."
+title = "Map 5: Relay Dial"
+[level.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+id = "relay_tutorial"
+[level.junctions.1.control]
+label = "Relay Dial"
+type = "relay"
+[level.junctions.1.inputs.1]
+color = [0.33, 0.8, 0.98]
+colors = ["blue"]
+darkColor = [0.12, 0.32, 0.44]
+id = "route_blue_input"
+label = "Input 1"
+[level.junctions.1.inputs.1.inputPoints.1]
+x = 0.1969
+y = 0.0583
+[level.junctions.1.inputs.1.inputPoints.2]
+x = 0.1969
+y = 0.2794
+[level.junctions.1.inputs.1.inputPoints.3]
+x = 0.3672
+y = 0.4556
+[level.junctions.1.inputs.2]
+color = [0.98, 0.82, 0.34]
+colors = ["yellow"]
+darkColor = [0.46, 0.34, 0.08]
+id = "route_yellow_input"
+label = "Input 2"
+[level.junctions.1.inputs.2.inputPoints.1]
+x = 0.5391
+y = 0.0583
+[level.junctions.1.inputs.2.inputPoints.2]
+x = 0.5391
+y = 0.2794
+[level.junctions.1.inputs.2.inputPoints.3]
+x = 0.3672
+y = 0.4556
+[level.junctions.1.outputs.1]
+adoptInputColor = true
+color = [0.33, 0.8, 0.98]
+colors = ["blue", "yellow"]
+darkColor = [0.12, 0.32, 0.44]
+id = "out_left"
+label = "Output 1"
+[level.junctions.1.outputs.1.outputPoints.1]
+x = 0.3672
+y = 0.4556
+[level.junctions.1.outputs.1.outputPoints.2]
+x = 0.1969
+y = 0.7
+[level.junctions.1.outputs.1.outputPoints.3]
+x = 0.1969
+y = 0.9722
+[level.junctions.1.outputs.2]
+adoptInputColor = true
+color = [0.98, 0.82, 0.34]
+colors = ["blue", "yellow"]
+darkColor = [0.46, 0.34, 0.08]
+id = "out_right"
+label = "Output 2"
+[level.junctions.1.outputs.2.outputPoints.1]
+x = 0.3672
+y = 0.4556
+[level.junctions.1.outputs.2.outputPoints.2]
+x = 0.5391
+y = 0.7
+[level.junctions.1.outputs.2.outputPoints.3]
+x = 0.5391
+y = 0.9722
+[level.trains.1]
+color = [0.33, 0.8, 0.98]
+id = "relay_blue_train"
+inputIndex = 1
+junctionId = "relay_tutorial"
+progress = -245
+speedScale = 0.94
+[level.trains.2]
+color = [0.98, 0.82, 0.34]
+id = "relay_gold_train"
+inputIndex = 2
+junctionId = "relay_tutorial"
+progress = -78
+speedScale = 1
