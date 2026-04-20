@@ -13,7 +13,9 @@ local DEFAULT_CONTROL = "direct"
 local MAX_TRIP_PASS_COUNT = 5
 local MERGE_SNAP_RADIUS = 40
 local INTERSECTION_GROUP_BUCKET = 20
-local STRICT_INTERSECTION_CLUSTER_RADIUS = 6
+-- Keep this tight so nearby steep crossings do not collapse into one junction.
+-- True multi-route junction hits still land within the point match tolerance.
+local STRICT_INTERSECTION_CLUSTER_RADIUS = 3
 local SHARED_LANE_STRIPE_LENGTH = 14
 local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", "crossbar" }
 local DEFAULT_TRAIN_WAGONS = 4
@@ -563,6 +565,12 @@ local function buildSegmentGroupKey(a, b)
         return firstKey .. "|" .. secondKey
     end
     return secondKey .. "|" .. firstKey
+end
+
+local function buildIntersectionId(routeKey, point)
+    local safeRouteKey = tostring(routeKey or "junction"):gsub("[^%w]+", "_")
+    local pointKey = roundPointKey(point or { x = 0, y = 0 }):gsub("[^%w]+", "_")
+    return string.format("junction_%s_%s", safeRouteKey, pointKey)
 end
 
 local function getWrappedLineCount(font, text, width)
@@ -2758,7 +2766,9 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
         end
         table.sort(sortedRouteIds)
         self:restoreSharedPointsForRoutes(sortedRouteIds)
-        self.importedJunctionState[table.concat(sortedRouteIds, "|")] = {
+        local routeKey = table.concat(sortedRouteIds, "|")
+        self.importedJunctionState[routeKey] = self.importedJunctionState[routeKey] or {}
+        self.importedJunctionState[routeKey][#self.importedJunctionState[routeKey] + 1] = {
             id = junctionData.id,
             x = junctionData.x * self.mapSize.w,
             y = junctionData.y * self.mapSize.h,
@@ -3090,7 +3100,8 @@ function mapEditor:resetFromLevel(level)
 
         if #branchRoutes == 2 then
             local key = routePairKey(branchRoutes[1].id, branchRoutes[2].id)
-            self.importedJunctionState[key] = {
+            self.importedJunctionState[key] = self.importedJunctionState[key] or {}
+            self.importedJunctionState[key][#self.importedJunctionState[key] + 1] = {
                 x = mergeX,
                 y = mergeY,
                 controlType = ((junctionDefinition.control or {}).type) or DEFAULT_CONTROL,
@@ -3506,32 +3517,62 @@ function mapEditor:deleteSelection()
 end
 
 function mapEditor:getIntersectionControlType(intersection, previousMatches)
-    local imported = self.importedJunctionState[intersection.routeKey]
-    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
-        return imported.controlType
+    local bestDistanceSquared = nil
+    local bestControlType = nil
+
+    for _, imported in ipairs(self.importedJunctionState[intersection.routeKey] or {}) do
+        local candidateDistanceSquared = distanceSquared(imported.x, imported.y, intersection.x, intersection.y)
+        if candidateDistanceSquared <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED
+            and (not bestDistanceSquared or candidateDistanceSquared < bestDistanceSquared) then
+            bestDistanceSquared = candidateDistanceSquared
+            bestControlType = imported.controlType
+        end
     end
 
     for _, previous in ipairs(previousMatches) do
-        if previous.routeKey == intersection.routeKey
-            and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
-            return previous.controlType
+        if previous.routeKey == intersection.routeKey then
+            local candidateDistanceSquared = distanceSquared(previous.x, previous.y, intersection.x, intersection.y)
+            if candidateDistanceSquared <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED
+                and (not bestDistanceSquared or candidateDistanceSquared < bestDistanceSquared) then
+                bestDistanceSquared = candidateDistanceSquared
+                bestControlType = previous.controlType
+            end
         end
+    end
+
+    if bestControlType then
+        return bestControlType
     end
 
     return DEFAULT_CONTROL
 end
 
 function mapEditor:getJunctionState(intersection, previousMatches)
-    local imported = self.importedJunctionState[intersection.routeKey]
-    if imported and distanceSquared(imported.x, imported.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
-        return imported
+    local bestDistanceSquared = nil
+    local bestMatch = nil
+
+    for _, imported in ipairs(self.importedJunctionState[intersection.routeKey] or {}) do
+        local candidateDistanceSquared = distanceSquared(imported.x, imported.y, intersection.x, intersection.y)
+        if candidateDistanceSquared <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED
+            and (not bestDistanceSquared or candidateDistanceSquared < bestDistanceSquared) then
+            bestDistanceSquared = candidateDistanceSquared
+            bestMatch = imported
+        end
     end
 
     for _, previous in ipairs(previousMatches) do
-        if previous.routeKey == intersection.routeKey
-            and distanceSquared(previous.x, previous.y, intersection.x, intersection.y) <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED then
-            return previous
+        if previous.routeKey == intersection.routeKey then
+            local candidateDistanceSquared = distanceSquared(previous.x, previous.y, intersection.x, intersection.y)
+            if candidateDistanceSquared <= INTERSECTION_STATE_MATCH_DISTANCE_SQUARED
+                and (not bestDistanceSquared or candidateDistanceSquared < bestDistanceSquared) then
+                bestDistanceSquared = candidateDistanceSquared
+                bestMatch = previous
+            end
         end
+    end
+
+    if bestMatch then
+        return bestMatch
     end
 
     return nil
@@ -3608,15 +3649,11 @@ function mapEditor:resolveGroupedIntersections(groupedIntersection)
     end
 
     for routeKey, clusters in pairs(candidatesByRouteKey) do
-        for clusterIndex, cluster in ipairs(clusters) do
+        for _, cluster in ipairs(clusters) do
             local bestCandidate = chooseBestCandidatePoint(cluster.candidates)
             if bestCandidate then
                 resolved[#resolved + 1] = {
-                    id = string.format(
-                        "junction_%s_%d",
-                        routeKey:gsub("[^%w]+", "_"),
-                        clusterIndex
-                    ),
+                    id = buildIntersectionId(routeKey, bestCandidate),
                     x = bestCandidate.x,
                     y = bestCandidate.y,
                     routeIds = cluster.routeIds,
