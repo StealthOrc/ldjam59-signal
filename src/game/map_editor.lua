@@ -4964,8 +4964,8 @@ function mapEditor:mousepressed(screenX, screenY, button)
             return true
         end
         if hitIntersection then
-            self:openJunctionPicker(hitIntersection, x, y)
-            self:updateJunctionPickerHover(x, y)
+            self:openJunctionPicker(hitIntersection, screenX, screenY)
+            self:updateJunctionPickerHover(screenX, screenY)
             return true
         end
 
@@ -5871,7 +5871,7 @@ function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
         graphics.circle("fill", root.x - root.radius * 0.36, dotY, JUNCTION_MENU_SWATCH_RADIUS)
     end
 
-    self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.33, root.y, JUNCTION_MENU_ICON_SIZE)
+    self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.5, root.y, JUNCTION_MENU_ICON_SIZE)
 end
 
 function mapEditor:drawJunctionMenuSubmenu(layout, intersection)
