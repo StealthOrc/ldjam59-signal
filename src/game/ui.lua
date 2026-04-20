@@ -18,6 +18,23 @@ local LEVEL_SELECT = {
     bottomSelectorGap = 12,
     bottomBarY = 626,
     bottomBarH = 92,
+    statusCard = {
+        topGap = 12,
+        minW = 180,
+        maxW = 620,
+        paddingX = 18,
+        paddingY = 10,
+        titleGap = 4,
+        cornerRadius = 14,
+    },
+    uploadDialog = {
+        panelW = 620,
+        panelH = 360,
+        valueH = 58,
+        buttonW = 176,
+        buttonH = 42,
+        buttonGap = 18,
+    },
 }
 
 local LEVEL_SELECT_ACTION_LAYOUT = {
@@ -1969,6 +1986,210 @@ local function getLevelIssueOverlayRects(game)
     }
 end
 
+function ui.getLevelSelectUploadDialogRects(game)
+    local panel = {
+        x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.uploadDialog.panelW * 0.5 + 0.5),
+        y = math.floor(game.viewport.h * 0.5 - LEVEL_SELECT.uploadDialog.panelH * 0.5 + 0.5),
+        w = LEVEL_SELECT.uploadDialog.panelW,
+        h = LEVEL_SELECT.uploadDialog.panelH,
+    }
+    local buttonGroupWidth = (LEVEL_SELECT.uploadDialog.buttonW * 2) + LEVEL_SELECT.uploadDialog.buttonGap
+    local buttonX = panel.x + math.floor((panel.w - buttonGroupWidth) * 0.5 + 0.5)
+
+    return {
+        panel = panel,
+        value = {
+            x = panel.x + 46,
+            y = panel.y + 132,
+            w = panel.w - 92,
+            h = LEVEL_SELECT.uploadDialog.valueH,
+        },
+        copy = {
+            x = buttonX,
+            y = panel.y + panel.h - 66,
+            w = LEVEL_SELECT.uploadDialog.buttonW,
+            h = LEVEL_SELECT.uploadDialog.buttonH,
+        },
+        close = {
+            x = buttonX + LEVEL_SELECT.uploadDialog.buttonW + LEVEL_SELECT.uploadDialog.buttonGap,
+            y = panel.y + panel.h - 66,
+            w = LEVEL_SELECT.uploadDialog.buttonW,
+            h = LEVEL_SELECT.uploadDialog.buttonH,
+        },
+    }
+end
+
+function ui.getLevelSelectStatusCardLayout(game)
+    local actionStatus = game and game.levelSelectActionState or nil
+    if not actionStatus or not actionStatus.message then
+        return nil
+    end
+
+    local title = safeUiText(
+        actionStatus.title,
+        actionStatus.status == "error" and "Problem"
+            or (actionStatus.status == "success" and "Done" or "Working")
+    )
+    local message = safeUiText(actionStatus.message, "Status message unavailable.")
+    local titleBarRect = getLevelSelectTitleBarRect(game)
+    local maxPanelWidth = math.min(LEVEL_SELECT.statusCard.maxW, game.viewport.w - 80)
+    local maxTextWidth = math.max(40, maxPanelWidth - (LEVEL_SELECT.statusCard.paddingX * 2))
+
+    love.graphics.setFont(game.fonts.small)
+    local titleWidth = game.fonts.small:getWidth(title)
+    local messageWidth = game.fonts.small:getWidth(message)
+    local contentWidth = math.max(titleWidth, math.min(messageWidth, maxTextWidth))
+    local textWidth = math.max(
+        40,
+        math.min(
+            maxTextWidth,
+            math.max(maxTextWidth >= messageWidth and contentWidth or maxTextWidth, titleWidth)
+        )
+    )
+    local panelWidth = math.max(
+        LEVEL_SELECT.statusCard.minW,
+        math.min(maxPanelWidth, textWidth + (LEVEL_SELECT.statusCard.paddingX * 2))
+    )
+    textWidth = panelWidth - (LEVEL_SELECT.statusCard.paddingX * 2)
+
+    local titleHeight = game.fonts.small:getHeight()
+    local messageLineCount = getWrappedLineCount(game.fonts.small, message, textWidth)
+    local messageHeight = messageLineCount * game.fonts.small:getHeight()
+    local panelHeight = (LEVEL_SELECT.statusCard.paddingY * 2)
+        + titleHeight
+        + LEVEL_SELECT.statusCard.titleGap
+        + messageHeight
+
+    return {
+        title = title,
+        message = message,
+        panel = {
+            x = math.floor((game.viewport.w - panelWidth) * 0.5 + 0.5),
+            y = titleBarRect.y + titleBarRect.h + LEVEL_SELECT.statusCard.topGap,
+            w = panelWidth,
+            h = panelHeight,
+        },
+        textWidth = textWidth,
+        titleHeight = titleHeight,
+    }
+end
+
+local function drawLevelSelectStatusCard(game)
+    local layout = ui.getLevelSelectStatusCardLayout(game)
+    if not layout then
+        return
+    end
+
+    local graphics = love.graphics
+    local actionStatus = game.levelSelectActionState
+    local panel = layout.panel
+    local panelX = panel.x
+    local panelY = panel.y
+    local accentColor = actionStatus.status == "error"
+            and { 0.99, 0.78, 0.32, 1 }
+        or (actionStatus.status == "success"
+            and { 0.48, 0.92, 0.62, 1 }
+            or { 0.56, 0.72, 0.98, 1 })
+    local textWidth = layout.textWidth
+    local titleHeight = layout.titleHeight
+    local panelWidth = panel.w
+    local panelHeight = panel.h
+
+    graphics.setColor(0.06, 0.08, 0.12, 0.95)
+    graphics.rectangle("fill", panelX, panelY, panelWidth, panelHeight, LEVEL_SELECT.statusCard.cornerRadius, LEVEL_SELECT.statusCard.cornerRadius)
+    graphics.setColor(0.22, 0.28, 0.34, 0.98)
+    graphics.rectangle("line", panelX, panelY, panelWidth, panelHeight, LEVEL_SELECT.statusCard.cornerRadius, LEVEL_SELECT.statusCard.cornerRadius)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(accentColor[1], accentColor[2], accentColor[3], accentColor[4])
+    graphics.printf(layout.title, panelX + LEVEL_SELECT.statusCard.paddingX, panelY + LEVEL_SELECT.statusCard.paddingY, textWidth, "center")
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(
+        layout.message,
+        panelX + LEVEL_SELECT.statusCard.paddingX,
+        panelY + LEVEL_SELECT.statusCard.paddingY + titleHeight + LEVEL_SELECT.statusCard.titleGap,
+        textWidth,
+        "center"
+    )
+end
+
+local function drawLevelSelectUploadDialog(game)
+    local dialog = game.levelSelectUploadDialog
+    if not dialog then
+        return
+    end
+
+    local graphics = love.graphics
+    local rects = ui.getLevelSelectUploadDialogRects(game)
+    local panel = rects.panel
+    local mapId = safeUiText(dialog.mapId, "Unavailable")
+    local mapName = safeUiText(dialog.mapName, "Uploaded map")
+    local copyStatus = dialog.copyStatus or {}
+    local copyStatusColor = copyStatus.status == "error"
+            and { 0.99, 0.78, 0.32, 1 }
+        or { 0.48, 0.92, 0.62, 1 }
+
+    graphics.setColor(0, 0, 0, 0.68)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+
+    graphics.setColor(0.09, 0.11, 0.15, 0.98)
+    graphics.rectangle("fill", panel.x, panel.y, panel.w, panel.h, 18, 18)
+    graphics.setColor(0.3, 0.42, 0.56, 1)
+    graphics.rectangle("line", panel.x, panel.y, panel.w, panel.h, 18, 18)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf("Map uploaded", panel.x + 28, panel.y + 22, panel.w - 56, "center")
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.56, 0.72, 0.98, 1)
+    graphics.printf(mapName, panel.x + 36, panel.y + 72, panel.w - 72, "center")
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(
+        "Copy this map ID if you want to share the upload or find it again later.",
+        panel.x + 40,
+        panel.y + 102,
+        panel.w - 80,
+        "center"
+    )
+
+    graphics.setColor(0.06, 0.08, 0.12, 1)
+    graphics.rectangle("fill", rects.value.x, rects.value.y, rects.value.w, rects.value.h, 14, 14)
+    graphics.setColor(0.44, 0.62, 0.78, 1)
+    graphics.rectangle("line", rects.value.x, rects.value.y, rects.value.w, rects.value.h, 14, 14)
+
+    graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+    graphics.print("Map ID", rects.value.x + 16, rects.value.y + 8)
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(mapId, rects.value.x + 16, rects.value.y + 26, rects.value.w - 32, "center")
+
+    love.graphics.setFont(game.fonts.small)
+    if copyStatus.message and copyStatus.message ~= "" then
+        graphics.setColor(copyStatusColor[1], copyStatusColor[2], copyStatusColor[3], copyStatusColor[4])
+        graphics.printf(copyStatus.message, panel.x + 38, panel.y + 214, panel.w - 76, "center")
+    end
+
+    if dialog.internalIdentifier and dialog.internalIdentifier ~= "" and dialog.mapUuid and dialog.mapUuid ~= "" then
+        graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+        graphics.printf(
+            string.format("Map UUID: %s", safeUiText(dialog.mapUuid, "n/a")),
+            panel.x + 38,
+            panel.y + 240,
+            panel.w - 76,
+            "center"
+        )
+    end
+
+    graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+    graphics.printf("Press Enter/C to copy. Press Esc to close.", panel.x + 38, panel.y + 262, panel.w - 76, "center")
+
+    drawButton(rects.copy, "Copy ID", { 0.1, 0.14, 0.18, 0.98 }, { 0.56, 0.72, 0.98, 1 }, game.fonts.small)
+    drawButton(rects.close, "Close", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+end
+
 local function getCardScale(distance)
     local absDistance = math.abs(distance)
     if absDistance <= 1 then
@@ -2906,6 +3127,20 @@ function ui.getLeaderboardMapHitAt(game, x, y)
 end
 
 function ui.getLevelSelectHit(game, x, y, button)
+    if game.levelSelectUploadDialog then
+        local overlay = ui.getLevelSelectUploadDialogRects(game)
+        if pointInRect(x, y, overlay.copy) or pointInRect(x, y, overlay.value) then
+            return { kind = "upload_dialog_copy" }
+        end
+        if pointInRect(x, y, overlay.close) then
+            return { kind = "upload_dialog_close" }
+        end
+        if not pointInRect(x, y, overlay.panel) then
+            return { kind = "upload_dialog_close" }
+        end
+        return { kind = "upload_dialog_blocked" }
+    end
+
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
         if pointInRect(x, y, overlay.edit) then
@@ -3008,7 +3243,7 @@ function ui.getLevelSelectHit(game, x, y, button)
 end
 
 function ui.getLevelSelectHoverId(game, x, y)
-    if game.levelSelectIssue then
+    if game.levelSelectUploadDialog or game.levelSelectIssue then
         return nil
     end
 
@@ -3069,7 +3304,7 @@ function ui.getLevelSelectHoverId(game, x, y)
 end
 
 function ui.getLevelSelectHoverInfoAt(game, x, y)
-    if game.levelSelectIssue then
+    if game.levelSelectUploadDialog or game.levelSelectIssue then
         return nil
     end
 
@@ -4100,6 +4335,27 @@ function ui.getPlayStartHit(game, x, y)
     return pointInRect(x, y, getPlayStartRect())
 end
 
+function ui.getPlayHeaderHintLines(game)
+    local backLabel = getRunBackLabel(game)
+    if game and game.playPhase == "prepare" then
+        return {
+            "F2 Help",
+            "F3 Debug",
+            string.format("M %s", backLabel),
+            "E Editor",
+            "R Reset Prep",
+        }
+    end
+
+    return {
+        "F2 Help",
+        "F3 Debug",
+        string.format("M %s", backLabel),
+        "E Editor",
+        "R Restart",
+    }
+end
+
 local function getResultsButtonRects(game)
     local widths = {
         replay = 112,
@@ -4724,40 +4980,7 @@ function ui.drawLevelSelect(game)
         drawButton(buttonRect, buttonRect.label, fillColor, strokeColor, font, isDisabled)
     end
 
-    if game.levelSelectActionState and game.levelSelectActionState.message then
-        local bottomBarRect = getLevelSelectBottomBarRect(game)
-        local actionStatus = game.levelSelectActionState
-        local statusText = safeUiText(actionStatus.message, "Status message unavailable.")
-        local statusColor = PANEL_COLORS.bodyText
-        if actionStatus.status == "success" then
-            statusColor = { 0.48, 0.92, 0.62, 1 }
-        elseif actionStatus.status == "error" then
-            statusColor = { 0.99, 0.78, 0.32, 1 }
-        end
-
-        love.graphics.setFont(game.fonts.small)
-        local toastMaxWidth = math.min(game.viewport.w - 56, 760)
-        local toastTextWidth = toastMaxWidth - 28
-        local lineCount = getWrappedLineCount(game.fonts.small, statusText, toastTextWidth)
-        local toastHeight = (lineCount * game.fonts.small:getHeight()) + 14
-        local toastY = bottomBarRect.y - toastHeight - 10
-        local toastWidth = toastMaxWidth
-        local toastX = math.floor((game.viewport.w - toastWidth) * 0.5 + 0.5)
-
-        graphics.setColor(0.02, 0.03, 0.04, 0.82)
-        graphics.rectangle("fill", toastX, toastY, toastWidth, toastHeight, 14, 14)
-        graphics.setColor(0.18, 0.22, 0.26, 0.92)
-        graphics.rectangle("line", toastX, toastY, toastWidth, toastHeight, 14, 14)
-
-        graphics.setColor(statusColor[1], statusColor[2], statusColor[3], statusColor[4] or 1)
-        graphics.printf(
-            statusText,
-            toastX + 14,
-            toastY + 7,
-            toastTextWidth,
-            "center"
-        )
-    end
+    drawLevelSelectStatusCard(game)
 
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
@@ -4816,7 +5039,11 @@ function ui.drawLevelSelect(game)
         drawButton(overlay.cancel, "Cancel", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
     end
 
-    if game.levelSelectHoverInfo and not game.levelSelectIssue then
+    if game.levelSelectUploadDialog then
+        drawLevelSelectUploadDialog(game)
+    end
+
+    if game.levelSelectHoverInfo and not game.levelSelectIssue and not game.levelSelectUploadDialog then
         drawPlayTooltip(game, game.levelSelectHoverInfo)
     end
 end
@@ -4827,6 +5054,8 @@ function ui.drawPlay(game)
     local outputGroups = game.world:getOutputBadgeGroups()
     local activeGuideStep = getActivePlayGuideStep(game)
     local allowHoverTooltip = (not game.playGuideTransition) and (not activeGuideStep or activeGuideStep.allowHoverTooltip == true)
+    local headerHintLines = ui.getPlayHeaderHintLines(game)
+    local headerHintX = 24
 
     for _, badge in ipairs(outputGroups) do
         drawOutputBadge(game, badge)
@@ -4863,18 +5092,14 @@ function ui.drawPlay(game)
         end
     end
 
-    graphics.setColor(0, 0, 0, 0.3)
-    graphics.rectangle("fill", game.viewport.w - 286, game.viewport.h - 54, 250, 30, 15, 15)
-    graphics.setColor(0.8, 0.84, 0.9, 0.82)
-    graphics.printf(
-        game.playPhase == "prepare"
-            and string.format("Press F2 for help, F3 for debug, M for %s, E for editor, or R to reset prep", getRunBackLabel(game))
-            or string.format("Press F2 for help, F3 for debug, M for %s, E for editor, or R to restart", getRunBackLabel(game)),
-        0,
-        game.viewport.h - 42,
-        game.viewport.w,
-        "center"
-    )
+    love.graphics.setFont(game.fonts.small)
+    local lineHeight = game.fonts.small:getHeight() + 6
+    local hintBlockHeight = #headerHintLines * lineHeight
+    local headerHintY = math.floor((game.viewport.h - hintBlockHeight) * 0.5 + 0.5)
+    graphics.setColor(0.72, 0.78, 0.84, 0.96)
+    for index, hintLine in ipairs(headerHintLines) do
+        graphics.print(hintLine, headerHintX, headerHintY + ((index - 1) * lineHeight))
+    end
 
     drawPlayInfoOverlay(game)
     if activeGuideStep then
