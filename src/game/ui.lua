@@ -3,15 +3,17 @@ local uiControls = require("src.game.ui_controls")
 local roadTypes = require("src.game.road_types")
 
 local LEVEL_SELECT = {
-    chromeH = 74,
-    titleBarY = 100,
+    titleBarY = 28,
     titleBarH = 74,
-    carouselCenterY = 354,
+    carouselCenterY = 300,
     cardBaseW = 292,
     cardBaseH = 286,
     sideLift = 46,
     filterW = 536,
     filterH = 42,
+    selectorGap = 10,
+    searchGap = 16,
+    bottomSelectorGap = 12,
     bottomBarY = 626,
     bottomBarH = 92,
 }
@@ -1251,21 +1253,38 @@ local function getSelectedMapIndex(game, maps)
     return fallbackIndex
 end
 
-local function getLevelSelectChromeRect(game)
-    return {
-        x = 2,
-        y = 2,
-        w = game.viewport.w - 4,
-        h = LEVEL_SELECT.chromeH,
-    }
-end
-
 local function getLevelSelectBottomBarRect(game)
     return {
         x = 2,
         y = LEVEL_SELECT.bottomBarY,
         w = game.viewport.w - 4,
         h = LEVEL_SELECT.bottomBarH,
+    }
+end
+
+local function getLevelSelectTitleBarRect(game)
+    return {
+        x = 118,
+        y = LEVEL_SELECT.titleBarY,
+        w = 1044,
+        h = LEVEL_SELECT.titleBarH,
+    }
+end
+
+local function getLevelSelectModeSegments()
+    return {
+        { id = "library", label = "Local Maps" },
+        { id = "marketplace", label = "Online Maps" },
+    }
+end
+
+local function getLevelSelectModeSelectorRect(game)
+    local bottomBarRect = getLevelSelectBottomBarRect(game)
+    return {
+        x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.filterW * 0.5 + 0.5),
+        y = bottomBarRect.y - LEVEL_SELECT.bottomSelectorGap - LEVEL_SELECT.filterH,
+        w = LEVEL_SELECT.filterW,
+        h = LEVEL_SELECT.filterH,
     }
 end
 
@@ -1288,23 +1307,13 @@ local function getMarketplaceTabsRect(game)
 end
 
 local function getMarketplaceSearchRect(game)
-    local chromeRect = getLevelSelectChromeRect(game)
+    local selectorRect = getLevelSelectFilterRect(game)
     return {
         x = math.floor(game.viewport.w * 0.5 - MARKETPLACE_LAYOUT.searchW * 0.5 + 0.5),
-        y = chromeRect.y + math.floor((chromeRect.h - MARKETPLACE_LAYOUT.searchH) * 0.5 + 0.5),
+        y = selectorRect.y - LEVEL_SELECT.searchGap - MARKETPLACE_LAYOUT.searchH,
         w = MARKETPLACE_LAYOUT.searchW,
         h = MARKETPLACE_LAYOUT.searchH,
     }
-end
-
-local function getLevelSelectModeButtonRect(game)
-    for _, button in ipairs(getLevelSelectActionButtons(game)) do
-        if button.id == "toggle_mode" then
-            return button
-        end
-    end
-
-    return nil
 end
 
 local function getMarketplaceHash(text)
@@ -1672,12 +1681,12 @@ local function buildCardBadges(game, descriptor, maxWidth)
 end
 
 local function getLevelSelectBackRect(game)
-    local chromeRect = getLevelSelectChromeRect(game)
+    local bottomBarRect = getLevelSelectBottomBarRect(game)
     return {
-        x = 24,
-        y = chromeRect.y + math.floor((chromeRect.h - 40) * 0.5 + 0.5),
+        x = bottomBarRect.x + 24,
+        y = bottomBarRect.y + math.floor((bottomBarRect.h - LEVEL_SELECT_ACTION_LAYOUT.buttonH) * 0.5 + 0.5),
         w = 120,
-        h = 40,
+        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
     }
 end
 
@@ -1693,14 +1702,11 @@ local function getSettledSelectedCardRect(game)
 end
 
 getLevelSelectFilterRect = function(game)
-    local panelTop = LEVEL_SELECT.bottomBarY
-    local selectedCardRect = getSettledSelectedCardRect(game)
-    local selectedBottom = selectedCardRect.y + selectedCardRect.h
-    local centerY = math.floor((selectedBottom + panelTop) * 0.5 + 0.5)
+    local modeRect = getLevelSelectModeSelectorRect(game)
 
     return {
         x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.filterW * 0.5 + 0.5),
-        y = centerY - math.floor(LEVEL_SELECT.filterH * 0.5 + 0.5),
+        y = modeRect.y - LEVEL_SELECT.selectorGap - LEVEL_SELECT.filterH,
         w = LEVEL_SELECT.filterW,
         h = LEVEL_SELECT.filterH,
     }
@@ -1712,13 +1718,24 @@ getLevelSelectActionButtons = function(game)
     local selectedIndex = getSelectedMapIndex(game, maps)
     local selectedMap = selectedIndex and maps[selectedIndex] or nil
     local buttonY = bottomBarRect.y + math.floor((bottomBarRect.h - LEVEL_SELECT_ACTION_LAYOUT.buttonH) * 0.5 + 0.5)
-    local buttonSpecs
+    local buttons = {}
+    local sideInset = 24
+    local primarySpec
+    local rightButtonSpecs = {}
+
+    buttons[#buttons + 1] = {
+        id = "back",
+        label = "Back",
+        x = bottomBarRect.x + sideInset,
+        y = buttonY,
+        w = 120,
+        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
+    }
 
     if game.levelSelectMode == "marketplace" then
-        buttonSpecs = {
-            { id = "download_map", label = "Download", w = LEVEL_SELECT_ACTION_LAYOUT.downloadW },
+        primarySpec = { id = "download_map", label = "Download", w = LEVEL_SELECT_ACTION_LAYOUT.downloadW }
+        rightButtonSpecs = {
             { id = "refresh_marketplace", label = "Refresh", w = LEVEL_SELECT_ACTION_LAYOUT.refreshW },
-            { id = "toggle_mode", label = "Local Maps", w = LEVEL_SELECT_ACTION_LAYOUT.toggleW },
         }
     else
         local editButtonId = "edit_map"
@@ -1728,39 +1745,42 @@ getLevelSelectActionButtons = function(game)
             editButtonLabel = "Clone"
         end
 
-        buttonSpecs = {
-            { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW },
-            { id = editButtonId, label = editButtonLabel, w = LEVEL_SELECT_ACTION_LAYOUT.editW },
-        }
-
-        if game:isOnlineMode() then
-            buttonSpecs[#buttonSpecs + 1] = {
-                id = "toggle_mode",
-                label = "Online Maps",
-                w = LEVEL_SELECT_ACTION_LAYOUT.toggleW,
-            }
-        end
+        primarySpec = { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW }
 
         if selectedMap and game:isUploadSelectedMapAvailable(selectedMap) then
-            buttonSpecs[#buttonSpecs + 1] = {
+            rightButtonSpecs[#rightButtonSpecs + 1] = {
                 id = "upload_map",
                 label = "Upload",
                 w = LEVEL_SELECT_ACTION_LAYOUT.uploadW,
             }
         end
+
+        rightButtonSpecs[#rightButtonSpecs + 1] = {
+            id = editButtonId,
+            label = editButtonLabel,
+            w = LEVEL_SELECT_ACTION_LAYOUT.editW,
+        }
     end
 
-    local totalWidth = 0
-    for index, spec in ipairs(buttonSpecs) do
-        totalWidth = totalWidth + spec.w
+    buttons[#buttons + 1] = {
+        id = primarySpec.id,
+        label = primarySpec.label,
+        x = math.floor(game.viewport.w * 0.5 - primarySpec.w * 0.5 + 0.5),
+        y = buttonY,
+        w = primarySpec.w,
+        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
+    }
+
+    local totalRightWidth = 0
+    for index, spec in ipairs(rightButtonSpecs) do
+        totalRightWidth = totalRightWidth + spec.w
         if index > 1 then
-            totalWidth = totalWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+            totalRightWidth = totalRightWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
         end
     end
 
-    local currentX = math.floor(game.viewport.w * 0.5 - totalWidth * 0.5 + 0.5)
-    local buttons = {}
-    for _, spec in ipairs(buttonSpecs) do
+    local currentX = bottomBarRect.x + bottomBarRect.w - sideInset - totalRightWidth
+    for _, spec in ipairs(rightButtonSpecs) do
         buttons[#buttons + 1] = {
             id = spec.id,
             label = spec.label,
@@ -2120,7 +2140,6 @@ end
 
 local function drawLevelSelectChrome(game)
     local graphics = love.graphics
-    local chromeRect = getLevelSelectChromeRect(game)
     local bottomBarRect = getLevelSelectBottomBarRect(game)
     graphics.setColor(0.08, 0.12, 0.18, 0.82)
     graphics.circle("fill", 164, 188, 168)
@@ -2131,7 +2150,6 @@ local function drawLevelSelectChrome(game)
     graphics.setLineWidth(2)
     graphics.setLineWidth(1)
 
-    drawMetalPanel(chromeRect, 0.98)
     drawMetalPanel(bottomBarRect, 0.98)
 end
 
@@ -2228,12 +2246,7 @@ end
 
 local function drawLevelSelectTitleBar(game, selectedMap)
     local graphics = love.graphics
-    local barRect = {
-        x = 118,
-        y = LEVEL_SELECT.titleBarY,
-        w = 1044,
-        h = LEVEL_SELECT.titleBarH,
-    }
+    local barRect = getLevelSelectTitleBarRect(game)
 
     graphics.setColor(PANEL_COLORS.panelFill[1], PANEL_COLORS.panelFill[2], PANEL_COLORS.panelFill[3], PANEL_COLORS.panelFill[4])
     graphics.rectangle("fill", barRect.x, barRect.y, barRect.w, barRect.h, 12, 12)
@@ -2730,12 +2743,17 @@ function ui.getLevelSelectHit(game, x, y, button)
         return { kind = "back" }
     end
 
-    local modeButtonRect = getLevelSelectModeButtonRect(game)
-    if modeButtonRect and pointInRect(x, y, modeButtonRect) then
-        if modeButtonRect.id == "toggle_mode" and game.levelSelectMode ~= "marketplace" and not game:isOnlineMapsAvailable() then
-            return nil
+    local modeSelectorRect = getLevelSelectModeSelectorRect(game)
+    if pointInRect(x, y, modeSelectorRect) then
+        local modeSegments = getLevelSelectModeSegments()
+        for index, segment in ipairs(modeSegments) do
+            if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
+                if segment.id == "marketplace" and not game:isOnlineMode() then
+                    return nil
+                end
+                return { kind = "set_mode", mode = segment.id }
+            end
         end
-        return { kind = "toggle_mode" }
     end
 
     if game.levelSelectMode == "marketplace" then
@@ -2752,7 +2770,7 @@ function ui.getLevelSelectHit(game, x, y, button)
         local selectedMarketplaceIndex = getSelectedMapIndex(game, marketplaceMaps)
         local selectedMarketplaceMap = selectedMarketplaceIndex and marketplaceMaps[selectedMarketplaceIndex] or nil
         for _, buttonRect in ipairs(getLevelSelectActionButtons(game)) do
-            if buttonRect.id ~= "toggle_mode" and pointInRect(x, y, buttonRect) then
+            if buttonRect.id ~= "back" and pointInRect(x, y, buttonRect) then
                 return {
                     kind = buttonRect.id,
                     map = selectedMarketplaceMap,
@@ -2785,7 +2803,7 @@ function ui.getLevelSelectHit(game, x, y, button)
     local selectedIndex = getSelectedMapIndex(game, maps)
     local selectedMap = selectedIndex and maps[selectedIndex] or nil
     for _, buttonRect in ipairs(getLevelSelectActionButtons(game)) do
-        if buttonRect.id ~= "toggle_mode" and pointInRect(x, y, buttonRect) then
+        if buttonRect.id ~= "back" and pointInRect(x, y, buttonRect) then
             return {
                 kind = buttonRect.id,
                 map = selectedMap,
@@ -2823,6 +2841,18 @@ function ui.getLevelSelectHoverId(game, x, y)
                 end
             end
         end
+        local modeSelectorRect = getLevelSelectModeSelectorRect(game)
+        if pointInRect(x, y, modeSelectorRect) then
+            local modeSegments = getLevelSelectModeSegments()
+            for index, segment in ipairs(modeSegments) do
+                if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
+                    if segment.id == "marketplace" and not game:isOnlineMode() then
+                        return nil
+                    end
+                    return segment.id
+                end
+            end
+        end
         for _, rect in ipairs(buildLevelSelectCardRects(game)) do
             if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
                 return getMarketplaceFavoriteHoverId(rect.map)
@@ -2836,6 +2866,19 @@ function ui.getLevelSelectHoverId(game, x, y)
         local filterSegments = getLevelSelectFilterSegments()
         for index, segment in ipairs(filterSegments) do
             if pointInRect(x, y, uiControls.segmentRect(filterRect, index, #filterSegments)) then
+                return segment.id
+            end
+        end
+    end
+
+    local modeSelectorRect = getLevelSelectModeSelectorRect(game)
+    if pointInRect(x, y, modeSelectorRect) then
+        local modeSegments = getLevelSelectModeSegments()
+        for index, segment in ipairs(modeSegments) do
+            if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
+                if segment.id == "marketplace" and not game:isOnlineMode() then
+                    return nil
+                end
                 return segment.id
             end
         end
@@ -3753,17 +3796,17 @@ function ui.drawLevelSelect(game)
     local selectedMap = selectedIndex and maps[selectedIndex] or nil
     local cardRects = buildLevelSelectCardRects(game)
     local actionButtons = getLevelSelectActionButtons(game)
-    local selectionRect = game.levelSelectMode == "marketplace" and getMarketplaceTabsRect(game) or getLevelSelectFilterRect(game)
-    local selectionSegments = game.levelSelectMode == "marketplace" and getMarketplaceTabSegments() or getLevelSelectFilterSegments()
-    local selectionValue = game.levelSelectMode == "marketplace" and (game.levelSelectMarketplaceTab or "top") or (game.levelSelectFilter or "all")
+    local primarySelectionRect = game.levelSelectMode == "marketplace" and getMarketplaceTabsRect(game) or getLevelSelectFilterRect(game)
+    local primarySelectionSegments = game.levelSelectMode == "marketplace" and getMarketplaceTabSegments() or getLevelSelectFilterSegments()
+    local primarySelectionValue = game.levelSelectMode == "marketplace" and (game.levelSelectMarketplaceTab or "top") or (game.levelSelectFilter or "all")
+    local modeSelectionRect = getLevelSelectModeSelectorRect(game)
+    local modeSelectionSegments = getLevelSelectModeSegments()
 
     graphics.setColor(PANEL_COLORS.background[1], PANEL_COLORS.background[2], PANEL_COLORS.background[3], PANEL_COLORS.background[4])
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
 
     drawLevelSelectChrome(game)
     drawLevelSelectTitleBar(game, selectedMap)
-
-    drawButton(getLevelSelectBackRect(game), "Back", { 0.12, 0.15, 0.19, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.small)
 
     for _, cardRect in ipairs(cardRects) do
         drawLevelCard(game, cardRect)
@@ -3774,9 +3817,26 @@ function ui.drawLevelSelect(game)
     end
 
     uiControls.drawSegmentedToggle(
-        selectionRect,
-        selectionSegments,
-        selectionValue,
+        primarySelectionRect,
+        primarySelectionSegments,
+        primarySelectionValue,
+        game.levelSelectHoverId,
+        game.fonts.small,
+        {
+            backgroundColor = { 0.08, 0.1, 0.14, 0.98 },
+            activeFillColor = { 0.78, 0.88, 0.98, 0.94 },
+            hoverColor = { 0.3, 0.4, 0.5, 0.22 },
+            outlineColor = { 0.26, 0.38, 0.5, 1 },
+            innerOutlineColor = { 0.44, 0.62, 0.78, 0.34 },
+            selectedTextColor = { 0.08, 0.11, 0.15, 1 },
+            textColor = { 0.9, 0.93, 0.97, 1 },
+        }
+    )
+
+    uiControls.drawSegmentedToggle(
+        modeSelectionRect,
+        modeSelectionSegments,
+        game.levelSelectMode or "library",
         game.levelSelectHoverId,
         game.fonts.small,
         {
@@ -3811,15 +3871,9 @@ function ui.drawLevelSelect(game)
         elseif buttonRect.id == "clone_map" and selectedMap then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.56, 0.72, 0.98, 1 }
-        elseif buttonRect.id == "toggle_mode" then
-            if game.levelSelectMode ~= "marketplace" and not game:isOnlineMapsAvailable() then
-                fillColor = { 0.08, 0.1, 0.12, 0.98 }
-                strokeColor = { 0.2, 0.24, 0.28, 1 }
-                isDisabled = true
-            else
-                fillColor = { 0.12, 0.17, 0.2, 0.98 }
-                strokeColor = { 0.56, 0.72, 0.98, 1 }
-            end
+        elseif buttonRect.id == "back" then
+            fillColor = { 0.1, 0.12, 0.15, 0.98 }
+            strokeColor = { 0.3, 0.42, 0.54, 1 }
             font = game.fonts.small
         elseif buttonRect.id == "upload_map" then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
