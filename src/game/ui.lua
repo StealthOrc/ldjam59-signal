@@ -371,7 +371,7 @@ local function angleBetweenPoints(a, b)
     return angle
 end
 
-local function drawButton(rect, label, fillColor, strokeColor, font, isDisabled)
+local function drawButton(rect, label, fillColor, strokeColor, font, isDisabled, labelAlpha)
     local graphics = love.graphics
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4] or 1)
     graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 16, 16)
@@ -379,10 +379,11 @@ local function drawButton(rect, label, fillColor, strokeColor, font, isDisabled)
     graphics.setLineWidth(2)
     graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 16, 16)
     love.graphics.setFont(font)
+    local textAlpha = labelAlpha or 1
     if isDisabled then
-        graphics.setColor(0.54, 0.58, 0.62, 1)
+        graphics.setColor(0.54, 0.58, 0.62, textAlpha)
     else
-        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.setColor(0.97, 0.98, 1, textAlpha)
     end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5 + 0.5), rect.w, "center")
     graphics.setLineWidth(1)
@@ -3236,6 +3237,20 @@ local function getActivePlayGuideStep(game)
     return steps[stepIndex], stepIndex, #steps
 end
 
+local function getPlayGuideStepAtIndex(game, stepIndex)
+    if not game or not game.playGuide then
+        return nil, nil, nil
+    end
+
+    local steps = game.playGuide.steps or {}
+    if #steps == 0 then
+        return nil, nil, nil
+    end
+
+    local resolvedIndex = clamp(stepIndex or game.playGuide.stepIndex or 1, 1, #steps)
+    return steps[resolvedIndex], resolvedIndex, #steps
+end
+
 local function createGuideRectShape(rect, padding, cornerRadius)
     local extraPadding = padding or PLAY_GUIDE_LAYOUT.focusPadding
     return {
@@ -3416,8 +3431,26 @@ local function getGuideBounds(shapes, viewport)
     }
 end
 
-local function getPlayGuideLayout(game)
-    local step, stepIndex, stepCount = getActivePlayGuideStep(game)
+local function getPlayGuideButtonRects(tooltipRect)
+    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+    local buttonsX = tooltipRect.x + math.floor((tooltipRect.w - totalButtonWidth) * 0.5 + 0.5)
+    local buttonsY = tooltipRect.y + tooltipRect.h - PLAY_GUIDE_LAYOUT.paddingY - PLAY_GUIDE_LAYOUT.buttonH
+
+    return {
+        x = buttonsX,
+        y = buttonsY,
+        w = PLAY_GUIDE_LAYOUT.buttonSkipW,
+        h = PLAY_GUIDE_LAYOUT.buttonH,
+    }, {
+        x = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap,
+        y = buttonsY,
+        w = PLAY_GUIDE_LAYOUT.buttonNextW,
+        h = PLAY_GUIDE_LAYOUT.buttonH,
+    }
+end
+
+local function getPlayGuideLayout(game, overrideStepIndex)
+    local step, stepIndex, stepCount = getPlayGuideStepAtIndex(game, overrideStepIndex)
     if not step then
         return nil
     end
@@ -3450,36 +3483,163 @@ local function getPlayGuideLayout(game)
         PLAY_GUIDE_LAYOUT.minTop,
         game.viewport.h - height - PLAY_GUIDE_LAYOUT.margin
     )
-
-    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
-    local buttonsX = tooltipX + math.floor((width - totalButtonWidth) * 0.5 + 0.5)
-    local buttonsY = tooltipY + height - PLAY_GUIDE_LAYOUT.paddingY - PLAY_GUIDE_LAYOUT.buttonH
+    local tooltipRect = {
+        x = tooltipX,
+        y = tooltipY,
+        w = width,
+        h = height,
+    }
+    local skipRect, nextRect = getPlayGuideButtonRects(tooltipRect)
 
     return {
         step = step,
         stepIndex = stepIndex,
         stepCount = stepCount,
         focusShapes = focusShapes,
-        tooltipRect = {
-            x = tooltipX,
-            y = tooltipY,
-            w = width,
-            h = height,
-        },
-        skipRect = {
-            x = buttonsX,
-            y = buttonsY,
-            w = PLAY_GUIDE_LAYOUT.buttonSkipW,
-            h = PLAY_GUIDE_LAYOUT.buttonH,
-        },
-        nextRect = {
-            x = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap,
-            y = buttonsY,
-            w = PLAY_GUIDE_LAYOUT.buttonNextW,
-            h = PLAY_GUIDE_LAYOUT.buttonH,
-        },
+        tooltipRect = tooltipRect,
+        skipRect = skipRect,
+        nextRect = nextRect,
         nextLabel = stepIndex >= stepCount and "I'm Ready" or "Next",
     }
+end
+
+local function easeInBack(t)
+    local s = 1.70158
+    return t * t * ((s + 1) * t - s)
+end
+
+local function easeOutBack(t)
+    local s = 1.70158
+    local value = t - 1
+    return 1 + value * value * ((s + 1) * value + s)
+end
+
+local function easeInOutCubic(t)
+    if t < 0.5 then
+        return 4 * t * t * t
+    end
+
+    local value = -2 * t + 2
+    return 1 - (value * value * value) * 0.5
+end
+
+local function clamp01(value)
+    return clamp(value or 0, 0, 1)
+end
+
+local function getCollapsedGuideRect(rect)
+    local collapsedWidth = math.max(28, rect.w * 0.16)
+    local collapsedHeight = math.max(18, rect.h * 0.14)
+    return {
+        x = rect.x + (rect.w - collapsedWidth) * 0.5,
+        y = rect.y + (rect.h - collapsedHeight) * 0.5,
+        w = collapsedWidth,
+        h = collapsedHeight,
+    }
+end
+
+local function interpolateRect(fromRect, toRect, t)
+    return {
+        x = lerp(fromRect.x, toRect.x, t),
+        y = lerp(fromRect.y, toRect.y, t),
+        w = lerp(fromRect.w, toRect.w, t),
+        h = lerp(fromRect.h, toRect.h, t),
+    }
+end
+
+local function offsetRect(rect, offsetX, offsetY)
+    return {
+        x = rect.x + offsetX,
+        y = rect.y + offsetY,
+        w = rect.w,
+        h = rect.h,
+    }
+end
+
+local function applyAnimatedGuideButtonRects(layout)
+    layout.skipRect, layout.nextRect = getPlayGuideButtonRects(layout.tooltipRect)
+    return layout
+end
+
+local function getAnimatedPlayGuideLayout(game)
+    local currentLayout = getPlayGuideLayout(game)
+    if not currentLayout then
+        return nil
+    end
+
+    local transition = game and game.playGuideTransition or nil
+    if not transition then
+        currentLayout.contentAlpha = 1
+        currentLayout.buttonAlpha = 1
+        currentLayout.tooltipAlpha = 1
+        currentLayout.outlineAlpha = 1
+        return applyAnimatedGuideButtonRects(currentLayout)
+    end
+
+    local fromLayout = getPlayGuideLayout(game, transition.fromStepIndex) or currentLayout
+    local toLayout = transition.toStepIndex and getPlayGuideLayout(game, transition.toStepIndex) or nil
+    local progress = clamp01(transition.phaseProgress)
+    local animatedLayout = {
+        step = fromLayout.step,
+        stepIndex = fromLayout.stepIndex,
+        stepCount = fromLayout.stepCount,
+        focusShapes = fromLayout.focusShapes,
+        skipRect = fromLayout.skipRect,
+        nextRect = fromLayout.nextRect,
+        nextLabel = fromLayout.nextLabel,
+        tooltipRect = fromLayout.tooltipRect,
+        contentAlpha = 0,
+        buttonAlpha = 0,
+        tooltipAlpha = 1,
+        outlineAlpha = 1,
+    }
+
+    if transition.kind == "dismiss" then
+        local eased = easeInBack(progress)
+        animatedLayout.tooltipRect = interpolateRect(fromLayout.tooltipRect, getCollapsedGuideRect(fromLayout.tooltipRect), eased)
+        animatedLayout.contentAlpha = 1 - clamp01(progress * 2.2)
+        animatedLayout.buttonAlpha = animatedLayout.contentAlpha
+        animatedLayout.tooltipAlpha = 1 - clamp01(progress * 0.4)
+        animatedLayout.outlineAlpha = 1 - clamp01(progress * 0.4)
+        return applyAnimatedGuideButtonRects(animatedLayout)
+    end
+
+    local targetLayout = toLayout or fromLayout
+    animatedLayout.focusShapes = transition.phase == "shrink" and fromLayout.focusShapes or targetLayout.focusShapes
+    animatedLayout.step = targetLayout.step
+    animatedLayout.stepIndex = targetLayout.stepIndex
+    animatedLayout.stepCount = targetLayout.stepCount
+    animatedLayout.nextLabel = targetLayout.nextLabel
+
+    if transition.phase == "shrink" then
+        local eased = easeInBack(progress)
+        animatedLayout.step = fromLayout.step
+        animatedLayout.stepIndex = fromLayout.stepIndex
+        animatedLayout.stepCount = fromLayout.stepCount
+        animatedLayout.nextLabel = fromLayout.nextLabel
+        animatedLayout.tooltipRect = interpolateRect(fromLayout.tooltipRect, getCollapsedGuideRect(fromLayout.tooltipRect), eased)
+        animatedLayout.contentAlpha = 1 - clamp01(progress * 2.2)
+        animatedLayout.buttonAlpha = animatedLayout.contentAlpha
+        return applyAnimatedGuideButtonRects(animatedLayout)
+    end
+
+    if transition.phase == "move" then
+        local eased = easeInOutCubic(progress)
+        local fromCollapsed = getCollapsedGuideRect(fromLayout.tooltipRect)
+        local toCollapsed = getCollapsedGuideRect(targetLayout.tooltipRect)
+        local movedRect = interpolateRect(fromCollapsed, toCollapsed, eased)
+        local arcOffsetY = -math.sin(eased * math.pi) * 42
+        animatedLayout.tooltipRect = offsetRect(movedRect, 0, arcOffsetY)
+        animatedLayout.contentAlpha = 0
+        animatedLayout.buttonAlpha = 0
+        return applyAnimatedGuideButtonRects(animatedLayout)
+    end
+
+    local eased = easeOutBack(progress)
+    animatedLayout.tooltipRect = interpolateRect(getCollapsedGuideRect(targetLayout.tooltipRect), targetLayout.tooltipRect, eased)
+    animatedLayout.contentAlpha = clamp01((progress - 0.18) / 0.82)
+    animatedLayout.buttonAlpha = clamp01((progress - 0.35) / 0.65)
+    return applyAnimatedGuideButtonRects(animatedLayout)
 end
 
 local function drawGuideFocusShape(shape)
@@ -3508,7 +3668,11 @@ local function drawGuideFocusOutline(shape)
 end
 
 function ui.getPlayGuideActionAt(game, x, y)
-    local layout = getPlayGuideLayout(game)
+    if game and game.playGuideTransition then
+        return nil
+    end
+
+    local layout = getAnimatedPlayGuideLayout(game)
     if not layout then
         return nil
     end
@@ -3990,13 +4154,17 @@ function ui.getResultsHit(game, x, y)
 end
 
 local function drawPlayGuideOverlay(game)
-    local layout = getPlayGuideLayout(game)
+    local layout = getAnimatedPlayGuideLayout(game)
     if not layout then
         return
     end
 
     local graphics = love.graphics
     local tooltip = layout.tooltipRect
+    local outerRadius = math.max(8, math.min(20, math.min(tooltip.w, tooltip.h) * 0.35))
+    local glowRadius = math.max(outerRadius + 3, math.min(24, outerRadius + 5))
+    local innerInset = math.min(4, math.min(tooltip.w, tooltip.h) * 0.18)
+    local innerRadius = math.max(4, outerRadius - innerInset)
 
     graphics.stencil(function()
         for _, shape in ipairs(layout.focusShapes or {}) do
@@ -4009,50 +4177,67 @@ local function drawPlayGuideOverlay(game)
     graphics.setStencilTest()
 
     for _, shape in ipairs(layout.focusShapes or {}) do
-        graphics.setColor(0.48, 0.92, 0.98, 0.14)
+        graphics.setColor(0.48, 0.92, 0.98, 0.14 * (layout.outlineAlpha or 1))
         graphics.setLineWidth(10)
         drawGuideFocusOutline(shape)
-        graphics.setColor(0.72, 0.97, 1, 0.98)
+        graphics.setColor(0.72, 0.97, 1, 0.98 * (layout.outlineAlpha or 1))
         graphics.setLineWidth(3)
         drawGuideFocusOutline(shape)
     end
     graphics.setLineWidth(1)
 
-    graphics.setColor(0.16, 0.44, 0.54, 0.2)
-    graphics.rectangle("fill", tooltip.x - 8, tooltip.y - 8, tooltip.w + 16, tooltip.h + 16, 24, 24)
-    graphics.setColor(0.06, 0.08, 0.11, 0.99)
-    graphics.rectangle("fill", tooltip.x, tooltip.y, tooltip.w, tooltip.h, 20, 20)
-    graphics.setColor(0.68, 0.94, 1, 1)
+    graphics.setColor(0.16, 0.44, 0.54, 0.2 * (layout.tooltipAlpha or 1))
+    graphics.rectangle("fill", tooltip.x - 8, tooltip.y - 8, tooltip.w + 16, tooltip.h + 16, glowRadius, glowRadius)
+    graphics.setColor(0.06, 0.08, 0.11, 0.99 * (layout.tooltipAlpha or 1))
+    graphics.rectangle("fill", tooltip.x, tooltip.y, tooltip.w, tooltip.h, outerRadius, outerRadius)
+    graphics.setColor(0.68, 0.94, 1, 1 * (layout.tooltipAlpha or 1))
     graphics.setLineWidth(3)
-    graphics.rectangle("line", tooltip.x, tooltip.y, tooltip.w, tooltip.h, 20, 20)
-    graphics.setColor(0.32, 0.52, 0.64, 0.7)
+    graphics.rectangle("line", tooltip.x, tooltip.y, tooltip.w, tooltip.h, outerRadius, outerRadius)
+    graphics.setColor(0.32, 0.52, 0.64, 0.7 * (layout.tooltipAlpha or 1))
     graphics.setLineWidth(1)
-    graphics.rectangle("line", tooltip.x + 4, tooltip.y + 4, tooltip.w - 8, tooltip.h - 8, 17, 17)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(
-        layout.step.text,
-        tooltip.x + PLAY_GUIDE_LAYOUT.paddingX,
-        tooltip.y + PLAY_GUIDE_LAYOUT.paddingY,
-        tooltip.w - PLAY_GUIDE_LAYOUT.paddingX * 2,
-        "left"
+    graphics.rectangle(
+        "line",
+        tooltip.x + innerInset,
+        tooltip.y + innerInset,
+        tooltip.w - innerInset * 2,
+        tooltip.h - innerInset * 2,
+        innerRadius,
+        innerRadius
     )
 
-    drawButton(
-        layout.skipRect,
-        "Skip",
-        { 0.11, 0.14, 0.18, 0.98 },
-        { 0.34, 0.4, 0.48, 1 },
-        game.fonts.small
-    )
-    drawButton(
-        layout.nextRect,
-        layout.nextLabel,
-        { 0.12, 0.17, 0.2, 0.98 },
-        { 0.48, 0.92, 0.62, 1 },
-        game.fonts.small
-    )
+    if (layout.contentAlpha or 0) > 0.01 then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.97, 0.98, 1, layout.contentAlpha or 1)
+        graphics.printf(
+            layout.step.text,
+            tooltip.x + PLAY_GUIDE_LAYOUT.paddingX,
+            tooltip.y + PLAY_GUIDE_LAYOUT.paddingY,
+            tooltip.w - PLAY_GUIDE_LAYOUT.paddingX * 2,
+            "left"
+        )
+    end
+
+    if (layout.buttonAlpha or 0) > 0.01 then
+        local buttonFillScale = layout.buttonAlpha or 1
+        drawButton(
+            layout.skipRect,
+            "Skip",
+            { 0.11, 0.14, 0.18, 0.98 * buttonFillScale },
+            { 0.34, 0.4, 0.48, 1 * buttonFillScale },
+            game.fonts.small,
+            false,
+            buttonFillScale
+        )
+        drawButton(
+            layout.nextRect,
+            layout.nextLabel,
+            { 0.12, 0.17, 0.2, 0.98 * buttonFillScale },
+            { 0.48, 0.92, 0.62, 1 * buttonFillScale },
+            game.fonts.small,
+            false,
+            buttonFillScale
+        )
+    end
 end
 
 function ui.drawMenu(game)
@@ -4570,7 +4755,7 @@ function ui.drawPlay(game)
     local inputGroups = game.world:getInputEdgeGroups()
     local outputGroups = game.world:getOutputBadgeGroups()
     local activeGuideStep = getActivePlayGuideStep(game)
-    local allowHoverTooltip = not activeGuideStep or activeGuideStep.allowHoverTooltip == true
+    local allowHoverTooltip = (not game.playGuideTransition) and (not activeGuideStep or activeGuideStep.allowHoverTooltip == true)
 
     for _, badge in ipairs(outputGroups) do
         drawOutputBadge(game, badge)
