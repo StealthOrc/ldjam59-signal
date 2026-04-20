@@ -422,6 +422,7 @@ function Game.new()
     drainChannel(self.leaderboardRequestChannel)
     drainChannel(self.leaderboardResponseChannel)
     self.playPhase = nil
+    self.playHoverInfo = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -2887,6 +2888,7 @@ function Game:startMap(mapDescriptor, options)
     self.resultsOnlineState = nil
     self.playOverlayMode = nil
     self.playPhase = "prepare"
+    self.playHoverInfo = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.screen = "play"
     return true
@@ -2946,6 +2948,7 @@ function Game:startPlayPhase()
     end
 
     self.playPhase = "play"
+    self.playHoverInfo = nil
     return true
 end
 
@@ -3434,6 +3437,7 @@ function Game:mousepressed(x, y, button)
 end
 
 function Game:mousemoved(x, y, dx, dy)
+    self.playHoverInfo = nil
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
@@ -3455,6 +3459,12 @@ function Game:mousemoved(x, y, dx, dy)
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
+        return
+    end
+
+    if self.screen == "play" and self.world then
+        local viewportX, viewportY = self:toViewportPosition(x, y)
+        self.playHoverInfo = ui.getPlayHoverInfoAt(self, viewportX, viewportY)
     end
 end
 
