@@ -3892,6 +3892,7 @@ function ui.drawLevelSelect(game)
     if game.levelSelectActionState and game.levelSelectActionState.message then
         local bottomBarRect = getLevelSelectBottomBarRect(game)
         local actionStatus = game.levelSelectActionState
+        local statusText = safeUiText(actionStatus.message, "Status message unavailable.")
         local statusColor = PANEL_COLORS.bodyText
         if actionStatus.status == "success" then
             statusColor = { 0.48, 0.92, 0.62, 1 }
@@ -3900,12 +3901,25 @@ function ui.drawLevelSelect(game)
         end
 
         love.graphics.setFont(game.fonts.small)
+        local toastMaxWidth = math.min(game.viewport.w - 56, 760)
+        local toastTextWidth = toastMaxWidth - 28
+        local lineCount = getWrappedLineCount(game.fonts.small, statusText, toastTextWidth)
+        local toastHeight = (lineCount * game.fonts.small:getHeight()) + 14
+        local toastY = bottomBarRect.y - toastHeight - 10
+        local toastWidth = toastMaxWidth
+        local toastX = math.floor((game.viewport.w - toastWidth) * 0.5 + 0.5)
+
+        graphics.setColor(0.02, 0.03, 0.04, 0.82)
+        graphics.rectangle("fill", toastX, toastY, toastWidth, toastHeight, 14, 14)
+        graphics.setColor(0.18, 0.22, 0.26, 0.92)
+        graphics.rectangle("line", toastX, toastY, toastWidth, toastHeight, 14, 14)
+
         graphics.setColor(statusColor[1], statusColor[2], statusColor[3], statusColor[4] or 1)
         graphics.printf(
-            safeUiText(actionStatus.message, "Status message unavailable."),
-            0,
-            bottomBarRect.y - 26,
-            game.viewport.w,
+            statusText,
+            toastX + 14,
+            toastY + 7,
+            toastTextWidth,
             "center"
         )
     end
