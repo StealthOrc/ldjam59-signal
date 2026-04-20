@@ -838,7 +838,7 @@ function renderer.drawTrain(scene, train)
     local graphics = love.graphics
     local carriages = scene:getTrainCarriagePositions(train)
     local width = scene.carriageLength
-    local height = 18
+    local height = scene.carriageHeight or 18
     local outlineWidth = 2
 
     for carriageIndex = #carriages, 1, -1 do

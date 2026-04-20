@@ -56,6 +56,45 @@ local function distanceSquared(ax, ay, bx, by)
     return dx * dx + dy * dy
 end
 
+local function dot(ax, ay, bx, by)
+    return ax * bx + ay * by
+end
+
+local function carriagesOverlap(firstCar, secondCar, carriageLength, carriageHeight)
+    local halfLength = (carriageLength or 0) * 0.5
+    local halfHeight = (carriageHeight or 0) * 0.5
+    local firstForwardX = math.cos(firstCar.angle or 0)
+    local firstForwardY = math.sin(firstCar.angle or 0)
+    local firstSideX = -firstForwardY
+    local firstSideY = firstForwardX
+    local secondForwardX = math.cos(secondCar.angle or 0)
+    local secondForwardY = math.sin(secondCar.angle or 0)
+    local secondSideX = -secondForwardY
+    local secondSideY = secondForwardX
+    local offsetX = (secondCar.x or 0) - (firstCar.x or 0)
+    local offsetY = (secondCar.y or 0) - (firstCar.y or 0)
+    local axes = {
+        { x = firstForwardX, y = firstForwardY },
+        { x = firstSideX, y = firstSideY },
+        { x = secondForwardX, y = secondForwardY },
+        { x = secondSideX, y = secondSideY },
+    }
+
+    for _, axis in ipairs(axes) do
+        local centerDistance = math.abs(dot(offsetX, offsetY, axis.x, axis.y))
+        local firstExtent = halfLength * math.abs(dot(firstForwardX, firstForwardY, axis.x, axis.y))
+            + halfHeight * math.abs(dot(firstSideX, firstSideY, axis.x, axis.y))
+        local secondExtent = halfLength * math.abs(dot(secondForwardX, secondForwardY, axis.x, axis.y))
+            + halfHeight * math.abs(dot(secondSideX, secondSideY, axis.x, axis.y))
+
+        if centerDistance > firstExtent + secondExtent then
+            return false
+        end
+    end
+
+    return true
+end
+
 local function copyPoint(point)
     return { x = point.x, y = point.y }
 end
@@ -430,6 +469,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.trainSpeed = 168
     self.trainAcceleration = 260
     self.carriageLength = 34
+    self.carriageHeight = 18
     self.carriageGap = 12
     self.carriageCount = 4
     self.exitFadeDuration = 0.25
@@ -1747,9 +1787,6 @@ function world:getTrainCarriagePositions(train)
 end
 
 function world:updateCollisionState()
-    local collisionRadius = math.min(self.carriageLength, 24)
-    local collisionRadiusSquared = collisionRadius * collisionRadius
-
     self.collisionPoint = nil
 
     for firstIndex = 1, #self.trains - 1 do
@@ -1765,7 +1802,7 @@ function world:updateCollisionState()
                     for _, firstCar in ipairs(firstCars) do
                         for _, secondCar in ipairs(secondCars) do
                             if firstCar.collidable and secondCar.collidable
-                                and distanceSquared(firstCar.x, firstCar.y, secondCar.x, secondCar.y) <= collisionRadiusSquared then
+                                and carriagesOverlap(firstCar, secondCar, self.carriageLength, self.carriageHeight) then
                                 self.failureReason = "collision"
                                 self.collisionPoint = {
                                     x = (firstCar.x + secondCar.x) * 0.5,
