@@ -2074,7 +2074,7 @@ function ui.getLevelSelectStatusCardLayout(game)
     }
 end
 
-local function drawLevelSelectStatusCard(game)
+function ui.drawLevelSelectStatusCard(game)
     local layout = ui.getLevelSelectStatusCardLayout(game)
     if not layout then
         return
@@ -2113,7 +2113,7 @@ local function drawLevelSelectStatusCard(game)
     )
 end
 
-local function drawLevelSelectUploadDialog(game)
+function ui.drawLevelSelectUploadDialog(game)
     local dialog = game.levelSelectUploadDialog
     if not dialog then
         return
@@ -3527,45 +3527,93 @@ local function appendTrackGuideFocusShape(shapes, track, width)
     shapes[#shapes + 1] = polylineShape
 end
 
+local function getGuideTargetJunction(game, step)
+    if not game or not game.world or type(step) ~= "table" then
+        return nil
+    end
+
+    local junctionOrder = game.world.junctionOrder or {}
+    if #junctionOrder == 0 then
+        return nil
+    end
+
+    local targetJunctionId = tostring(step.junctionId or "")
+    if targetJunctionId ~= "" then
+        for _, junction in ipairs(junctionOrder) do
+            if tostring(junction.id or "") == targetJunctionId then
+                return junction
+            end
+        end
+    end
+
+    local targetIndex = tonumber(step.junctionIndex)
+    if targetIndex then
+        targetIndex = math.max(1, math.min(#junctionOrder, math.floor(targetIndex)))
+        return junctionOrder[targetIndex]
+    end
+
+    return junctionOrder[1]
+end
+
+local function buildPlayGuideJunctionShapes(game, step, options)
+    if not game or not game.world or not step then
+        return {}
+    end
+
+    local junction = getGuideTargetJunction(game, step)
+    if not junction then
+        return {}
+    end
+
+    local resolvedOptions = options or {}
+    local includeJunction = resolvedOptions.includeJunction ~= false
+    local includeSelector = resolvedOptions.includeSelector == true
+    local shapes = {}
+
+    if includeJunction then
+        shapes[#shapes + 1] = {
+            kind = "circle",
+            x = junction.mergePoint.x,
+            y = junction.mergePoint.y,
+            radius = (junction.crossingRadius or 20) + 16,
+        }
+    end
+
+    if includeSelector and step.target == "junction_with_selector" then
+        local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
+        if selectorX and selectorY and selectorRadius then
+            shapes[#shapes + 1] = {
+                kind = "circle",
+                x = selectorX,
+                y = selectorY,
+                radius = selectorRadius + 12,
+            }
+        end
+    end
+
+    if step.focusIncomingTracks == true then
+        for _, inputTrack in ipairs(junction.inputs or {}) do
+            appendTrackGuideFocusShape(shapes, inputTrack, 42)
+        end
+    end
+
+    return shapes
+end
+
 local function getPlayGuideFocusShapes(game, step)
     if not game or not game.world or not step then
         return {}
     end
 
+    if step.target == "screen_center" then
+        return {}
+    end
+
     if step.target == "junction" or step.target == "junction_with_selector" then
-        local junction = game.world.junctionOrder and game.world.junctionOrder[1] or nil
-        if not junction then
-            return {}
-        end
-
-        local shapes = {
-            {
-                kind = "circle",
-                x = junction.mergePoint.x,
-                y = junction.mergePoint.y,
-                radius = (junction.crossingRadius or 20) + 16,
-            },
-        }
-
-        if step.target == "junction_with_selector" then
-            local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
-            if selectorX and selectorY and selectorRadius then
-                shapes[#shapes + 1] = {
-                    kind = "circle",
-                    x = selectorX,
-                    y = selectorY,
-                    radius = selectorRadius + 12,
-                }
-            end
-
-            if step.focusIncomingTracks == true then
-                for _, inputTrack in ipairs(junction.inputs or {}) do
-                    appendTrackGuideFocusShape(shapes, inputTrack, 42)
-                end
-            end
-        end
-
-        return shapes
+        return buildPlayGuideJunctionShapes(game, step, {
+            includeJunction = step.focusSelectorOnly ~= true,
+            includeSelector = step.target == "junction_with_selector",
+        })
     end
 
     if step.target == "first_input_card" then
@@ -3597,6 +3645,21 @@ local function getPlayGuideFocusShapes(game, step)
     end
 
     return {}
+end
+
+local function getPlayGuideAnchorShapes(game, step, focusShapes)
+    if not game or not step then
+        return focusShapes or {}
+    end
+
+    if step.anchorTarget == "junction" and (step.target == "junction" or step.target == "junction_with_selector") then
+        return buildPlayGuideJunctionShapes(game, step, {
+            includeJunction = true,
+            includeSelector = false,
+        })
+    end
+
+    return focusShapes or {}
 end
 
 local function getGuideBounds(shapes, viewport)
@@ -3654,18 +3717,29 @@ local function getGuideBounds(shapes, viewport)
     }
 end
 
-local function getPlayGuideButtonRects(tooltipRect)
-    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+local function getPlayGuideButtonRects(tooltipRect, showSkip)
+    local resolvedShowSkip = showSkip ~= false
+    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonNextW
+    if resolvedShowSkip then
+        totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+    end
     local buttonsX = tooltipRect.x + math.floor((tooltipRect.w - totalButtonWidth) * 0.5 + 0.5)
     local buttonsY = tooltipRect.y + tooltipRect.h - PLAY_GUIDE_LAYOUT.paddingY - PLAY_GUIDE_LAYOUT.buttonH
 
-    return {
-        x = buttonsX,
-        y = buttonsY,
-        w = PLAY_GUIDE_LAYOUT.buttonSkipW,
-        h = PLAY_GUIDE_LAYOUT.buttonH,
-    }, {
-        x = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap,
+    local skipRect = nil
+    local nextX = buttonsX
+    if resolvedShowSkip then
+        skipRect = {
+            x = buttonsX,
+            y = buttonsY,
+            w = PLAY_GUIDE_LAYOUT.buttonSkipW,
+            h = PLAY_GUIDE_LAYOUT.buttonH,
+        }
+        nextX = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap
+    end
+
+    return skipRect, {
+        x = nextX,
         y = buttonsY,
         w = PLAY_GUIDE_LAYOUT.buttonNextW,
         h = PLAY_GUIDE_LAYOUT.buttonH,
@@ -3689,13 +3763,19 @@ local function getPlayGuideLayout(game, overrideStepIndex)
         + PLAY_GUIDE_LAYOUT.buttonH
 
     local focusShapes = getPlayGuideFocusShapes(game, step)
-    local bounds = getGuideBounds(focusShapes, game.viewport)
+    local anchorShapes = getPlayGuideAnchorShapes(game, step, focusShapes)
+    local bounds = getGuideBounds(anchorShapes, game.viewport)
     local tooltipX = bounds.centerX - width * 0.5
     local tooltipY = bounds.minY - height - PLAY_GUIDE_LAYOUT.gap
 
-    if step.placement == "right" then
+    if step.placement == "center" then
+        tooltipY = bounds.centerY - height * 0.5
+    elseif step.placement == "right" then
         tooltipX = bounds.maxX + PLAY_GUIDE_LAYOUT.gap
         tooltipY = bounds.centerY - height * 0.5
+    elseif step.placement == "top_right" then
+        tooltipX = bounds.maxX + PLAY_GUIDE_LAYOUT.gap
+        tooltipY = bounds.minY - height - PLAY_GUIDE_LAYOUT.gap
     elseif step.placement == "below" then
         tooltipY = bounds.maxY + PLAY_GUIDE_LAYOUT.gap
     end
@@ -3712,7 +3792,8 @@ local function getPlayGuideLayout(game, overrideStepIndex)
         w = width,
         h = height,
     }
-    local skipRect, nextRect = getPlayGuideButtonRects(tooltipRect)
+    local showSkip = step.hideSkip ~= true and step.showSkip ~= false
+    local skipRect, nextRect = getPlayGuideButtonRects(tooltipRect, showSkip)
 
     return {
         step = step,
@@ -3722,7 +3803,8 @@ local function getPlayGuideLayout(game, overrideStepIndex)
         tooltipRect = tooltipRect,
         skipRect = skipRect,
         nextRect = nextRect,
-        nextLabel = stepIndex >= stepCount and "I'm Ready" or "Next",
+        nextLabel = step.nextLabel or (stepIndex >= stepCount and "I'm Ready" or "Next"),
+        skipLabel = step.skipLabel or "Skip",
     }
 end
 
@@ -3780,7 +3862,9 @@ local function offsetRect(rect, offsetX, offsetY)
 end
 
 local function applyAnimatedGuideButtonRects(layout)
-    layout.skipRect, layout.nextRect = getPlayGuideButtonRects(layout.tooltipRect)
+    local step = layout and layout.step or nil
+    local showSkip = not step or (step.hideSkip ~= true and step.showSkip ~= false)
+    layout.skipRect, layout.nextRect = getPlayGuideButtonRects(layout.tooltipRect, showSkip)
     return layout
 end
 
@@ -3810,6 +3894,7 @@ local function getAnimatedPlayGuideLayout(game)
         skipRect = fromLayout.skipRect,
         nextRect = fromLayout.nextRect,
         nextLabel = fromLayout.nextLabel,
+        skipLabel = fromLayout.skipLabel,
         tooltipRect = fromLayout.tooltipRect,
         contentAlpha = 0,
         buttonAlpha = 0,
@@ -3833,6 +3918,7 @@ local function getAnimatedPlayGuideLayout(game)
     animatedLayout.stepIndex = targetLayout.stepIndex
     animatedLayout.stepCount = targetLayout.stepCount
     animatedLayout.nextLabel = targetLayout.nextLabel
+    animatedLayout.skipLabel = targetLayout.skipLabel
 
     if transition.phase == "shrink" then
         local eased = easeInBack(progress)
@@ -3840,6 +3926,7 @@ local function getAnimatedPlayGuideLayout(game)
         animatedLayout.stepIndex = fromLayout.stepIndex
         animatedLayout.stepCount = fromLayout.stepCount
         animatedLayout.nextLabel = fromLayout.nextLabel
+        animatedLayout.skipLabel = fromLayout.skipLabel
         animatedLayout.tooltipRect = interpolateRect(fromLayout.tooltipRect, getCollapsedGuideRect(fromLayout.tooltipRect), eased)
         animatedLayout.contentAlpha = 1 - clamp01(progress * 2.2)
         animatedLayout.buttonAlpha = animatedLayout.contentAlpha
@@ -3904,7 +3991,7 @@ function ui.getPlayGuideActionAt(game, x, y)
         return "next"
     end
 
-    if pointInRect(x, y, layout.skipRect) then
+    if layout.skipRect and pointInRect(x, y, layout.skipRect) then
         return "skip"
     end
 
@@ -4380,7 +4467,7 @@ local function getResultsButtonRects(game)
     }
 end
 
-local function getResultsPanelRect(game)
+function ui.getResultsPanelRect(game)
     return {
         x = game.viewport.w * 0.5 - 300,
         y = 50,
@@ -4389,8 +4476,8 @@ local function getResultsPanelRect(game)
     }
 end
 
-local function getResultsBreakdownRowRects(game)
-    local panel = getResultsPanelRect(game)
+function ui.getResultsBreakdownRowRects(game)
+    local panel = ui.getResultsPanelRect(game)
     local breakdownX = panel.x + 58
     local valueX = panel.x + panel.w - 58
     local rows = {}
@@ -4442,7 +4529,7 @@ end
 
 function ui.getResultsHoverInfoAt(game, x, y)
     local summary = game.resultsSummary or {}
-    local rowRects = getResultsBreakdownRowRects(game)
+    local rowRects = ui.getResultsBreakdownRowRects(game)
     local onTimeRow = rowRects[1]
     if not onTimeRow or not pointInRect(x, y, onTimeRow.row) then
         return nil
@@ -4546,15 +4633,17 @@ local function drawPlayGuideOverlay(game)
 
     if (layout.buttonAlpha or 0) > 0.01 then
         local buttonFillScale = layout.buttonAlpha or 1
-        drawButton(
-            layout.skipRect,
-            "Skip",
-            { 0.11, 0.14, 0.18, 0.98 * buttonFillScale },
-            { 0.34, 0.4, 0.48, 1 * buttonFillScale },
-            game.fonts.small,
-            false,
-            buttonFillScale
-        )
+        if layout.skipRect then
+            drawButton(
+                layout.skipRect,
+                layout.skipLabel,
+                { 0.11, 0.14, 0.18, 0.98 * buttonFillScale },
+                { 0.34, 0.4, 0.48, 1 * buttonFillScale },
+                game.fonts.small,
+                false,
+                buttonFillScale
+            )
+        end
         drawButton(
             layout.nextRect,
             layout.nextLabel,
@@ -4980,7 +5069,7 @@ function ui.drawLevelSelect(game)
         drawButton(buttonRect, buttonRect.label, fillColor, strokeColor, font, isDisabled)
     end
 
-    drawLevelSelectStatusCard(game)
+    ui.drawLevelSelectStatusCard(game)
 
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
@@ -5040,7 +5129,7 @@ function ui.drawLevelSelect(game)
     end
 
     if game.levelSelectUploadDialog then
-        drawLevelSelectUploadDialog(game)
+        ui.drawLevelSelectUploadDialog(game)
     end
 
     if game.levelSelectHoverInfo and not game.levelSelectIssue and not game.levelSelectUploadDialog then
@@ -5116,9 +5205,9 @@ function ui.drawResults(game)
     local level = game.world and game.world:getLevel() or {}
     local finalScore = summary.finalScore or 0
     local onTimePointCap = summary.onTimePointCap or 0
-    local panel = getResultsPanelRect(game)
+    local panel = ui.getResultsPanelRect(game)
     local buttons = getResultsButtonRects(game)
-    local rowRects = getResultsBreakdownRowRects(game)
+    local rowRects = ui.getResultsBreakdownRowRects(game)
     local breakdownX = rowRects[1] and rowRects[1].label.x or (panel.x + 58)
 
     graphics.setColor(0.05, 0.07, 0.1, 1)

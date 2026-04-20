@@ -87,6 +87,7 @@ local PLAY_GUIDE_SHRINK_DURATION = 0.12
 local PLAY_GUIDE_MOVE_DURATION = 0.2
 local PLAY_GUIDE_GROW_DURATION = 0.16
 local SIMPLE_BEGINNING_GUIDE_MAP_UUID = "3206710d-793f-474e-957a-fdb721926f52"
+local TWO_CROSSINGS_GUIDE_MAP_UUID = "16b6e4e1-cafc-4f02-8285-11dc7e2f5d75"
 local SIMPLE_BEGINNING_GUIDE_STEPS = {
     {
         target = "junction",
@@ -128,6 +129,29 @@ local SIMPLE_BEGINNING_GUIDE_STEPS = {
         placement = "below",
         text = "I think you're ready. If you want to inspect a few things, feel free to do so. Otherthan that you're ready to do the job alone now! Click the Start Run Button or press Spacebar.",
     },
+}
+local TWO_CROSSINGS_GUIDE_STEPS = {
+    {
+        target = "screen_center",
+        placement = "center",
+        text = "Oh, hey, it's you again. This one has one more little trick up its sleeve. I'll just tell you about it, and then I'll be out. I'll be away. All right? Pinky promise.",
+    },
+    {
+        target = "junction_with_selector",
+        junctionId = "junction_route_1_route_2_1",
+        placement = "top_right",
+        allowHoverTooltip = true,
+        allowControlClick = true,
+        focusSelectorOnly = true,
+        anchorTarget = "junction",
+        hideSkip = true,
+        nextLabel = "Understood",
+        text = "All right, you already know about junctions, but we haven't seen real crossings yet, have we? You can click this little thingy, and this will then determine the outgoing lines. And no, scratch that. The main thingy changes the incoming lines, and this little thingy changes the active outgoing line. Hover over it and try it yourself. That's it for me. I'm out.",
+    },
+}
+local PLAY_GUIDE_STEPS_BY_MAP_UUID = {
+    [SIMPLE_BEGINNING_GUIDE_MAP_UUID] = SIMPLE_BEGINNING_GUIDE_STEPS,
+    [TWO_CROSSINGS_GUIDE_MAP_UUID] = TWO_CROSSINGS_GUIDE_STEPS,
 }
 local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
 local LEADERBOARD_MESSAGE_NO_LOCAL_SCORES = "No local personal scores yet."
@@ -1729,12 +1753,25 @@ function Game:updateLeaderboardFetchState()
                         or math.max(0, resolvedPreviousFavoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
                 end
                 self:updateMarketplaceFavoriteState(responseMapUuid, favoriteCount, likedByPlayer)
-                if not wasAccepted then
+                if wasAccepted then
+                    local actionMessage = targetLikedByPlayer
+                        and string.format("Map liked. It now has %d vote(s).", favoriteCount)
+                        or string.format("Like removed. It now has %d vote(s).", favoriteCount)
+                    self:setLevelSelectActionState(
+                        LEVEL_SELECT_ACTION_STATUS_SUCCESS,
+                        actionMessage
+                    )
+                else
                     local shouldRestorePreviousState = likedByPlayer ~= targetLikedByPlayer
                     if shouldRestorePreviousState then
                         self:restoreMarketplaceFavoriteState(previousState)
                     end
-                    if not (wasAlreadyFavorited or wasAlreadyRemoved) then
+                    if wasAlreadyFavorited or wasAlreadyRemoved then
+                        self:setLevelSelectActionState(
+                            LEVEL_SELECT_ACTION_STATUS_INFO,
+                            wasAlreadyFavorited and "The map was already liked." or "The like was already removed."
+                        )
+                    else
                         self:setLevelSelectActionState(
                             LEVEL_SELECT_ACTION_STATUS_ERROR,
                             "The like request could not be completed.",
@@ -1895,14 +1932,15 @@ end
 
 function Game:buildPlayGuideState(level)
     local mapUuid = type(level) == "table" and tostring(level.mapUuid or "") or ""
-    if mapUuid ~= SIMPLE_BEGINNING_GUIDE_MAP_UUID or self:hasDismissedMapGuide(mapUuid) then
+    local guideSteps = PLAY_GUIDE_STEPS_BY_MAP_UUID[mapUuid]
+    if not guideSteps or self:hasDismissedMapGuide(mapUuid) then
         return nil
     end
 
     return {
         mapUuid = mapUuid,
         stepIndex = 1,
-        steps = SIMPLE_BEGINNING_GUIDE_STEPS,
+        steps = guideSteps,
     }
 end
 
@@ -2005,23 +2043,62 @@ function Game:updatePlayGuideTransition(dt)
     self.playGuideTransition = nil
 end
 
-function Game:canInteractWithJunctionDuringGuide(x, y)
+function Game:getGuideTargetJunction(step)
+    if not self.world or type(step) ~= "table" then
+        return nil
+    end
+
+    local junctionOrder = self.world.junctionOrder or {}
+    if #junctionOrder == 0 then
+        return nil
+    end
+
+    local targetJunctionId = tostring(step.junctionId or "")
+    if targetJunctionId ~= "" then
+        for _, junction in ipairs(junctionOrder) do
+            if tostring(junction.id or "") == targetJunctionId then
+                return junction
+            end
+        end
+    end
+
+    local targetIndex = tonumber(step.junctionIndex)
+    if targetIndex then
+        targetIndex = math.max(1, math.min(#junctionOrder, math.floor(targetIndex)))
+        return junctionOrder[targetIndex]
+    end
+
+    return junctionOrder[1]
+end
+
+function Game:canInteractWithGuideControlDuringGuide(x, y)
     if not self.playGuide or not self.world or self:isPlayGuideAnimating() then
         return false
     end
 
     local step = self.playGuide.steps and self.playGuide.steps[self.playGuide.stepIndex] or nil
-    if not step or step.allowJunctionClick ~= true then
+    if not step or (step.allowJunctionClick ~= true and step.allowControlClick ~= true) then
         return false
     end
 
-    for _, junction in ipairs(self.world.junctionOrder or {}) do
-        if self.world:isCrossingHit(junction, x, y) then
-            return true
-        end
+    local junction = self:getGuideTargetJunction(step)
+    if not junction then
+        return false
+    end
+
+    if self.world:isCrossingHit(junction, x, y) then
+        return true
+    end
+
+    if step.allowControlClick == true and self.world:isOutputSelectorHit(junction, x, y) then
+        return true
     end
 
     return false
+end
+
+function Game:canInteractWithJunctionDuringGuide(x, y)
+    return self:canInteractWithGuideControlDuringGuide(x, y)
 end
 
 function Game:toggleDebugMode()
@@ -3753,10 +3830,10 @@ function Game:mousepressed(x, y, button)
                 self:advancePlayGuide()
             elseif guideAction == "skip" then
                 self:skipPlayGuide()
-            elseif self:canInteractWithJunctionDuringGuide(viewportX, viewportY) then
+            elseif self:canInteractWithGuideControlDuringGuide(viewportX, viewportY) then
                 self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
             end
-        elseif self:canInteractWithJunctionDuringGuide(viewportX, viewportY) then
+        elseif self:canInteractWithGuideControlDuringGuide(viewportX, viewportY) then
             self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
         end
         return
