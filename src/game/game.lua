@@ -3055,7 +3055,7 @@ function Game:mousepressed(x, y, button)
     self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
 end
 
-function Game:mousemoved(x, y)
+function Game:mousemoved(x, y, dx, dy)
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
@@ -3070,7 +3070,7 @@ function Game:mousemoved(x, y)
 
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
-        self.editor:mousemoved(viewportX, viewportY)
+        self.editor:mousemoved(viewportX, viewportY, dx, dy)
     end
 end
 

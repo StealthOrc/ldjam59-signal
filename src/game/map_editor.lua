@@ -4,6 +4,7 @@ local roadTypes = require("src.game.road_types")
 local uuid = require("src.game.uuid")
 local world = require("src.game.world")
 local trackSceneRenderer = require("src.game.track_scene_renderer")
+local uiControls = require("src.game.ui_controls")
 
 local mapEditor = {}
 mapEditor.__index = mapEditor
@@ -22,10 +23,10 @@ local LEGACY_MAP_HEIGHT = 720
 local DEFAULT_NEW_MAP_WIDTH = 1920
 local DEFAULT_NEW_MAP_HEIGHT = 1080
 local MAP_SIZE_PRESETS = {
-    { label = "1280", w = 1280, h = 720 },
-    { label = "1920", w = 1920, h = 1080 },
-    { label = "2560", w = 2560, h = 1440 },
-    { label = "3840", w = 3840, h = 2160 },
+    { id = "1x", label = "1x", w = 1280, h = 720 },
+    { id = "2x", label = "2x", w = 1920, h = 1080 },
+    { id = "3x", label = "3x", w = 2560, h = 1440 },
+    { id = "4x", label = "4x", w = 3840, h = 2160 },
 }
 local DEFAULT_GRID_STEP = 64
 local MIN_GRID_STEP = 16
@@ -33,7 +34,6 @@ local MAX_GRID_STEP = 256
 local CAMERA_PADDING = 36
 local CAMERA_MIN_ZOOM = 0.2
 local CAMERA_MAX_ZOOM = 3.5
-local PANEL_HANDLE_WIDTH = 22
 local PANEL_OVERLAY_MARGIN = 18
 local GRID_MINOR_ALPHA = 0.16
 local GRID_MAJOR_ALPHA = 0.3
@@ -42,6 +42,8 @@ local PANEL_BUTTON_SIDE_MARGIN = 18
 local PANEL_BUTTON_HEIGHT = 38
 local PANEL_BUTTON_GAP = 12
 local PANEL_BUTTON_BOTTOM_MARGIN = 22
+local STATUS_TOAST_MARGIN = 18
+local STATUS_TOAST_FADE_TIME = 0.35
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -519,7 +521,6 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
-    self.panelOpen = true
     self.camera = {
         x = self.mapSize.w * 0.5,
         y = self.mapSize.h * 0.5,
@@ -548,14 +549,10 @@ function mapEditor:updateLayout()
     }
     self.spawnBandHeight = 58
     self.spawnY = self.canvas.y + 22
-    local panelX = self.viewport.w - self.panelWidth - self.margin
-    if not self.panelOpen then
-        panelX = self.viewport.w - PANEL_HANDLE_WIDTH
-    end
     self.sidePanel = {
-        x = panelX,
+        x = self.viewport.w - self.panelWidth - self.margin,
         y = self.margin,
-        w = self.panelOpen and self.panelWidth or PANEL_HANDLE_WIDTH,
+        w = self.panelWidth,
         h = self.viewport.h - self.margin * 2,
     }
 end
@@ -574,27 +571,25 @@ function mapEditor:notifyPreferencesChanged()
     end
 end
 
-function mapEditor:getPanelHandleRect()
+function mapEditor:getCameraViewportRect()
+    local width = self.sidePanel and (self.sidePanel.x - self.margin) or self.viewport.w
     return {
-        x = self.viewport.w - PANEL_HANDLE_WIDTH,
-        y = math.floor(self.viewport.h * 0.5 - 66),
-        w = PANEL_HANDLE_WIDTH,
-        h = 132,
+        x = 0,
+        y = 0,
+        w = math.max(1, width),
+        h = self.viewport.h,
     }
 end
 
-function mapEditor:setPanelOpen(isOpen)
-    self.panelOpen = isOpen == true
-    self:updateLayout()
-end
-
-function mapEditor:togglePanel()
-    self:setPanelOpen(not self.panelOpen)
+function mapEditor:getCameraViewportCenter()
+    local rect = self:getCameraViewportRect()
+    return rect.x + rect.w * 0.5, rect.y + rect.h * 0.5
 end
 
 function mapEditor:getCameraViewHalfExtents(zoom)
     local resolvedZoom = zoom or self.camera.zoom or 1
-    return self.viewport.w * 0.5 / resolvedZoom, self.viewport.h * 0.5 / resolvedZoom
+    local rect = self:getCameraViewportRect()
+    return rect.w * 0.5 / resolvedZoom, rect.h * 0.5 / resolvedZoom
 end
 
 function mapEditor:clampCamera()
@@ -608,9 +603,10 @@ function mapEditor:clampCamera()
 end
 
 function mapEditor:resetCameraToFit()
+    local cameraViewport = self:getCameraViewportRect()
     local fitZoom = math.min(
-        (self.viewport.w - CAMERA_PADDING * 2) / math.max(1, self.mapSize.w),
-        (self.viewport.h - CAMERA_PADDING * 2) / math.max(1, self.mapSize.h)
+        (cameraViewport.w - CAMERA_PADDING * 2) / math.max(1, self.mapSize.w),
+        (cameraViewport.h - CAMERA_PADDING * 2) / math.max(1, self.mapSize.h)
     )
 
     self.camera.zoom = clamp(fitZoom, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM)
@@ -620,13 +616,15 @@ function mapEditor:resetCameraToFit()
 end
 
 function mapEditor:screenToMap(screenX, screenY)
-    return (screenX - self.viewport.w * 0.5) / self.camera.zoom + self.camera.x,
-        (screenY - self.viewport.h * 0.5) / self.camera.zoom + self.camera.y
+    local centerX, centerY = self:getCameraViewportCenter()
+    return (screenX - centerX) / self.camera.zoom + self.camera.x,
+        (screenY - centerY) / self.camera.zoom + self.camera.y
 end
 
 function mapEditor:mapToScreen(mapX, mapY)
-    return (mapX - self.camera.x) * self.camera.zoom + self.viewport.w * 0.5,
-        (mapY - self.camera.y) * self.camera.zoom + self.viewport.h * 0.5
+    local centerX, centerY = self:getCameraViewportCenter()
+    return (mapX - self.camera.x) * self.camera.zoom + centerX,
+        (mapY - self.camera.y) * self.camera.zoom + centerY
 end
 
 function mapEditor:isModifierSnapActive()
@@ -647,9 +645,10 @@ function mapEditor:zoomAroundScreenPoint(screenX, screenY, deltaY)
     local anchorMapX, anchorMapY = self:screenToMap(screenX, screenY)
     local zoomFactor = deltaY > 0 and 1.12 or (1 / 1.12)
     self.camera.zoom = clamp(self.camera.zoom * zoomFactor, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM)
+    local centerX, centerY = self:getCameraViewportCenter()
 
-    self.camera.x = anchorMapX - ((screenX - self.viewport.w * 0.5) / self.camera.zoom)
-    self.camera.y = anchorMapY - ((screenY - self.viewport.h * 0.5) / self.camera.zoom)
+    self.camera.x = anchorMapX - ((screenX - centerX) / self.camera.zoom)
+    self.camera.y = anchorMapY - ((screenY - centerY) / self.camera.zoom)
     self:clampCamera()
 end
 
@@ -1237,59 +1236,42 @@ function mapEditor:getSequencerLayout()
 end
 
 function mapEditor:getEditorDrawerLayout()
-    if not self.panelOpen then
-        return nil
-    end
-
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
-    local presetGap = 8
-    local presetWidth = math.floor((panelWidth - presetGap) * 0.5 + 0.5)
-    local presetHeight = 28
-    local presetRects = {}
-    local presetY = self.sidePanel.y + 108
-
-    for presetIndex, preset in ipairs(MAP_SIZE_PRESETS) do
-        local column = (presetIndex - 1) % 2
-        local row = math.floor((presetIndex - 1) / 2)
-        presetRects[#presetRects + 1] = {
-            preset = preset,
-            rect = {
-                x = panelX + column * (presetWidth + presetGap),
-                y = presetY + row * (presetHeight + 8),
-                w = presetWidth,
-                h = presetHeight,
-            },
-        }
-    end
-
-    local gridToggleRect = { x = panelX, y = self.sidePanel.y + 202, w = 120, h = 28 }
-    local gridStepRect = self:getTextFieldRect(panelX + 130, self.sidePanel.y + 203, panelWidth - 130)
-    local fitRect = { x = panelX, y = self.sidePanel.y + 240, w = panelWidth, h = 30 }
-    local customWidthRect = self:getTextFieldRect(panelX, self.sidePanel.y + 286, panelWidth - 92)
-    local applySizeRect = { x = customWidthRect.x + customWidthRect.w + 8, y = customWidthRect.y, w = 84, h = customWidthRect.h }
+    local mapSizeRect = {
+        x = panelX,
+        y = self.sidePanel.y + 92,
+        w = panelWidth,
+        h = 34,
+    }
+    local gridToggleRect = { x = panelX, y = mapSizeRect.y + mapSizeRect.h + 16, w = 120, h = 28 }
+    local gridStepRect = self:getTextFieldRect(panelX + 130, gridToggleRect.y + 1, panelWidth - 130)
 
     return {
-        presetRects = presetRects,
+        mapSizeRect = mapSizeRect,
         gridToggleRect = gridToggleRect,
         gridStepRect = gridStepRect,
-        fitRect = fitRect,
-        customWidthRect = customWidthRect,
-        applySizeRect = applySizeRect,
     }
+end
+
+function mapEditor:getMapSizePreset()
+    for _, preset in ipairs(MAP_SIZE_PRESETS) do
+        if preset.w == self.mapSize.w then
+            return preset
+        end
+    end
+    return MAP_SIZE_PRESETS[1]
 end
 
 function mapEditor:handleEditorDrawerClick(x, y)
     local layout = self:getEditorDrawerLayout()
-    if not layout then
-        return false
-    end
-
-    for _, entry in ipairs(layout.presetRects) do
-        if pointInRect(x, y, entry.rect) then
-            self:commitTextField()
-            self:resizeMapTo(entry.preset.w)
-            return true
+    if pointInRect(x, y, layout.mapSizeRect) then
+        for presetIndex, preset in ipairs(MAP_SIZE_PRESETS) do
+            if pointInRect(x, y, uiControls.segmentRect(layout.mapSizeRect, presetIndex, #MAP_SIZE_PRESETS)) then
+                self:commitTextField()
+                self:resizeMapTo(preset.w)
+                return true
+            end
         end
     end
 
@@ -1302,26 +1284,6 @@ function mapEditor:handleEditorDrawerClick(x, y)
 
     if pointInRect(x, y, layout.gridStepRect) then
         self:openTextField("map", "editor", "gridStep", tostring(self.gridStep), "int")
-        return true
-    end
-
-    if pointInRect(x, y, layout.fitRect) then
-        self:resetCameraToFit()
-        self:showStatus("Camera reset to fit.")
-        return true
-    end
-
-    if pointInRect(x, y, layout.customWidthRect) then
-        self:openTextField("map", "editor", "customMapWidth", tostring(self.mapSize.w), "int")
-        return true
-    end
-
-    if pointInRect(x, y, layout.applySizeRect) then
-        if self.activeTextField and self.activeTextField.kind == "map" and self.activeTextField.fieldName == "customMapWidth" then
-            self:commitTextField()
-        else
-            self:resizeMapTo(self.mapSize.w)
-        end
         return true
     end
 
@@ -3259,15 +3221,6 @@ function mapEditor:commitTextField()
     local trimmedValue = rawValue:gsub("^%s+", ""):gsub("%s+$", "")
     local changed = false
 
-    if field.kind == "map" and field.fieldName == "customMapWidth" then
-        local numericValue = tonumber(trimmedValue)
-        self.activeTextField = nil
-        if numericValue then
-            return self:resizeMapTo(numericValue)
-        end
-        return false
-    end
-
     if field.kind == "map" and field.fieldName == "gridStep" then
         local numericValue = tonumber(trimmedValue)
         self.activeTextField = nil
@@ -3750,12 +3703,6 @@ function mapEditor:keypressed(key)
         return true
     end
 
-    if key == "tab" then
-        self:togglePanel()
-        self:showStatus(self.panelOpen and "Editor drawer opened." or "Editor drawer collapsed.")
-        return true
-    end
-
     if key == "g" then
         self.gridVisible = not self.gridVisible
         self:notifyPreferencesChanged()
@@ -3820,7 +3767,7 @@ function mapEditor:mousepressed(screenX, screenY, button)
         return true
     end
 
-    if self.activeTextField and (not self.panelOpen or not pointInRect(screenX, screenY, self.sidePanel)) then
+    if self.activeTextField and not pointInRect(screenX, screenY, self.sidePanel) then
         self:commitTextField()
     end
 
@@ -3832,12 +3779,7 @@ function mapEditor:mousepressed(screenX, screenY, button)
         return true
     end
 
-    if pointInRect(screenX, screenY, self:getPanelHandleRect()) then
-        self:togglePanel()
-        return true
-    end
-
-    if self.panelOpen and pointInRect(screenX, screenY, self.sidePanel) then
+    if pointInRect(screenX, screenY, self.sidePanel) then
         if self:handleEditorDrawerClick(screenX, screenY) then
             return true
         end
@@ -4013,7 +3955,7 @@ function mapEditor:wheelmoved(screenX, screenY, _, y)
         return false
     end
 
-    if self.panelOpen and self.sidePanelMode == "sequencer" and pointInRect(screenX, screenY, self.sidePanel) then
+    if self.sidePanelMode == "sequencer" and pointInRect(screenX, screenY, self.sidePanel) then
         local layout = self:getSequencerLayout()
         if layout.maxScroll <= 0 then
             return false
@@ -4032,13 +3974,31 @@ function mapEditor:wheelmoved(screenX, screenY, _, y)
     return true
 end
 
-function mapEditor:mousemoved(screenX, screenY)
+function mapEditor:mousemoved(screenX, screenY, deltaX, deltaY)
     if self.sequencerScrollDrag then
         local drag = self.sequencerScrollDrag
         local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
         local thumbY = clamp(screenY - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
         self.sequencerScroll = ((thumbY - drag.track.y) / thumbTravel) * drag.maxScroll
         return true
+    end
+
+    if self.panDrag and not love.mouse.isDown(3) then
+        self.panDrag = nil
+    end
+
+    if not self.panDrag
+        and love.mouse.isDown(3)
+        and not pointInRect(screenX, screenY, self.sidePanel)
+        and not self.dialog
+        and not self.colorPicker
+        and not self.routeTypePicker then
+        self.panDrag = {
+            startScreenX = screenX - (deltaX or 0),
+            startScreenY = screenY - (deltaY or 0),
+            startCameraX = self.camera.x,
+            startCameraY = self.camera.y,
+        }
     end
 
     if self.panDrag then
@@ -4543,26 +4503,6 @@ function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
 end
 
-function mapEditor:drawDrawerHandle()
-    local graphics = love.graphics
-    local rect = self:getPanelHandleRect()
-
-    graphics.setColor(0.08, 0.1, 0.14, self.panelOpen and 0.72 or 0.96)
-    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 12, 12)
-    graphics.setColor(0.28, 0.36, 0.44, 1)
-    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 12, 12)
-
-    local centerX = rect.x + rect.w * 0.5
-    local centerY = rect.y + rect.h * 0.5
-    local direction = self.panelOpen and 1 or -1
-    graphics.setLineWidth(3)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.line(centerX - 4 * direction, centerY - 18, centerX + 4 * direction, centerY - 10)
-    graphics.line(centerX + 4 * direction, centerY - 10, centerX - 4 * direction, centerY - 2)
-    graphics.line(centerX - 4 * direction, centerY + 2, centerX + 4 * direction, centerY + 10)
-    graphics.line(centerX + 4 * direction, centerY + 10, centerX - 4 * direction, centerY + 18)
-end
-
 function mapEditor:drawGrid()
     if not self.gridVisible then
         return
@@ -4616,6 +4556,39 @@ function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numb
     end
 
     return currentY, renderedCount
+end
+
+function mapEditor:drawStatusToast(game)
+    if not self.statusText or self.statusTimer <= 0 then
+        return
+    end
+
+    local graphics = love.graphics
+    local fadeAlpha = 1
+    if self.statusTimer < STATUS_TOAST_FADE_TIME then
+        fadeAlpha = self.statusTimer / STATUS_TOAST_FADE_TIME
+    end
+
+    local font = game.fonts.small
+    local maxWidth = math.max(220, math.min(420, self:getCameraViewportRect().w - STATUS_TOAST_MARGIN * 2))
+    local textWidth = maxWidth - 24
+    local textHeight = getWrappedLineCount(font, self.statusText, textWidth) * font:getHeight()
+    local toastRect = {
+        x = STATUS_TOAST_MARGIN,
+        y = self.viewport.h - STATUS_TOAST_MARGIN - textHeight - 20,
+        w = maxWidth,
+        h = textHeight + 20,
+    }
+
+    love.graphics.setFont(font)
+    graphics.setColor(0.08, 0.1, 0.14, 0.96 * fadeAlpha)
+    graphics.rectangle("fill", toastRect.x, toastRect.y, toastRect.w, toastRect.h, 12, 12)
+    graphics.setColor(0.48, 0.92, 0.62, 0.95 * fadeAlpha)
+    graphics.rectangle("line", toastRect.x, toastRect.y, toastRect.w, toastRect.h, 12, 12)
+    graphics.setColor(0.48, 0.92, 0.62, 0.9 * fadeAlpha)
+    graphics.rectangle("fill", toastRect.x, toastRect.y, 4, toastRect.h, 12, 12)
+    graphics.setColor(0.92, 0.96, 1, fadeAlpha)
+    graphics.printf(self.statusText, toastRect.x + 14, toastRect.y + 10, textWidth)
 end
 
 function mapEditor:drawColorPicker(game)
@@ -4988,11 +4961,6 @@ function mapEditor:drawSequencer(game)
         graphics.rectangle("fill", layout.scrollbar.thumb.x, layout.scrollbar.thumb.y, layout.scrollbar.thumb.w, layout.scrollbar.thumb.h, 4, 4)
     end
 
-    if self.statusText then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf(self.statusText, layout.panelX, layout.backRect.y - 52, layout.panelWidth)
-    end
-
     self:drawPanelButton(layout.backRect, "Back", { 0.99, 0.78, 0.32 })
 end
 
@@ -5002,121 +4970,95 @@ function mapEditor:drawDefaultSidePanel(game)
     local panelWidth = self.sidePanel.w - 36
     local panelBottom = self:getPlayTestButtonRect().y - 16
     local drawerLayout = self:getEditorDrawerLayout()
-    local currentY = self.sidePanel.y + 104
-
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Authoring View", panelX, currentY)
-    currentY = currentY + 28
+    local currentY = drawerLayout.gridToggleRect.y + drawerLayout.gridToggleRect.h + 26
 
     love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.printf(string.format("Map Size: %dx%d (16:9)", self.mapSize.w, self.mapSize.h), panelX, currentY, panelWidth)
-    currentY = currentY + 22
-    graphics.printf("Grid: " .. (self.gridVisible and "On" or "Off") .. string.format("  |  Step %d", self.gridStep), panelX, currentY, panelWidth)
-    currentY = currentY + 18
-
-    if drawerLayout then
-        for _, entry in ipairs(drawerLayout.presetRects) do
-            local isActive = entry.preset.w == self.mapSize.w
-            self:drawPanelButton(entry.rect, entry.preset.label, isActive and { 0.48, 0.92, 0.62 } or { 0.33, 0.8, 0.98 })
-        end
-
-        self:drawPanelButton(
-            drawerLayout.gridToggleRect,
-            self.gridVisible and "Hide Grid (G)" or "Show Grid (G)",
-            { 0.99, 0.78, 0.32 }
-        )
-        self:drawTextField(
-            "Grid Step",
-            drawerLayout.gridStepRect,
-            self:getActiveTextFieldValue("map", "editor", "gridStep", tostring(self.gridStep)),
-            { 0.33, 0.8, 0.98 },
-            self.activeTextField and self.activeTextField.kind == "map" and self.activeTextField.fieldName == "gridStep"
-        )
-        self:drawPanelButton(drawerLayout.fitRect, "Fit View (F)", { 0.48, 0.92, 0.62 })
-        self:drawTextField(
-            "Custom Width",
-            drawerLayout.customWidthRect,
-            self:getActiveTextFieldValue("map", "editor", "customMapWidth", tostring(self.mapSize.w)),
-            { 0.33, 0.8, 0.98 },
-            self.activeTextField and self.activeTextField.kind == "map" and self.activeTextField.fieldName == "customMapWidth"
-        )
-        self:drawPanelButton(drawerLayout.applySizeRect, "Apply", { 0.99, 0.78, 0.32 })
-        currentY = drawerLayout.fitRect.y + drawerLayout.fitRect.h + 58
-    end
+    uiControls.drawSegmentedToggle(
+        drawerLayout.mapSizeRect,
+        MAP_SIZE_PRESETS,
+        self:getMapSizePreset().id,
+        nil,
+        game.fonts.small,
+        {
+            backgroundColor = { 0.08, 0.1, 0.14, 0.98 },
+            activeFillColor = { 0.98, 0.88, 0.34, 0.96 },
+            outlineColor = { 0.28, 0.4, 0.52, 1 },
+            innerOutlineColor = { 0.46, 0.66, 0.82, 0.45 },
+        }
+    )
+    self:drawPanelButton(
+        drawerLayout.gridToggleRect,
+        self.gridVisible and "Hide Grid (G)" or "Show Grid (G)",
+        { 0.99, 0.78, 0.32 }
+    )
+    self:drawTextField(
+        "Grid Step",
+        drawerLayout.gridStepRect,
+        self:getActiveTextFieldValue("map", "editor", "gridStep", tostring(self.gridStep)),
+        { 0.33, 0.8, 0.98 },
+        self.activeTextField and self.activeTextField.kind == "map" and self.activeTextField.fieldName == "gridStep"
+    )
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.97, 0.98, 1, 1)
     graphics.print("Map Issues", panelX, currentY)
-    currentY = currentY + 28
+    currentY = currentY + 26
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.printf(
-        string.format("Routes: %d  |  Intersections: %d  |  Trains: %d", #self.routes, #self.intersections, #self.trains),
-        panelX,
-        currentY,
-        panelWidth
-    )
-    currentY = currentY + 30
-
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.printf("Right click a route segment to change its road type.", panelX, currentY, panelWidth)
-    currentY = currentY + 34
-
-    if #(self.validationErrors or {}) == 0 then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf("No blocking issues. This map can start.", panelX, currentY, panelWidth)
-        currentY = currentY + 40
-    else
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf("Resolve these before the run can start:", panelX, currentY, panelWidth)
-        currentY = currentY + 28
-        local renderedCount
-        currentY, renderedCount = self:drawWrappedList(
-            game.fonts.small,
-            self.validationErrors,
-            panelX,
-            currentY,
-            panelWidth,
-            panelBottom - 90,
-            { 0.84, 0.88, 0.92, 1 },
-            { 0.99, 0.78, 0.32, 1 }
-        )
-        if renderedCount < #self.validationErrors and currentY + 20 < panelBottom then
-            graphics.setColor(0.68, 0.74, 0.8, 1)
-            graphics.printf(
-                string.format("%d more issue(s) below the fold.", #self.validationErrors - renderedCount),
-                panelX,
-                currentY,
-                panelWidth
-            )
-            currentY = currentY + 24
+    local issuesLimitY = panelBottom - 12
+    local displayErrors = {}
+    for _, errorText in ipairs(self.validationErrors or {}) do
+        if errorText ~= "Draw at least one route before starting this map." then
+            displayErrors[#displayErrors + 1] = errorText
         end
     end
 
-    local selectedRoute = self:getSelectedRoute()
-    if selectedRoute and currentY + 56 < panelBottom then
-        local startEndpoint = self:getRouteStartEndpoint(selectedRoute)
-        local endEndpoint = self:getRouteEndEndpoint(selectedRoute)
-        local startColors = table.concat(lookupToSortedIds(startEndpoint and startEndpoint.colors or {}), ", ")
-        local endColors = table.concat(lookupToSortedIds(endEndpoint and endEndpoint.colors or {}), ", ")
-        graphics.setColor(selectedRoute.color[1], selectedRoute.color[2], selectedRoute.color[3], 1)
-        graphics.printf("Selected route: " .. (selectedRoute.label or selectedRoute.id), panelX, currentY, panelWidth)
-        currentY = currentY + 24
-        graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.printf(
-            "Road styles: " .. self:summarizeRouteRoadTypes(selectedRoute) .. "\nStart colors: " .. startColors .. "\nEnd colors: " .. endColors,
-            panelX,
-            currentY,
-            panelWidth
-        )
-    end
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.99, 0.78, 0.32, 1)
+    graphics.printf("Resolve these before the run can start:", panelX, currentY, panelWidth)
+    currentY = currentY + (getWrappedLineCount(game.fonts.small, "Resolve these before the run can start:", panelWidth) * game.fonts.small:getHeight()) + 10
 
-    if self.statusText then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf(self.statusText, panelX, panelBottom - 42, panelWidth)
+    local issuesRect = {
+        x = panelX,
+        y = currentY,
+        w = panelWidth,
+        h = math.max(48, issuesLimitY - currentY),
+    }
+
+    graphics.setColor(0.1, 0.12, 0.16, 1)
+    graphics.rectangle("fill", issuesRect.x, issuesRect.y, issuesRect.w, issuesRect.h, 12, 12)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", issuesRect.x, issuesRect.y, issuesRect.w, issuesRect.h, 12, 12)
+
+    if #displayErrors == 0 then
+        graphics.setColor(0.62, 0.67, 0.73, 1)
+        graphics.printf(
+            "No issues found. You're good to go and good to publish this map.",
+            issuesRect.x + 12,
+            issuesRect.y + 12,
+            issuesRect.w - 24
+        )
+    else
+        local renderedCount
+        currentY, renderedCount = self:drawWrappedList(
+            game.fonts.small,
+            displayErrors,
+            issuesRect.x + 12,
+            issuesRect.y + 12,
+            issuesRect.w - 24,
+            issuesRect.y + issuesRect.h - 12,
+            { 0.84, 0.88, 0.92, 1 },
+            { 0.99, 0.78, 0.32, 1 }
+        )
+        if renderedCount < #displayErrors and currentY + 20 < issuesLimitY then
+            graphics.setColor(0.68, 0.74, 0.8, 1)
+            graphics.printf(
+                string.format("%d more issue(s) below the fold.", #displayErrors - renderedCount),
+                issuesRect.x + 12,
+                currentY,
+                issuesRect.w - 24
+            )
+            currentY = currentY + 24
+        end
     end
 
     love.graphics.setFont(game.fonts.small)
@@ -5130,12 +5072,13 @@ end
 
 function mapEditor:draw(game)
     local graphics = love.graphics
+    local cameraCenterX, cameraCenterY = self:getCameraViewportCenter()
 
     graphics.setColor(0.05, 0.07, 0.09, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
 
     graphics.push()
-    graphics.translate(self.viewport.w * 0.5, self.viewport.h * 0.5)
+    graphics.translate(cameraCenterX, cameraCenterY)
     graphics.scale(self.camera.zoom, self.camera.zoom)
     graphics.translate(-self.camera.x, -self.camera.y)
 
@@ -5164,41 +5107,23 @@ function mapEditor:draw(game)
 
     graphics.pop()
 
-    if self.panelOpen then
-        graphics.setColor(0.09, 0.11, 0.15, 0.98)
-        graphics.rectangle("fill", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
-        graphics.setColor(0.22, 0.28, 0.34, 1)
-        graphics.rectangle("line", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
+    graphics.setColor(0.09, 0.11, 0.15, 0.98)
+    graphics.rectangle("fill", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
+    graphics.setColor(0.22, 0.28, 0.34, 1)
+    graphics.rectangle("line", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
 
-        if self.sidePanelMode == "sequencer" then
-            self:drawSequencer(game)
-        else
-            love.graphics.setFont(game.fonts.title)
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.print("Map Editor", self.sidePanel.x + 18, self.sidePanel.y + 20)
-
-            love.graphics.setFont(game.fonts.small)
-            graphics.setColor(0.48, 0.92, 0.62, 1)
-            graphics.printf("Tab folds the drawer. Esc returns to the menu.", self.sidePanel.x + 18, self.sidePanel.y + 64, self.sidePanel.w - 36)
-            self:drawDefaultSidePanel(game)
-        end
+    if self.sidePanelMode == "sequencer" then
+        self:drawSequencer(game)
+    else
+        love.graphics.setFont(game.fonts.title)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print("Map Editor", self.sidePanel.x + 18, self.sidePanel.y + 20)
+        self:drawDefaultSidePanel(game)
     end
 
     self:drawColorPicker(game)
     self:drawRouteTypePicker(game)
-    self:drawDrawerHandle()
-
-    graphics.setColor(0.7, 0.76, 0.82, 1)
-    local sourceLabel
-    if self.sourceInfo and self.sourceInfo.source == "builtin" then
-        sourceLabel = "Current source: Tutorial Template - " .. (self.currentMapName or "Untitled")
-    elseif self.sourceInfo and self.sourceInfo.source == "user" then
-        sourceLabel = "Current source: Saved Map - " .. (self.currentMapName or "Untitled")
-    else
-        sourceLabel = "Current source: " .. (self.currentMapName or (self.level and self.level.title) or "Blank")
-    end
-    graphics.printf(sourceLabel, 22, 18, self.viewport.w - 44)
-    graphics.printf("Click and drag anywhere to create a route. Wheel zooms, middle drag pans, Ctrl snaps to grid.", 22, 40, self.viewport.w - 44)
+    self:drawStatusToast(game)
 
     self:drawDialog(game)
 end
