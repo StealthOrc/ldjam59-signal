@@ -142,6 +142,32 @@ assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should 
 assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
+assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
+
+local levelSelectMaps = {
+    { id = "tutorial-1", mapKind = "tutorial", source = "builtin", displayName = "Guide 1" },
+    { id = "campaign-1", mapKind = "campaign", source = "builtin", displayName = "Campaign 1" },
+    { id = "downloaded-1", mapKind = "user", source = "user", isRemoteImport = true, displayName = "Downloaded 1" },
+    { id = "user-1", mapKind = "user", source = "user", displayName = "User 1" },
+}
+
+local defaultLibraryMaps = ui.getLevelSelectMapDescriptors({
+    levelSelectMode = "library",
+    availableMaps = levelSelectMaps,
+})
+assertEqual(#defaultLibraryMaps, 1, "level select defaults to the campaign filter in library mode")
+assertEqual(defaultLibraryMaps[1].id, "campaign-1", "level select campaign filter starts on campaign maps")
+
+local allLibraryMaps = ui.getLevelSelectMapDescriptors({
+    levelSelectMode = "library",
+    levelSelectFilter = "all",
+    availableMaps = levelSelectMaps,
+})
+assertEqual(#allLibraryMaps, 4, "level select all filter includes every library map")
+assertEqual(allLibraryMaps[1].id, "campaign-1", "level select all filter lists campaign maps first")
+assertEqual(allLibraryMaps[2].id, "tutorial-1", "level select all filter lists guidebook maps after campaign")
+assertEqual(allLibraryMaps[3].id, "downloaded-1", "level select all filter keeps downloaded maps after built-ins")
+assertEqual(allLibraryMaps[4].id, "user-1", "level select all filter keeps user maps last")
 
 love.graphics = love.graphics or {}
 love.graphics.setFont = function()

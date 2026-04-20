@@ -1260,7 +1260,7 @@ end
 local function getMapKindLabel(descriptor)
     local kind = getMapKind(descriptor)
     if kind == "tutorial" then
-        return "Tutorial"
+        return "Guidebook"
     end
     if kind == "campaign" then
         return "Campaign"
@@ -1278,8 +1278,8 @@ end
 local function getLevelSelectFilterSegments()
     return {
         { id = "all", label = "All" },
-        { id = "tutorial", label = "Tutorial" },
         { id = "campaign", label = "Campaign" },
+        { id = "tutorial", label = "Guidebook" },
         { id = "downloaded", label = "Downloaded" },
         { id = "user", label = "User" },
     }
@@ -1296,9 +1296,9 @@ local function getLevelSelectMaps(game)
     end
 
     local maps = {}
-    local filterId = game.levelSelectFilter or "all"
+    local filterId = game.levelSelectFilter or "campaign"
 
-    for _, mapKind in ipairs({ "tutorial", "campaign", "downloaded", "user" }) do
+    for _, mapKind in ipairs({ "campaign", "tutorial", "downloaded", "user" }) do
         if filterId == "all" or filterId == mapKind then
             for _, descriptor in ipairs(game.availableMaps or {}) do
                 if getMapKind(descriptor) == mapKind then
@@ -4639,7 +4639,7 @@ function ui.drawLevelSelect(game)
     local actionButtons = getLevelSelectActionButtons(game)
     local primarySelectionRect = game.levelSelectMode == "marketplace" and getMarketplaceTabsRect(game) or getLevelSelectFilterRect(game)
     local primarySelectionSegments = game.levelSelectMode == "marketplace" and getMarketplaceTabSegments() or getLevelSelectFilterSegments()
-    local primarySelectionValue = game.levelSelectMode == "marketplace" and (game.levelSelectMarketplaceTab or "top") or (game.levelSelectFilter or "all")
+    local primarySelectionValue = game.levelSelectMode == "marketplace" and (game.levelSelectMarketplaceTab or "top") or (game.levelSelectFilter or "campaign")
     local modeSelectionRect = getLevelSelectModeSelectorRect(game)
     local modeSelectionSegments = getLevelSelectModeSegments()
 
@@ -4654,7 +4654,7 @@ function ui.drawLevelSelect(game)
     end
 
     if #maps == 0 then
-        drawLevelSelectEmptyState(game, game.levelSelectMode == "marketplace" and "marketplace" or (game.levelSelectFilter or "all"))
+        drawLevelSelectEmptyState(game, game.levelSelectMode == "marketplace" and "marketplace" or (game.levelSelectFilter or "campaign"))
     end
 
     uiControls.drawSegmentedToggle(
