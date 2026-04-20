@@ -100,6 +100,18 @@ local function copyControlConfig(controlType)
     return copy
 end
 
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, child in pairs(value) do
+        copy[key] = deepCopy(child)
+    end
+    return copy
+end
+
 local function closestPointOnSegment(px, py, a, b)
     local abX = b.x - a.x
     local abY = b.y - a.y
@@ -561,7 +573,7 @@ local function canReachGoalColor(startEdgeId, goalColor, edgeById, junctionLooku
     return false
 end
 
-function authoredMap.validateEditorMap(mapName, editorData)
+local function buildCompiledLevel(mapName, editorData)
     local errors = {}
     local diagnostics = {}
 
@@ -572,9 +584,20 @@ function authoredMap.validateEditorMap(mapName, editorData)
         return #diagnostics
     end
 
+    local baseLevel = {
+        title = mapName,
+        description = "Custom map loaded from the editor.",
+        hint = "Shared endpoints are not junctions. Only one train can safely occupy a line end at a time.",
+        footer = "Shared line ends stay contested even without a junction, so spacing still matters.",
+        timeLimit = editorData and editorData.timeLimit or nil,
+        junctions = {},
+        edges = {},
+        trains = {},
+    }
+
     if not editorData or #(editorData.routes or {}) == 0 then
         addError("Draw at least one route before starting this map.")
-        return nil, errors, errors[1], diagnostics
+        return baseLevel, errors, errors[1], diagnostics
     end
 
     local junctionLookup = {}
@@ -978,9 +1001,17 @@ function authoredMap.validateEditorMap(mapName, editorData)
     end
 
     if #errors > 0 then
-        return nil, errors, table.concat(errors, " "), diagnostics
+        return {
+            title = mapName,
+            description = "Custom map loaded from the editor.",
+            hint = "Shared endpoints are not junctions. Only one train can safely occupy a line end at a time.",
+            footer = "Shared line ends stay contested even without a junction, so spacing still matters.",
+            timeLimit = timeLimit,
+            junctions = playableJunctions,
+            edges = edges,
+            trains = trains,
+        }, errors, table.concat(errors, " "), diagnostics
     end
-
     local hasPlayableJunctions = #playableJunctions > 0
 
     return {
@@ -999,6 +1030,15 @@ function authoredMap.validateEditorMap(mapName, editorData)
     }, {}, nil, diagnostics
 end
 
+function authoredMap.validateEditorMap(mapName, editorData)
+    local level, errors, errorText, diagnostics = buildCompiledLevel(mapName, editorData)
+    if #errors > 0 then
+        return nil, errors, errorText, diagnostics
+    end
+
+    return level, {}, nil, diagnostics
+end
+
 function authoredMap.buildPlayableLevel(mapName, editorData, mapUuid)
     local level, errors, errorText, diagnostics = authoredMap.validateEditorMap(mapName, editorData)
     if level then
@@ -1006,6 +1046,36 @@ function authoredMap.buildPlayableLevel(mapName, editorData, mapUuid)
         level.mapUuid = mapUuid or level.mapUuid
     end
     return level, errorText, errors, diagnostics
+end
+
+function authoredMap.buildEditorPreviewBundle(mapName, editorData, mapUuid)
+    local compiledLevel, errors, errorText, diagnostics = buildCompiledLevel(mapName, editorData)
+    compiledLevel = compiledLevel or {
+        title = mapName,
+        description = "Custom map loaded from the editor.",
+        junctions = {},
+        edges = {},
+        trains = {},
+    }
+    local playableLevel = nil
+    local previewLevel = deepCopy(compiledLevel)
+
+    if #errors == 0 then
+        playableLevel = deepCopy(compiledLevel)
+        playableLevel.id = mapUuid or playableLevel.id
+        playableLevel.mapUuid = mapUuid or playableLevel.mapUuid
+    end
+
+    previewLevel.id = mapUuid or previewLevel.id
+    previewLevel.mapUuid = mapUuid or previewLevel.mapUuid
+    previewLevel.trains = {}
+
+    return playableLevel, previewLevel, errorText, errors, diagnostics
+end
+
+function authoredMap.buildEditorPreviewLevel(mapName, editorData, mapUuid)
+    local _, previewLevel, errorText, errors, diagnostics = authoredMap.buildEditorPreviewBundle(mapName, editorData, mapUuid)
+    return previewLevel, errorText, errors, diagnostics
 end
 
 return authoredMap

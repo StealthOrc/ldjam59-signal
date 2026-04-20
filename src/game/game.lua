@@ -330,7 +330,13 @@ function Game.new()
     self.levelComplete = false
     self.failureReason = nil
     self.world = nil
-    self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
+    self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil, {
+        editorPreferences = self.profile.editor,
+        onPreferencesChanged = function(editorPreferences)
+            self.profile.editor = deepCopy(editorPreferences)
+            profileStorage.save(self.profile or {})
+        end,
+    })
     self.availableMaps = {}
     self.mapNameByUuid = {}
     self.currentMapDescriptor = nil
@@ -3435,9 +3441,8 @@ function Game:mousepressed(x, y, button)
     self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
 end
 
-function Game:mousemoved(x, y)
+function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
-
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
@@ -3458,7 +3463,7 @@ function Game:mousemoved(x, y)
 
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
-        self.editor:mousemoved(viewportX, viewportY)
+        self.editor:mousemoved(viewportX, viewportY, dx, dy)
         return
     end
 
@@ -3481,7 +3486,9 @@ end
 
 function Game:wheelmoved(screenX, screenY)
     if self.screen == "editor" then
-        return self.editor:wheelmoved(screenX, screenY)
+        local mouseX, mouseY = love.mouse.getPosition()
+        local viewportX, viewportY = self:toViewportPosition(mouseX, mouseY)
+        return self.editor:wheelmoved(viewportX, viewportY, screenX, screenY)
     end
 
     local y = screenY

@@ -2,6 +2,9 @@ local mapStorage = require("src.game.map_storage")
 local authoredMap = require("src.game.authored_map")
 local roadTypes = require("src.game.road_types")
 local uuid = require("src.game.uuid")
+local world = require("src.game.world")
+local trackSceneRenderer = require("src.game.track_scene_renderer")
+local uiControls = require("src.game.ui_controls")
 
 local mapEditor = {}
 mapEditor.__index = mapEditor
@@ -16,12 +19,33 @@ local CONTROL_ORDER = { "direct", "delayed", "pump", "spring", "relay", "trip", 
 local DEFAULT_TRAIN_WAGONS = 4
 local LEGACY_TRAIN_SPEED = 168
 local DEFAULT_ROAD_TYPE = roadTypes.DEFAULT_ID
+local LEGACY_MAP_WIDTH = 1280
+local LEGACY_MAP_HEIGHT = 720
+local DEFAULT_NEW_MAP_WIDTH = 1920
+local DEFAULT_NEW_MAP_HEIGHT = 1080
+local MAP_SIZE_PRESETS = {
+    { id = "1x", label = "1x", w = 1280, h = 720 },
+    { id = "2x", label = "2x", w = 1920, h = 1080 },
+    { id = "3x", label = "3x", w = 2560, h = 1440 },
+    { id = "4x", label = "4x", w = 3840, h = 2160 },
+}
+local DEFAULT_GRID_STEP = 64
+local MIN_GRID_STEP = 16
+local MAX_GRID_STEP = 256
+local CAMERA_PADDING = 36
+local CAMERA_MIN_ZOOM = 0.2
+local CAMERA_MAX_ZOOM = 3.5
+local PANEL_OVERLAY_MARGIN = 18
+local GRID_MINOR_ALPHA = 0.16
+local GRID_MAJOR_ALPHA = 0.3
 local ROAD_TYPE_OPTIONS = roadTypes.getOrderedOptions()
 local VALIDATION_CHILD_INDENT = 20
 local PANEL_BUTTON_SIDE_MARGIN = 18
 local PANEL_BUTTON_HEIGHT = 38
 local PANEL_BUTTON_GAP = 12
 local PANEL_BUTTON_BOTTOM_MARGIN = 22
+local STATUS_TOAST_MARGIN = 18
+local STATUS_TOAST_FADE_TIME = 0.35
 local DRAG_START_DISTANCE_SQUARED = 25
 local INTERSECTION_SELECTOR_OFFSET_Y = 36
 local INTERSECTION_SELECTOR_CLICK_RADIUS = 16
@@ -41,6 +65,7 @@ local JUNCTION_MENU_ICON_SIZE = 15 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_TYPE_ICON_SIZE = 18 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_SWATCH_RADIUS = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_EDGE_MARGIN = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
+local EMPTY_MAP_VALIDATION_TEXT = "Draw at least one route before starting this map."
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -291,6 +316,13 @@ local function formatNumber(value)
     return string.format("%.4f", value)
 end
 
+local function clampRectValue(value, minValue, maxValue)
+    if minValue > maxValue then
+        return (minValue + maxValue) * 0.5
+    end
+    return clamp(value, minValue, maxValue)
+end
+
 local function countLookupEntries(lookup)
     local count = 0
     for _, enabled in pairs(lookup or {}) do
@@ -339,6 +371,34 @@ local function colorsToLookup(source, fallbackId)
     end
 
     return lookup
+end
+
+local function normalizeEndpointColors(kind, source, fallbackId)
+    local lookup = colorsToLookup(source, fallbackId)
+    if kind ~= "input" then
+        return lookup
+    end
+
+    local orderedIds = lookupToSortedIds(lookup)
+    local resolvedId = orderedIds[1] or fallbackId
+    local normalizedLookup = {}
+    if resolvedId then
+        normalizedLookup[resolvedId] = true
+    end
+    return normalizedLookup
+end
+
+local function getEndpointColorIds(endpoint)
+    if not endpoint then
+        return {}
+    end
+
+    local orderedIds = lookupToSortedIds(endpoint.colors)
+    if endpoint.kind == "input" then
+        return orderedIds[1] and { orderedIds[1] } or {}
+    end
+
+    return orderedIds
 end
 
 local function getColorOptionById(colorId)
@@ -516,6 +576,27 @@ local function getWrappedLineCount(font, text, width)
     return 1
 end
 
+local function sanitizeMapSize(mapSize, fallbackW, fallbackH)
+    local fallbackWidth = fallbackW or LEGACY_MAP_WIDTH
+    local fallbackHeight = fallbackH or LEGACY_MAP_HEIGHT
+    local width = math.max(320, math.floor(tonumber(mapSize and mapSize.w) or fallbackWidth))
+    local height = math.max(180, math.floor(tonumber(mapSize and mapSize.h) or fallbackHeight))
+    local normalizedHeight = math.max(180, math.floor(width * 9 / 16 + 0.5))
+
+    if math.abs(height - normalizedHeight) > 1 then
+        height = normalizedHeight
+    end
+
+    return {
+        w = width,
+        h = height,
+    }
+end
+
+local function sanitizeGridStep(value)
+    local numericValue = math.floor(tonumber(value) or DEFAULT_GRID_STEP)
+    return clamp(numericValue, MIN_GRID_STEP, MAX_GRID_STEP)
+end
 local function getValidationEntryMessage(entry)
     if type(entry) == "table" then
         return tostring(entry.message or "")
@@ -684,10 +765,13 @@ local function drawValidationMessage(font, text, x, y, width, textColor, display
     graphics.setLineWidth(1)
 end
 
-function mapEditor.new(viewportW, viewportH, level)
+function mapEditor.new(viewportW, viewportH, level, options)
     local self = setmetatable({}, mapEditor)
+    local editorOptions = options or {}
+    local editorPreferences = editorOptions.editorPreferences or {}
 
     self.viewport = { w = viewportW, h = viewportH }
+    self.mapSize = sanitizeMapSize(nil, DEFAULT_NEW_MAP_WIDTH, DEFAULT_NEW_MAP_HEIGHT)
     self.endpoints = {}
     self.routes = {}
     self.nextEndpointId = 1
@@ -708,6 +792,7 @@ function mapEditor.new(viewportW, viewportH, level)
     self.loadedMapPayload = nil
     self.lastValidationError = nil
     self.validationErrors = {}
+    self.previewWorld = nil
     self.validationEntries = {}
     self.hoveredValidationIndex = nil
     self.statusText = nil
@@ -721,6 +806,15 @@ function mapEditor.new(viewportW, viewportH, level)
     self.sequencerScroll = 0
     self.activeTextField = nil
     self.sequencerScrollDrag = nil
+    self.camera = {
+        x = self.mapSize.w * 0.5,
+        y = self.mapSize.h * 0.5,
+        zoom = 1,
+    }
+    self.panDrag = nil
+    self.onPreferencesChanged = editorOptions.onPreferencesChanged
+    self.gridVisible = editorPreferences.gridVisible ~= false
+    self.gridStep = sanitizeGridStep(editorPreferences.gridStep)
     self.editorChargeImage = nil
     self.editorCrossImage = nil
     self.editorDirectImage = nil
@@ -733,24 +827,25 @@ function mapEditor.new(viewportW, viewportH, level)
     self.validationColorDisplayMode = "swatch"
 
     self:updateLayout()
+    self:resetCameraToFit()
     self:resetFromMap(level and { level = level, name = level.title } or nil, nil)
 
     return self
 end
 
 function mapEditor:updateLayout()
-    self.margin = 20
+    self.margin = PANEL_OVERLAY_MARGIN
     self.panelWidth = 320
     self.canvas = {
-        x = self.margin,
-        y = self.margin,
-        w = self.viewport.w - self.panelWidth - self.margin * 3,
-        h = self.viewport.h - self.margin * 2,
+        x = 0,
+        y = 0,
+        w = self.mapSize.w,
+        h = self.mapSize.h,
     }
     self.spawnBandHeight = 58
     self.spawnY = self.canvas.y + 22
     self.sidePanel = {
-        x = self.canvas.x + self.canvas.w + self.margin,
+        x = self.viewport.w - self.panelWidth - self.margin,
         y = self.margin,
         w = self.panelWidth,
         h = self.viewport.h - self.margin * 2,
@@ -774,6 +869,96 @@ end
 function mapEditor:clearSelection()
     self.selectedRouteId = nil
     self.selectedPointIndex = nil
+end
+
+function mapEditor:notifyPreferencesChanged()
+    if self.onPreferencesChanged then
+        self.onPreferencesChanged({
+            gridVisible = self.gridVisible ~= false,
+            gridStep = sanitizeGridStep(self.gridStep),
+        })
+    end
+end
+
+function mapEditor:getCameraViewportRect()
+    local width = self.sidePanel and (self.sidePanel.x - self.margin) or self.viewport.w
+    return {
+        x = 0,
+        y = 0,
+        w = math.max(1, width),
+        h = self.viewport.h,
+    }
+end
+
+function mapEditor:getCameraViewportCenter()
+    local rect = self:getCameraViewportRect()
+    return rect.x + rect.w * 0.5, rect.y + rect.h * 0.5
+end
+
+function mapEditor:getCameraViewHalfExtents(zoom)
+    local resolvedZoom = zoom or self.camera.zoom or 1
+    local rect = self:getCameraViewportRect()
+    return rect.w * 0.5 / resolvedZoom, rect.h * 0.5 / resolvedZoom
+end
+
+function mapEditor:clampCamera()
+    local halfW, halfH = self:getCameraViewHalfExtents()
+    local minX = halfW
+    local maxX = self.mapSize.w - halfW
+    local minY = halfH
+    local maxY = self.mapSize.h - halfH
+    self.camera.x = clampRectValue(self.camera.x, minX, maxX)
+    self.camera.y = clampRectValue(self.camera.y, minY, maxY)
+end
+
+function mapEditor:resetCameraToFit()
+    local cameraViewport = self:getCameraViewportRect()
+    local fitZoom = math.min(
+        (cameraViewport.w - CAMERA_PADDING * 2) / math.max(1, self.mapSize.w),
+        (cameraViewport.h - CAMERA_PADDING * 2) / math.max(1, self.mapSize.h)
+    )
+
+    self.camera.zoom = clamp(fitZoom, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM)
+    self.camera.x = self.mapSize.w * 0.5
+    self.camera.y = self.mapSize.h * 0.5
+    self:clampCamera()
+end
+
+function mapEditor:screenToMap(screenX, screenY)
+    local centerX, centerY = self:getCameraViewportCenter()
+    return (screenX - centerX) / self.camera.zoom + self.camera.x,
+        (screenY - centerY) / self.camera.zoom + self.camera.y
+end
+
+function mapEditor:mapToScreen(mapX, mapY)
+    local centerX, centerY = self:getCameraViewportCenter()
+    return (mapX - self.camera.x) * self.camera.zoom + centerX,
+        (mapY - self.camera.y) * self.camera.zoom + centerY
+end
+
+function mapEditor:isModifierSnapActive()
+    return love.keyboard.isDown("lctrl", "rctrl")
+end
+
+function mapEditor:snapPointToGrid(x, y)
+    local step = sanitizeGridStep(self.gridStep)
+    return math.floor((x / step) + 0.5) * step,
+        math.floor((y / step) + 0.5) * step
+end
+
+function mapEditor:zoomAroundScreenPoint(screenX, screenY, deltaY)
+    if deltaY == 0 then
+        return
+    end
+
+    local anchorMapX, anchorMapY = self:screenToMap(screenX, screenY)
+    local zoomFactor = deltaY > 0 and 1.12 or (1 / 1.12)
+    self.camera.zoom = clamp(self.camera.zoom * zoomFactor, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM)
+    local centerX, centerY = self:getCameraViewportCenter()
+
+    self.camera.x = anchorMapX - ((screenX - centerX) / self.camera.zoom)
+    self.camera.y = anchorMapY - ((screenY - centerY) / self.camera.zoom)
+    self:clampCamera()
 end
 
 function mapEditor:generateTrainId()
@@ -836,7 +1021,7 @@ function mapEditor:getAvailableLineColorIds()
 
     for _, endpoint in ipairs(self.endpoints) do
         if endpoint.kind == "input" then
-            for _, colorId in ipairs(lookupToSortedIds(endpoint.colors)) do
+            for _, colorId in ipairs(getEndpointColorIds(endpoint)) do
                 if not lookup[colorId] then
                     lookup[colorId] = true
                     colors[#colors + 1] = colorId
@@ -907,7 +1092,9 @@ function mapEditor:getValidationEntries()
 
     local fallbackEntries = {}
     for _, message in ipairs(self.validationErrors or {}) do
-        fallbackEntries[#fallbackEntries + 1] = { message = message }
+        if message ~= EMPTY_MAP_VALIDATION_TEXT then
+            fallbackEntries[#fallbackEntries + 1] = { message = message }
+        end
     end
     return fallbackEntries
 end
@@ -1024,10 +1211,14 @@ end
 function mapEditor:getValidationListLayout(font)
     font = font or love.graphics.getFont()
 
+    local drawerLayout = self:getEditorDrawerLayout()
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
     local panelBottom = self:getPlayTestButtonRect().y - 16
-    local listTop = self.sidePanel.y + 196
+    local issuesTitleY = drawerLayout.gridToggleRect.y + drawerLayout.gridToggleRect.h + 26
+    local resolveText = "Resolve these before the run can start:"
+    local resolveTextHeight = getWrappedLineCount(font, resolveText, panelWidth) * font:getHeight()
+    local listTop = issuesTitleY + 26 + resolveTextHeight + 10
     local listBottom = panelBottom - 12
 
     local listHeight = math.max(72, listBottom - listTop)
@@ -1078,13 +1269,16 @@ function mapEditor:getValidationListLayout(font)
             maxScroll = maxScroll,
         }
         contentWidth = panelWidth - 16
-        listRect.w = contentWidth
     end
 
     return {
         panelX = panelX,
         panelWidth = panelWidth,
         panelBottom = panelBottom,
+        issuesTitleY = issuesTitleY,
+        resolveText = resolveText,
+        resolveTextY = issuesTitleY + 26,
+        resolveTextHeight = resolveTextHeight,
         listRect = listRect,
         totalContentHeight = totalContentHeight,
         maxScroll = maxScroll,
@@ -1105,7 +1299,7 @@ function mapEditor:getVisibleValidationRows(font, layout)
         local lineHeight = font:getHeight()
         local numberLabel = entry.numberLabel or (tostring(index) .. ".")
         local numberWidth = font:getWidth(numberLabel .. " ")
-        local textWidth = math.max(20, layout.listRect.w - numberWidth - indentOffset)
+        local textWidth = math.max(20, (layout.contentWidth or layout.listRect.w) - numberWidth - indentOffset)
         local itemHeight = measureValidationMessage(font, message, textWidth, displayMode)
         local itemBottom = currentY + itemHeight
 
@@ -1117,7 +1311,7 @@ function mapEditor:getVisibleValidationRows(font, layout)
                 rect = {
                     x = layout.listRect.x,
                     y = currentY,
-                    w = layout.listRect.w,
+                    w = layout.contentWidth or layout.listRect.w,
                     h = itemHeight,
                 },
                 indentOffset = indentOffset,
@@ -1249,7 +1443,7 @@ function mapEditor:createEndpoint(kind, x, y, colors, id)
         kind = kind,
         x = x,
         y = y,
-        colors = colorsToLookup(colors, fallbackColorId),
+        colors = normalizeEndpointColors(kind, colors, fallbackColorId),
     }
     self.endpoints[#self.endpoints + 1] = endpoint
     self.nextEndpointId = self.nextEndpointId + 1
@@ -1335,6 +1529,16 @@ function mapEditor:showStatus(text)
     self.statusTimer = 2.8
 end
 
+function mapEditor:updatePreviewWorld(previewLevel)
+    local level = previewLevel or {
+        title = self.currentMapName or "Untitled",
+        edges = {},
+        junctions = {},
+        trains = {},
+    }
+    self.previewWorld = world.new(self.mapSize.w, self.mapSize.h, level)
+end
+
 function mapEditor:setValidationResults(buildError, buildErrors, buildDiagnostics)
     self.lastValidationError = buildError
     self.validationErrors = buildErrors or {}
@@ -1342,10 +1546,12 @@ function mapEditor:setValidationResults(buildError, buildErrors, buildDiagnostic
     local trainLookup = self:getTrainValidationLookup()
 
     for index, message in ipairs(self.validationErrors) do
-        local diagnostic = buildDiagnostics and buildDiagnostics[index] or nil
-        local entry = self:buildValidationEntry(message, diagnostic, trainLookup)
-        entry.sourceIndex = index
-        self.validationEntries[#self.validationEntries + 1] = entry
+        if message ~= EMPTY_MAP_VALIDATION_TEXT then
+            local diagnostic = buildDiagnostics and buildDiagnostics[index] or nil
+            local entry = self:buildValidationEntry(message, diagnostic, trainLookup)
+            entry.sourceIndex = index
+            self.validationEntries[#self.validationEntries + 1] = entry
+        end
     end
     self:groupValidationEntriesByHierarchy()
     self:refreshValidationEntryNumbering()
@@ -1354,11 +1560,12 @@ function mapEditor:setValidationResults(buildError, buildErrors, buildDiagnostic
 end
 
 function mapEditor:refreshValidation(mapName)
-    local level, buildError, buildErrors, buildDiagnostics = authoredMap.buildPlayableLevel(
+    local level, previewLevel, buildError, buildErrors, buildDiagnostics = authoredMap.buildEditorPreviewBundle(
         mapName or self.currentMapName or "Untitled",
         self:getExportData(),
         self.editingMapUuid
     )
+    self:updatePreviewWorld(previewLevel)
     self:setValidationResults(buildError, buildErrors, buildDiagnostics)
     return level, buildError, self.validationErrors
 end
@@ -1598,11 +1805,59 @@ function mapEditor:getSequencerLayout()
     }
 end
 
-function mapEditor:isInSpawnBand(x, y)
-    return x >= self.canvas.x
-        and x <= self.canvas.x + self.canvas.w
-        and y >= self.canvas.y
-        and y <= self.canvas.y + self.spawnBandHeight
+function mapEditor:getEditorDrawerLayout()
+    local panelX = self.sidePanel.x + 18
+    local panelWidth = self.sidePanel.w - 36
+    local mapSizeRect = {
+        x = panelX,
+        y = self.sidePanel.y + 92,
+        w = panelWidth,
+        h = 34,
+    }
+    local gridToggleRect = { x = panelX, y = mapSizeRect.y + mapSizeRect.h + 16, w = 120, h = 28 }
+    local gridStepRect = self:getTextFieldRect(panelX + 130, gridToggleRect.y + 1, panelWidth - 130)
+
+    return {
+        mapSizeRect = mapSizeRect,
+        gridToggleRect = gridToggleRect,
+        gridStepRect = gridStepRect,
+    }
+end
+
+function mapEditor:getMapSizePreset()
+    for _, preset in ipairs(MAP_SIZE_PRESETS) do
+        if preset.w == self.mapSize.w then
+            return preset
+        end
+    end
+    return MAP_SIZE_PRESETS[1]
+end
+
+function mapEditor:handleEditorDrawerClick(x, y)
+    local layout = self:getEditorDrawerLayout()
+    if pointInRect(x, y, layout.mapSizeRect) then
+        for presetIndex, preset in ipairs(MAP_SIZE_PRESETS) do
+            if pointInRect(x, y, uiControls.segmentRect(layout.mapSizeRect, presetIndex, #MAP_SIZE_PRESETS)) then
+                self:commitTextField()
+                self:resizeMapTo(preset.w)
+                return true
+            end
+        end
+    end
+
+    if pointInRect(x, y, layout.gridToggleRect) then
+        self.gridVisible = not self.gridVisible
+        self:notifyPreferencesChanged()
+        self:showStatus(self.gridVisible and "Grid shown." or "Grid hidden.")
+        return true
+    end
+
+    if pointInRect(x, y, layout.gridStepRect) then
+        self:openTextField("map", "editor", "gridStep", tostring(self.gridStep), "int")
+        return true
+    end
+
+    return false
 end
 
 function mapEditor:clampPoint(x, y, isStartPoint)
@@ -1610,10 +1865,6 @@ function mapEditor:clampPoint(x, y, isStartPoint)
     local minY = self.canvas.y + 14
     local maxY = self.canvas.y + self.canvas.h - 14
     local clampedY = clamp(y, minY, maxY)
-
-    if isStartPoint then
-        clampedY = self.spawnY
-    end
 
     return clampedX, clampedY
 end
@@ -1675,13 +1926,21 @@ function mapEditor:screenToJunctionPickerSpace(x, y)
 end
 
 function mapEditor:openColorPicker(route, magnetKind)
+    if magnetKind ~= "end" then
+        return
+    end
+
     local point = magnetKind == "start" and route.points[1] or route.points[#route.points]
+    local anchorX, anchorY = self:mapToScreen(point.x, point.y)
     self.colorPicker = {
-        mode = "route",
+        mode = "route_end",
         routeId = route.id,
         magnetKind = magnetKind,
-        anchorX = point.x,
-        anchorY = point.y,
+        anchorX = anchorX,
+        anchorY = anchorY,
+        hoverBranch = nil,
+        branch = "disconnect",
+        hoverOptionIndex = nil,
     }
     self:closeRouteTypePicker()
 end
@@ -1699,12 +1958,13 @@ end
 function mapEditor:openJunctionPicker(intersection, clickX, clickY)
     self:prepareIntersectionForDrag(intersection)
 
+    local anchorX, anchorY = self:mapToScreen(intersection.x, intersection.y)
     local liveIntersection = self:getIntersectionById(intersection.id) or intersection
     self.colorPicker = {
         mode = "junction",
         intersectionId = liveIntersection.id,
-        anchorX = liveIntersection.x,
-        anchorY = liveIntersection.y,
+        anchorX = anchorX,
+        anchorY = anchorY,
         hoverBranch = nil,
         branch = nil,
         hoverOptionIndex = nil,
@@ -1733,8 +1993,8 @@ function mapEditor:getColorPickerOptions()
     end
 
     local lookup = {}
-    if self.colorPicker.mode == "route" then
-        local route = self:getSelectedRoute()
+    if self.colorPicker.mode == "route" or self.colorPicker.mode == "route_end" then
+        local route = self:getRouteById(self.colorPicker.routeId)
         local endpoint = route and route.id == self.colorPicker.routeId
             and (self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route))
             or nil
@@ -1760,8 +2020,8 @@ function mapEditor:getColorPickerSelectionLookup()
         return lookup
     end
 
-    if self.colorPicker.mode == "route" then
-        local route = self:getSelectedRoute()
+    if self.colorPicker.mode == "route" or self.colorPicker.mode == "route_end" then
+        local route = self:getRouteById(self.colorPicker.routeId)
         if not route or route.id ~= self.colorPicker.routeId then
             return lookup
         end
@@ -1784,7 +2044,7 @@ function mapEditor:getColorPickerSelectionLookup()
 end
 
 function mapEditor:getJunctionPickerRootHover(x, y)
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return nil
     end
 
@@ -1797,7 +2057,7 @@ function mapEditor:getJunctionPickerRootHover(x, y)
     if dx < 0 then
         return "disconnect"
     end
-    if dx > 0 then
+    if dx > 0 and self.colorPicker.mode == "junction" then
         return "junctions"
     end
     return nil
@@ -1843,7 +2103,7 @@ function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRad
 end
 
 function mapEditor:getJunctionPickerLayout()
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return nil
     end
 
@@ -1917,7 +2177,7 @@ function mapEditor:getJunctionPickerOptionHit(submenu, x, y)
 end
 
 function mapEditor:updateJunctionPickerHover(x, y)
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return false
     end
 
@@ -1944,11 +2204,11 @@ function mapEditor:getColorPickerLayout()
     end
 
     local options = self:getColorPickerOptions()
-    if self.colorPicker.mode ~= "junction" and #options == 0 then
+    if self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end" and #options == 0 then
         return nil
     end
 
-    if self.colorPicker.mode == "junction" then
+    if self.colorPicker.mode == "junction" or self.colorPicker.mode == "route_end" then
         return self:getJunctionPickerLayout()
     end
 
@@ -2338,6 +2598,10 @@ end
 
 function mapEditor:getExportData()
     local export = {
+        mapSize = {
+            w = self.mapSize.w,
+            h = self.mapSize.h,
+        },
         timeLimit = self.timeLimit,
         endpoints = {},
         routes = {},
@@ -2349,9 +2613,9 @@ function mapEditor:getExportData()
         export.endpoints[#export.endpoints + 1] = {
             id = endpoint.id,
             kind = endpoint.kind,
-            x = endpoint.x / self.viewport.w,
-            y = endpoint.y / self.viewport.h,
-            colors = lookupToSortedIds(endpoint.colors),
+            x = endpoint.x / self.mapSize.w,
+            y = endpoint.y / self.mapSize.h,
+            colors = getEndpointColorIds(endpoint),
         }
     end
 
@@ -2369,8 +2633,8 @@ function mapEditor:getExportData()
 
         for _, point in ipairs(route.points) do
             exportRoute.points[#exportRoute.points + 1] = {
-                x = point.x / self.viewport.w,
-                y = point.y / self.viewport.h,
+                x = point.x / self.mapSize.w,
+                y = point.y / self.mapSize.h,
                 sharedPointId = point.sharedPointId,
             }
         end
@@ -2385,8 +2649,8 @@ function mapEditor:getExportData()
     for _, intersection in ipairs(self.intersections) do
         local exportJunction = {
             id = intersection.id,
-            x = intersection.x / self.viewport.w,
-            y = intersection.y / self.viewport.h,
+            x = intersection.x / self.mapSize.w,
+            y = intersection.y / self.mapSize.h,
             control = intersection.controlType,
             passCount = intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount,
             routes = {},
@@ -2423,6 +2687,7 @@ end
 
 function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.level = levelData
+    self.mapSize = sanitizeMapSize(editorData and editorData.mapSize)
     self.endpoints = {}
     self.routes = {}
     self.nextEndpointId = 1
@@ -2446,12 +2711,14 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self:closeColorPicker()
     self:closeRouteTypePicker()
     self:clearSelection()
+    self:updateLayout()
+    self:resetCameraToFit()
 
     for _, endpointData in ipairs((editorData or {}).endpoints or {}) do
         self:createEndpoint(
             endpointData.kind or "output",
-            endpointData.x * self.viewport.w,
-            endpointData.y * self.viewport.h,
+            endpointData.x * self.mapSize.w,
+            endpointData.y * self.mapSize.h,
             endpointData.colors,
             endpointData.id
         )
@@ -2461,8 +2728,8 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
         local points = {}
         for _, point in ipairs(routeData.points or {}) do
             points[#points + 1] = {
-                x = point.x * self.viewport.w,
-                y = point.y * self.viewport.h,
+                x = point.x * self.mapSize.w,
+                y = point.y * self.mapSize.h,
                 sharedPointId = point.sharedPointId,
             }
             if point.sharedPointId and point.sharedPointId >= self.nextSharedPointId then
@@ -2493,8 +2760,8 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
         self:restoreSharedPointsForRoutes(sortedRouteIds)
         self.importedJunctionState[table.concat(sortedRouteIds, "|")] = {
             id = junctionData.id,
-            x = junctionData.x * self.viewport.w,
-            y = junctionData.y * self.viewport.h,
+            x = junctionData.x * self.mapSize.w,
+            y = junctionData.y * self.mapSize.h,
             controlType = junctionData.control or DEFAULT_CONTROL,
             passCount = junctionData.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount,
             activeInputIndex = junctionData.activeInputIndex or 1,
@@ -2591,8 +2858,8 @@ function mapEditor:normalizePoints(points)
     local normalized = {}
     for _, point in ipairs(points) do
         normalized[#normalized + 1] = {
-            x = point.x / self.viewport.w,
-            y = point.y / self.viewport.h,
+            x = point.x / self.mapSize.w,
+            y = point.y / self.mapSize.h,
         }
     end
     return normalized
@@ -2684,6 +2951,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
 
     if not mapData then
         self.level = nil
+        self.mapSize = sanitizeMapSize(nil, DEFAULT_NEW_MAP_WIDTH, DEFAULT_NEW_MAP_HEIGHT)
         self.currentMapName = nil
         self.editingMapUuid = nil
         self.endpoints = {}
@@ -2707,6 +2975,8 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self:closeColorPicker()
         self:closeRouteTypePicker()
         self:clearSelection()
+        self:updateLayout()
+        self:resetCameraToFit()
         self:rebuildIntersections()
         return
     end
@@ -2726,6 +2996,7 @@ end
 
 function mapEditor:resetFromLevel(level)
     self.level = level
+    self.mapSize = sanitizeMapSize(nil, LEGACY_MAP_WIDTH, LEGACY_MAP_HEIGHT)
     self.currentMapName = level and level.title or nil
     self.endpoints = {}
     self.routes = {}
@@ -2748,6 +3019,8 @@ function mapEditor:resetFromLevel(level)
     self:closeColorPicker()
     self:closeRouteTypePicker()
     self:clearSelection()
+    self:updateLayout()
+    self:resetCameraToFit()
 
     for _, train in ipairs(self.trains) do
         local numericId = tonumber((train.id or ""):match("train_(%d+)$"))
@@ -2775,15 +3048,15 @@ function mapEditor:resetFromLevel(level)
                 points = {}
                 for _, point in ipairs(branchDefinition.branchPoints) do
                     points[#points + 1] = {
-                        x = point.x * self.viewport.w,
-                        y = point.y * self.viewport.h,
+                        x = point.x * self.mapSize.w,
+                        y = point.y * self.mapSize.h,
                     }
                 end
                 for pointIndex = 2, #branchDefinition.sharedPoints do
                     local point = branchDefinition.sharedPoints[pointIndex]
                     points[#points + 1] = {
-                        x = point.x * self.viewport.w,
-                        y = point.y * self.viewport.h,
+                        x = point.x * self.mapSize.w,
+                        y = point.y * self.mapSize.h,
                     }
                 end
                 mergeX = points[#branchDefinition.branchPoints].x
@@ -2840,7 +3113,51 @@ function mapEditor:resize(viewportW, viewportH)
     self.viewport.w = viewportW
     self.viewport.h = viewportH
     self:updateLayout()
+    self:clampCamera()
     self:rebuildIntersections()
+end
+
+function mapEditor:resizeMapTo(width)
+    local nextMapSize = sanitizeMapSize({
+        w = width,
+        h = math.floor((tonumber(width) or self.mapSize.w) * 9 / 16 + 0.5),
+    }, self.mapSize.w, self.mapSize.h)
+
+    if nextMapSize.w == self.mapSize.w and nextMapSize.h == self.mapSize.h then
+        return false
+    end
+
+    local scaleX = nextMapSize.w / self.mapSize.w
+    local scaleY = nextMapSize.h / self.mapSize.h
+
+    for _, endpoint in ipairs(self.endpoints) do
+        endpoint.x = endpoint.x * scaleX
+        endpoint.y = endpoint.y * scaleY
+    end
+
+    for _, route in ipairs(self.routes) do
+        for _, point in ipairs(route.points or {}) do
+            point.x = point.x * scaleX
+            point.y = point.y * scaleY
+        end
+    end
+
+    for _, intersection in ipairs(self.intersections) do
+        intersection.x = intersection.x * scaleX
+        intersection.y = intersection.y * scaleY
+    end
+
+    for _, state in pairs(self.importedJunctionState or {}) do
+        state.x = (state.x or 0) * scaleX
+        state.y = (state.y or 0) * scaleY
+    end
+
+    self.mapSize = nextMapSize
+    self:updateLayout()
+    self:resetCameraToFit()
+    self:rebuildIntersections()
+    self:showStatus(string.format("Map size set to %dx%d.", self.mapSize.w, self.mapSize.h))
+    return true
 end
 
 function mapEditor:update(dt)
@@ -2857,8 +3174,9 @@ function mapEditor:update(dt)
 end
 
 function mapEditor:findIntersectionHit(x, y)
+    local radiusScale = 1 / math.max(self.camera.zoom, 0.0001)
     for _, intersection in ipairs(self.intersections) do
-        local radius = 22
+        local radius = (intersection.unsupported and 18 or 22) * radiusScale
         if distanceSquared(x, y, intersection.x, intersection.y) <= radius * radius then
             return intersection
         end
@@ -2867,7 +3185,21 @@ function mapEditor:findIntersectionHit(x, y)
     return nil
 end
 
+function mapEditor:getMagnetHitRect(point, magnetKind)
+    local width = magnetKind == "start" and 58 or 46
+    local height = 24
+    local padding = 8
+
+    return {
+        x = point.x - width * 0.5 - padding,
+        y = point.y - height * 0.5 - padding,
+        w = width + padding * 2,
+        h = height + padding * 2,
+    }
+end
+
 function mapEditor:findPointHit(x, y)
+    local radiusScale = 1 / math.max(self.camera.zoom, 0.0001)
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = #route.points, 1, -1 do
@@ -2875,14 +3207,22 @@ function mapEditor:findPointHit(x, y)
             local isMagnet = pointIndex == 1 or pointIndex == #route.points
             local isSharedJunctionPoint = not isMagnet and point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
             if not isSharedJunctionPoint then
-                local radius = isMagnet and 16 or 12
-                if distanceSquared(x, y, point.x, point.y) <= radius * radius then
-                    local magnetKind = nil
-                    if pointIndex == 1 then
-                        magnetKind = "start"
-                    elseif pointIndex == #route.points then
-                        magnetKind = "end"
-                    end
+                local magnetKind = nil
+                if pointIndex == 1 then
+                    magnetKind = "start"
+                elseif pointIndex == #route.points then
+                    magnetKind = "end"
+                end
+
+                local hit = false
+                if isMagnet then
+                    hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
+                else
+                    local radius = 12 * radiusScale
+                    hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
+                end
+
+                if hit then
                     return route, pointIndex, magnetKind
                 end
             end
@@ -2893,7 +3233,8 @@ function mapEditor:findPointHit(x, y)
 end
 
 function mapEditor:findBendPointAt(x, y, excludeRouteId, excludePointIndex)
-    local radiusSquared = MERGE_SNAP_RADIUS * MERGE_SNAP_RADIUS
+    local radius = MERGE_SNAP_RADIUS / math.max(self.camera.zoom, 0.0001)
+    local radiusSquared = radius * radius
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = #route.points - 1, 2, -1 do
@@ -3096,9 +3437,10 @@ function mapEditor:mergeBendPointInto(route, pointIndex, targetRoute, targetPoin
 end
 
 function mapEditor:findEndpointAt(x, y, kind, excludeEndpointId)
+    local radius = MERGE_SNAP_RADIUS / math.max(self.camera.zoom, 0.0001)
     for _, endpoint in ipairs(self.endpoints) do
         if endpoint.kind == kind and endpoint.id ~= excludeEndpointId then
-            if distanceSquared(x, y, endpoint.x, endpoint.y) <= MERGE_SNAP_RADIUS * MERGE_SNAP_RADIUS then
+            if distanceSquared(x, y, endpoint.x, endpoint.y) <= radius * radius then
                 return endpoint
             end
         end
@@ -3108,7 +3450,8 @@ end
 
 function mapEditor:findSegmentHit(x, y)
     local bestHit = nil
-    local bestDistance = 16 * 16
+    local segmentRadius = 16 / math.max(self.camera.zoom, 0.0001)
+    local bestDistance = segmentRadius * segmentRadius
 
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
@@ -3509,11 +3852,11 @@ end
 
 function mapEditor:beginRoute(x, y)
     local colorOption = COLOR_OPTIONS[((self.nextRouteId - 1) % #COLOR_OPTIONS) + 1]
-    local startX, startY = self:clampPoint(x, y, true)
+    local startX, startY = self:clampPoint(x, y, false)
     local route = self:createRoute(
         {
             { x = startX, y = startY },
-            { x = startX, y = startY + 24 },
+            { x = startX, y = startY },
         },
         colorOption.color,
         nil,
@@ -3599,6 +3942,10 @@ function mapEditor:updateDraggedPoint(x, y)
     end
 
     local clampedX, clampedY = self:clampPoint(x, y, self.drag.pointIndex == 1)
+    if self:isModifierSnapActive() then
+        clampedX, clampedY = self:snapPointToGrid(clampedX, clampedY)
+        clampedX, clampedY = self:clampPoint(clampedX, clampedY, self.drag.pointIndex == 1)
+    end
     if self.drag.isMagnet then
         local endpoint = self.drag.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
         if endpoint then
@@ -3757,7 +4104,7 @@ end
 
 function mapEditor:cycleIntersectionOutput(intersection, direction)
     if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
-        self:showStatus("This dial couples input and output together.")
+        self:showStatus("This dial couples start and end together.")
         return
     end
 
@@ -3773,7 +4120,7 @@ function mapEditor:cycleIntersectionOutput(intersection, direction)
         intersection.activeOutputIndex = 1
     end
 
-    self:showStatus("Junction output switched to " .. intersection.activeOutputIndex .. ".")
+    self:showStatus("Junction end switched to " .. intersection.activeOutputIndex .. ".")
 end
 
 function mapEditor:cycleIntersectionPassCount(intersection, direction)
@@ -3795,6 +4142,11 @@ function mapEditor:cycleIntersectionPassCount(intersection, direction)
 end
 
 function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
+    if magnetKind == "start" then
+        self:showStatus("Starts use a single fixed color.")
+        return
+    end
+
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint then
         return
@@ -3802,7 +4154,7 @@ function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
     local lookup = endpoint.colors
     if lookup[colorId] then
         if countLookupEntries(lookup) <= 1 then
-            self:showStatus("Each magnet needs at least one allowed color.")
+            self:showStatus("Each endpoint needs at least one allowed color.")
             return
         end
         lookup[colorId] = nil
@@ -3810,14 +4162,30 @@ function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
         lookup[colorId] = true
     end
 
-    self:showStatus((magnetKind == "start" and "Start" or "Exit") .. " magnet colors updated.")
+    self:showStatus((magnetKind == "start" and "Start" or "End") .. " colors updated.")
 end
 
 function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, startMouseY)
+    if magnetKind ~= "end" then
+        return false
+    end
+
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint or not endpoint.colors[colorId] or countLookupEntries(endpoint.colors) <= 1 then
-        self:showStatus("That color cannot be split from this magnet.")
-        return
+        self:showStatus("That color cannot be split from this endpoint.")
+        return false
+    end
+
+    local matchingRoutes = {}
+    for _, candidateRoute in ipairs(self.routes) do
+        if candidateRoute.endEndpointId == endpoint.id and candidateRoute.colorId == colorId then
+            matchingRoutes[#matchingRoutes + 1] = candidateRoute
+        end
+    end
+
+    if #matchingRoutes == 0 then
+        self:showStatus("That color is not present on this end.")
+        return false
     end
 
     endpoint.colors[colorId] = nil
@@ -3828,17 +4196,21 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
         { colorId }
     )
 
-    if magnetKind == "start" then
-        route.startEndpointId = newEndpoint.id
-    else
-        route.endEndpointId = newEndpoint.id
+    for _, matchingRoute in ipairs(matchingRoutes) do
+        if magnetKind == "start" then
+            matchingRoute.startEndpointId = newEndpoint.id
+        else
+            matchingRoute.endEndpointId = newEndpoint.id
+        end
+        self:updateRouteEndpointPoint(matchingRoute, magnetKind)
     end
-    self:updateRouteEndpointPoint(route, magnetKind)
-    self.selectedRouteId = route.id
-    self.selectedPointIndex = magnetKind == "start" and 1 or #route.points
+
+    local activeRoute = route.colorId == colorId and route or matchingRoutes[1]
+    self.selectedRouteId = activeRoute.id
+    self.selectedPointIndex = magnetKind == "start" and 1 or #activeRoute.points
     self.drag = {
         kind = "point",
-        routeId = route.id,
+        routeId = activeRoute.id,
         pointIndex = self.selectedPointIndex,
         startMouseX = startMouseX or newEndpoint.x,
         startMouseY = startMouseY or newEndpoint.y,
@@ -3848,7 +4220,8 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
     }
     self:closeColorPicker()
     self:rebuildIntersections()
-    self:showStatus("Color split into a new " .. endpoint.kind .. " magnet.")
+    self:showStatus("Color split into a new " .. (endpoint.kind == "input" and "start" or "end") .. " endpoint.")
+    return true
 end
 
 function mapEditor:splitSharedJunctionColor(intersection, colorId, startMouseX, startMouseY)
@@ -3898,6 +4271,10 @@ function mapEditor:splitSharedJunctionColor(intersection, colorId, startMouseX, 
 end
 
 function mapEditor:mergeEndpointInto(route, magnetKind, targetEndpoint)
+    if magnetKind == "start" then
+        return false
+    end
+
     local currentEndpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not currentEndpoint or not targetEndpoint or currentEndpoint.id == targetEndpoint.id or currentEndpoint.kind ~= targetEndpoint.kind then
         return false
@@ -3917,7 +4294,7 @@ function mapEditor:mergeEndpointInto(route, magnetKind, targetEndpoint)
     self:updateRouteEndpointPoint(route, magnetKind)
     self:removeEndpointIfUnused(currentEndpoint.id)
     self:rebuildIntersections()
-    self:showStatus(currentEndpoint.kind == "input" and "Inputs merged." or "Outputs merged.")
+    self:showStatus(currentEndpoint.kind == "input" and "Starts merged." or "Ends merged.")
     return true
 end
 
@@ -3967,6 +4344,18 @@ function mapEditor:commitTextField()
     local rawValue = field.buffer or ""
     local trimmedValue = rawValue:gsub("^%s+", ""):gsub("%s+$", "")
     local changed = false
+
+    if field.kind == "map" and field.fieldName == "gridStep" then
+        local numericValue = tonumber(trimmedValue)
+        self.activeTextField = nil
+        if numericValue then
+            self.gridStep = sanitizeGridStep(numericValue)
+            self:notifyPreferencesChanged()
+            self:showStatus(string.format("Grid step set to %d.", self.gridStep))
+            return true
+        end
+        return false
+    end
 
     if trimmedValue == "" then
         if field.valueType == "optional_float" then
@@ -4031,10 +4420,20 @@ function mapEditor:handleColorPickerClick(x, y, button)
         local rawX = x
         local rawY = y
         x, y = self:screenToJunctionPickerSpace(x, y)
-        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
-        if not intersection then
-            self:closeColorPicker()
-            return true
+        local intersection = nil
+        local route = nil
+        if self.colorPicker.mode == "junction" then
+            intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+            if not intersection then
+                self:closeColorPicker()
+                return true
+            end
+        elseif self.colorPicker.mode == "route_end" then
+            route = self:getRouteById(self.colorPicker.routeId)
+            if not route then
+                self:closeColorPicker()
+                return true
+            end
         end
 
         local insideRoot = not layout.branch
@@ -4065,7 +4464,12 @@ function mapEditor:handleColorPickerClick(x, y, button)
             local hitEntry = self:getJunctionPickerOptionHit(layout.submenu, x, y)
             if hitEntry then
                 if layout.submenu.branch == "disconnect" then
-                    self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
+                    if self.colorPicker.mode == "junction" then
+                        self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
+                    elseif self.colorPicker.mode == "route_end" then
+                        local mapX, mapY = self:screenToMap(rawX, rawY)
+                        self:splitEndpointColor(route, "end", hitEntry.option.id, mapX, mapY)
+                    end
                 else
                     self:setIntersectionControlType(intersection, hitEntry.option.controlType)
                     self:closeColorPicker()
@@ -4109,7 +4513,8 @@ function mapEditor:handleColorPickerClick(x, y, button)
                     return true
                 end
 
-                self:splitSharedJunctionColor(intersection, swatch.option.id, x, y)
+                local mapX, mapY = self:screenToMap(x, y)
+                self:splitSharedJunctionColor(intersection, swatch.option.id, mapX, mapY)
                 return true
             end
 
@@ -4122,10 +4527,11 @@ function mapEditor:handleColorPickerClick(x, y, button)
             local endpoint = self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
             local lookup = endpoint and endpoint.colors or {}
             if not lookup[swatch.option.id] then
-                self:showStatus("Choose one of the colors already merged into this magnet.")
+                self:showStatus("Choose one of the colors already merged into this endpoint.")
                 return true
             end
-            self:splitEndpointColor(route, self.colorPicker.magnetKind, swatch.option.id, x, y)
+            local mapX, mapY = self:screenToMap(x, y)
+            self:splitEndpointColor(route, self.colorPicker.magnetKind, swatch.option.id, mapX, mapY)
             return true
         end
     end
@@ -4487,6 +4893,19 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if key == "g" then
+        self.gridVisible = not self.gridVisible
+        self:notifyPreferencesChanged()
+        self:showStatus(self.gridVisible and "Grid shown." or "Grid hidden.")
+        return true
+    end
+
+    if key == "f" then
+        self:resetCameraToFit()
+        self:showStatus("Camera reset to fit.")
+        return true
+    end
+
     if key == "s" then
         self:commitTextField()
         self:openSaveDialog()
@@ -4529,34 +4948,98 @@ function mapEditor:textinput(text)
     end
 end
 
-function mapEditor:mousepressed(x, y, button)
-    if button ~= 1 and button ~= 2 then
+function mapEditor:mousepressed(screenX, screenY, button)
+    if button ~= 1 and button ~= 2 and button ~= 3 then
         return false
     end
 
-    if self.dialog and self:handleDialogClick(x, y) then
+    if self.dialog and self:handleDialogClick(screenX, screenY) then
         return true
     end
 
-    if self.activeTextField and not pointInRect(x, y, self.sidePanel) then
+    if self.activeTextField and not pointInRect(screenX, screenY, self.sidePanel) then
         self:commitTextField()
     end
 
-    if self.colorPicker and self:handleColorPickerClick(x, y, button) then
+    if self.colorPicker and self:handleColorPickerClick(screenX, screenY, button) then
         return true
     end
 
-    if self.routeTypePicker and self:handleRouteTypePickerClick(x, y) then
+    if self.routeTypePicker and self:handleRouteTypePickerClick(screenX, screenY) then
         return true
     end
+
+    if pointInRect(screenX, screenY, self.sidePanel) then
+        if self:handleEditorDrawerClick(screenX, screenY) then
+            return true
+        end
+
+        if self.sidePanelMode == "sequencer" and self:handleSequencerClick(screenX, screenY, button) then
+            return true
+        end
+
+        if self.sidePanelMode == "default" and self:handleValidationListClick(screenX, screenY) then
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getSaveButtonRect()) then
+            self:openSaveDialog()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getOpenButtonRect()) then
+            self:openOpenDialog()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getPlayTestButtonRect()) then
+            self:requestPlaytestFromSavedMap()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getSequencerButtonRect()) then
+            self.sidePanelMode = "sequencer"
+            self:showStatus("Sequencer opened.")
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getResetButtonRect()) then
+            self:openResetDialog()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getOpenUserMapsButtonRect()) then
+            self:openUserMapsFolder()
+            return true
+        end
+
+        return true
+    end
+
+    if button == 3 then
+        self.panDrag = {
+            startScreenX = screenX,
+            startScreenY = screenY,
+            startCameraX = self.camera.x,
+            startCameraY = self.camera.y,
+        }
+        return true
+    end
+
+    local x, y = self:screenToMap(screenX, screenY)
 
     if button == 2 then
         local route, pointIndex, magnetKind = self:findPointHit(x, y)
         if route and magnetKind then
             self.selectedRouteId = route.id
             self.selectedPointIndex = pointIndex
-            self:openColorPicker(route, magnetKind)
-            self:showStatus((magnetKind == "start" and "Start" or "Exit") .. " magnet split picker opened.")
+            if magnetKind == "end" then
+                self:openColorPicker(route, magnetKind)
+                self:updateJunctionPickerHover(screenX, screenY)
+                self:showStatus("End color menu opened.")
+            else
+                self:closeColorPicker()
+            end
             return true
         end
 
@@ -4566,8 +5049,8 @@ function mapEditor:mousepressed(x, y, button)
             return true
         end
         if hitIntersection then
-            self:openJunctionPicker(hitIntersection, x, y)
-            self:updateJunctionPickerHover(x, y)
+            self:openJunctionPicker(hitIntersection, screenX, screenY)
+            self:updateJunctionPickerHover(screenX, screenY)
             return true
         end
 
@@ -4575,51 +5058,12 @@ function mapEditor:mousepressed(x, y, button)
         if segmentHit and segmentHit.route then
             self.selectedRouteId = segmentHit.route.id
             self.selectedPointIndex = nil
-            self:openRouteTypePicker(segmentHit.route, segmentHit.segmentIndex, x, y)
+            self:openRouteTypePicker(segmentHit.route, segmentHit.segmentIndex, screenX, screenY)
             self:showStatus("Road type picker opened.")
             return true
         end
 
         return false
-    end
-
-    if self.sidePanelMode == "sequencer" and self:handleSequencerClick(x, y, button) then
-        return true
-    end
-
-    if self:handleValidationListClick(x, y) then
-        return true
-    end
-
-    if pointInRect(x, y, self:getSaveButtonRect()) then
-        self:openSaveDialog()
-        return true
-    end
-
-    if pointInRect(x, y, self:getOpenButtonRect()) then
-        self:openOpenDialog()
-        return true
-    end
-
-    if pointInRect(x, y, self:getPlayTestButtonRect()) then
-        self:requestPlaytestFromSavedMap()
-        return true
-    end
-
-    if pointInRect(x, y, self:getSequencerButtonRect()) then
-        self.sidePanelMode = "sequencer"
-        self:showStatus("Sequencer opened.")
-        return true
-    end
-
-    if pointInRect(x, y, self:getResetButtonRect()) then
-        self:openResetDialog()
-        return true
-    end
-
-    if pointInRect(x, y, self:getOpenUserMapsButtonRect()) then
-        self:openUserMapsFolder()
-        return true
     end
 
     local route, pointIndex, magnetKind = self:findPointHit(x, y)
@@ -4691,7 +5135,7 @@ function mapEditor:mousepressed(x, y, button)
         return true
     end
 
-    if self:isInSpawnBand(x, y) then
+    if pointInRect(x, y, self.canvas) then
         self:beginRoute(x, y)
         return true
     end
@@ -4699,7 +5143,7 @@ function mapEditor:mousepressed(x, y, button)
     self:closeColorPicker()
     self:closeRouteTypePicker()
 
-    if pointInRect(x, y, self.canvas) or pointInRect(x, y, self.sidePanel) then
+    if pointInRect(x, y, self.canvas) then
         self:clearSelection()
         return true
     end
@@ -4707,7 +5151,7 @@ function mapEditor:mousepressed(x, y, button)
     return false
 end
 
-function mapEditor:wheelmoved(_, y)
+function mapEditor:wheelmoved(screenX, screenY, _, y)
     if self.dialog and self.dialog.type == "open" then
         if y > 0 then
             self:scrollOpenDialog(-1)
@@ -4720,64 +5164,96 @@ function mapEditor:wheelmoved(_, y)
         return false
     end
 
-    if self.sidePanelMode == "default" then
-        if y > 0 then
-            return self:scrollValidationList(-40)
+    if pointInRect(screenX, screenY, self.sidePanel) then
+        if self.sidePanelMode == "default" then
+            if y > 0 then
+                return self:scrollValidationList(-40)
+            end
+            if y < 0 then
+                return self:scrollValidationList(40)
+            end
+            return false
         end
-        if y < 0 then
-            return self:scrollValidationList(40)
+
+        if self.sidePanelMode == "sequencer" then
+            local layout = self:getSequencerLayout()
+            if layout.maxScroll <= 0 then
+                return false
+            end
+
+            if y > 0 then
+                self.sequencerScroll = math.max(0, (self.sequencerScroll or 0) - 40)
+            elseif y < 0 then
+                self.sequencerScroll = math.min(layout.maxScroll, (self.sequencerScroll or 0) + 40)
+            end
+            return true
         end
-        return false
     end
 
-    if self.sidePanelMode ~= "sequencer" then
-        return false
-    end
-
-    local layout = self:getSequencerLayout()
-    if layout.maxScroll <= 0 then
-        return false
-    end
-
-    if y > 0 then
-        self.sequencerScroll = math.max(0, (self.sequencerScroll or 0) - 40)
-    elseif y < 0 then
-        self.sequencerScroll = math.min(layout.maxScroll, (self.sequencerScroll or 0) + 40)
-    end
-
+    self:zoomAroundScreenPoint(screenX, screenY, y)
     return true
 end
 
-function mapEditor:mousemoved(x, y)
+function mapEditor:mousemoved(screenX, screenY, deltaX, deltaY)
     if self.validationScrollDrag then
         local drag = self.validationScrollDrag
         local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
-        local thumbY = clamp(y - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
+        local thumbY = clamp(screenY - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
         self.validationScroll = ((thumbY - drag.track.y) / thumbTravel) * drag.maxScroll
         return true
     end
-
     if self.sequencerScrollDrag then
         local drag = self.sequencerScrollDrag
         local thumbTravel = math.max(1, drag.track.h - drag.thumbHeight)
-        local thumbY = clamp(y - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
+        local thumbY = clamp(screenY - drag.offsetY, drag.track.y, drag.track.y + thumbTravel)
         self.sequencerScroll = ((thumbY - drag.track.y) / thumbTravel) * drag.maxScroll
         return true
     end
 
-    if self.colorPicker and self.colorPicker.mode == "junction" then
-        self:updateJunctionPickerHover(x, y)
+    if self.panDrag and not love.mouse.isDown(3) then
+        self.panDrag = nil
+    end
+
+    if not self.panDrag
+        and love.mouse.isDown(3)
+        and not pointInRect(screenX, screenY, self.sidePanel)
+        and not self.dialog
+        and not self.colorPicker
+        and not self.routeTypePicker then
+        self.panDrag = {
+            startScreenX = screenX - (deltaX or 0),
+            startScreenY = screenY - (deltaY or 0),
+            startCameraX = self.camera.x,
+            startCameraY = self.camera.y,
+        }
+    end
+
+    if self.panDrag then
+        self.camera.x = self.panDrag.startCameraX - ((screenX - self.panDrag.startScreenX) / self.camera.zoom)
+        self.camera.y = self.panDrag.startCameraY - ((screenY - self.panDrag.startScreenY) / self.camera.zoom)
+        self:clampCamera()
+        return true
+    end
+
+    if self.colorPicker and (self.colorPicker.mode == "junction" or self.colorPicker.mode == "route_end") then
+        self:updateJunctionPickerHover(screenX, screenY)
     end
 
     if not self.drag then
         return false
     end
 
+    local x, y = self:screenToMap(screenX, screenY)
     self:updateDraggedPoint(x, y)
     return true
 end
 
-function mapEditor:mousereleased(x, y, button)
+function mapEditor:mousereleased(screenX, screenY, button)
+    if button == 3 and self.panDrag then
+        self.panDrag = nil
+        return true
+    end
+
     if button ~= 1 then
         return false
     end
@@ -4796,6 +5272,7 @@ function mapEditor:mousereleased(x, y, button)
         return false
     end
 
+    local x, y = self:screenToMap(screenX, screenY)
     local route = self:getSelectedRoute()
     if self.drag.kind == "new_route" and route then
         local startPoint = route.points[1]
@@ -4812,7 +5289,7 @@ function mapEditor:mousereleased(x, y, button)
         else
             self:showStatus("Route created. Drag any segment to add a bend point.")
         end
-    elseif route and self.drag.kind == "point" and self.drag.isMagnet then
+    elseif route and self.drag.kind == "point" and self.drag.isMagnet and self.drag.magnetKind == "end" then
         local currentEndpoint = self.drag.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
         local target = currentEndpoint and self:findEndpointAt(x, y, currentEndpoint.kind, currentEndpoint.id) or nil
         if target then
@@ -4842,6 +5319,7 @@ end
 function mapEditor:serialize()
     local lines = {
         "return {",
+        string.format("    mapSize = { w = %d, h = %d },", self.mapSize.w, self.mapSize.h),
         string.format("    timeLimit = %s,", self.timeLimit and formatNumber(self.timeLimit) or "nil"),
         "    endpoints = {",
     }
@@ -4850,10 +5328,10 @@ function mapEditor:serialize()
         lines[#lines + 1] = "        {"
         lines[#lines + 1] = string.format("            id = %q,", endpoint.id)
         lines[#lines + 1] = string.format("            kind = %q,", endpoint.kind)
-        lines[#lines + 1] = string.format("            x = %s,", formatNumber(endpoint.x / self.viewport.w))
-        lines[#lines + 1] = string.format("            y = %s,", formatNumber(endpoint.y / self.viewport.h))
+        lines[#lines + 1] = string.format("            x = %s,", formatNumber(endpoint.x / self.mapSize.w))
+        lines[#lines + 1] = string.format("            y = %s,", formatNumber(endpoint.y / self.mapSize.h))
         lines[#lines + 1] = "            colors = {"
-        for _, colorId in ipairs(lookupToSortedIds(endpoint.colors)) do
+        for _, colorId in ipairs(getEndpointColorIds(endpoint)) do
             lines[#lines + 1] = string.format("                %q,", colorId)
         end
         lines[#lines + 1] = "            },"
@@ -4881,8 +5359,8 @@ function mapEditor:serialize()
             local sharedPointSuffix = point.sharedPointId and string.format(", sharedPointId = %d", point.sharedPointId) or ""
             lines[#lines + 1] = string.format(
                 "                { x = %s, y = %s%s },",
-                formatNumber(point.x / self.viewport.w),
-                formatNumber(point.y / self.viewport.h),
+                formatNumber(point.x / self.mapSize.w),
+                formatNumber(point.y / self.mapSize.h),
                 sharedPointSuffix
             )
         end
@@ -4910,8 +5388,8 @@ function mapEditor:serialize()
     for _, intersection in ipairs(self.intersections) do
         lines[#lines + 1] = "        {"
         lines[#lines + 1] = string.format("            id = %q,", intersection.id)
-        lines[#lines + 1] = string.format("            x = %s,", formatNumber(intersection.x / self.viewport.w))
-        lines[#lines + 1] = string.format("            y = %s,", formatNumber(intersection.y / self.viewport.h))
+        lines[#lines + 1] = string.format("            x = %s,", formatNumber(intersection.x / self.mapSize.w))
+        lines[#lines + 1] = string.format("            y = %s,", formatNumber(intersection.y / self.mapSize.h))
         lines[#lines + 1] = string.format("            control = %q,", intersection.controlType)
         lines[#lines + 1] = string.format("            passCount = %d,", intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount)
         lines[#lines + 1] = string.format("            activeInputIndex = %d,", intersection.activeInputIndex or 1)
@@ -4943,34 +5421,40 @@ end
 function mapEditor:drawMagnet(route, point, magnetKind, selected)
     local graphics = love.graphics
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
-    local lookup = endpoint and endpoint.colors or {}
-    local selectedColors = lookupToSortedIds(lookup)
-    local width = magnetKind == "start" and 38 or 34
+    local selectedColors = magnetKind == "end" and getEndpointColorIds(endpoint) or {}
+    local endpointColorOption = (#selectedColors == 1) and getColorOptionById(selectedColors[1]) or nil
+    local width = magnetKind == "start" and 58 or 46
     local height = 24
 
     graphics.setColor(0.08, 0.1, 0.14, 1)
     graphics.rectangle("fill", point.x - width * 0.5 - 3, point.y - height * 0.5 - 3, width + 6, height + 6, 9, 9)
-    graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+    if magnetKind == "end" and endpointColorOption then
+        graphics.setColor(endpointColorOption.color[1], endpointColorOption.color[2], endpointColorOption.color[3], 1)
+    else
+        graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+    end
     graphics.rectangle("fill", point.x - width * 0.5, point.y - height * 0.5, width, height, 9, 9)
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
     graphics.printf(
-        magnetKind == "start" and "IN" or "OUT",
+        magnetKind == "start" and "START" or "END",
         point.x - width * 0.5,
         point.y - 7,
         width,
         "center"
     )
 
-    for index, colorId in ipairs(selectedColors) do
-        local option = getColorOptionById(colorId)
-        if option then
-            local dotX = point.x - (#selectedColors - 1) * 6 + (index - 1) * 12
-            local dotY = point.y + height * 0.5 + 9
-            graphics.setColor(0.08, 0.1, 0.14, 1)
-            graphics.circle("fill", dotX, dotY, 5)
-            graphics.setColor(option.color[1], option.color[2], option.color[3], 1)
-            graphics.circle("fill", dotX, dotY, 3.5)
+    if magnetKind == "end" and #selectedColors > 1 then
+        for index, colorId in ipairs(selectedColors) do
+            local option = getColorOptionById(colorId)
+            if option then
+                local dotX = point.x - (#selectedColors - 1) * 6 + (index - 1) * 12
+                local dotY = point.y + height * 0.5 + 9
+                graphics.setColor(0.08, 0.1, 0.14, 1)
+                graphics.circle("fill", dotX, dotY, 5)
+                graphics.setColor(option.color[1], option.color[2], option.color[3], 1)
+                graphics.circle("fill", dotX, dotY, 3.5)
+            end
         end
     end
 
@@ -5159,10 +5643,10 @@ function mapEditor:drawRouteSegmentGroup(group)
     local dx = b.x - a.x
     local dy = b.y - a.y
     local length = math.sqrt(dx * dx + dy * dy)
-    local outerWidth = group.selected and 16 or 13
-    local innerWidth = group.selected and 8 or 6
+    local outerWidth = group.selected and 28 or 24
+    local innerWidth = group.selected and 18 or 14
 
-    graphics.setLineStyle("smooth")
+    graphics.setLineStyle("rough")
     graphics.setLineJoin("bevel")
     graphics.setColor(0.11, 0.14, 0.18, 1)
     graphics.setLineWidth(outerWidth)
@@ -5202,8 +5686,6 @@ end
 function mapEditor:drawRouteHandles(route, selectedRouteId)
     local graphics = love.graphics
 
-    self:drawRouteRoadTypeMarkers(route, selectedRouteId)
-
     for pointIndex, point in ipairs(route.points) do
         local selected = selectedRouteId == route.id and pointIndex == self.selectedPointIndex
         if pointIndex == 1 then
@@ -5228,42 +5710,19 @@ function mapEditor:drawRouteHandles(route, selectedRouteId)
 end
 
 function mapEditor:drawIntersection(intersection)
-    local graphics = love.graphics
-    local radius = 18
-
-    local color = CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct
-
-    graphics.setColor(0.08, 0.1, 0.13, 1)
-    graphics.circle("fill", intersection.x, intersection.y, radius + 6)
-    graphics.setColor(color[1], color[2], color[3], 1)
-    graphics.circle("fill", intersection.x, intersection.y, radius)
-
-    graphics.setColor(0.05, 0.06, 0.08, 1)
-    graphics.printf(
-        intersection.controlType == "trip"
-            and tostring(intersection.passCount or DEFAULT_CONTROL_CONFIGS.trip.passCount)
-            or self:getControlLabel(intersection.controlType),
-        intersection.x - radius,
-        intersection.y - 8,
-        radius * 2,
-        "center"
-    )
-
-    if #intersection.outputEndpointIds > 1 and intersection.controlType ~= "relay" and intersection.controlType ~= "crossbar" then
-        local selectorY = intersection.y + INTERSECTION_SELECTOR_OFFSET_Y
-        graphics.setColor(0.08, 0.1, 0.13, 1)
-        graphics.circle("fill", intersection.x, selectorY, INTERSECTION_SELECTOR_DRAW_RADIUS)
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.circle("line", intersection.x, selectorY, INTERSECTION_SELECTOR_DRAW_RADIUS)
-        graphics.setColor(0.97, 0.98, 1, 1)
-        graphics.printf(
-            tostring(intersection.activeOutputIndex or 1),
-            intersection.x - 14,
-            selectorY - 7,
-            28,
-            "center"
-        )
+    if not intersection.unsupported then
+        return
     end
+
+    local graphics = love.graphics
+    local radius = 16 / math.max(self.camera.zoom, 0.0001)
+
+    graphics.setColor(0.78, 0.22, 0.18, 0.92)
+    graphics.circle("fill", intersection.x, intersection.y, radius)
+    graphics.setColor(0.98, 0.96, 0.96, 1)
+    graphics.setLineWidth(3 / math.max(self.camera.zoom, 0.0001))
+    graphics.line(intersection.x - radius * 0.45, intersection.y - radius * 0.45, intersection.x + radius * 0.45, intersection.y + radius * 0.45)
+    graphics.line(intersection.x - radius * 0.45, intersection.y + radius * 0.45, intersection.x + radius * 0.45, intersection.y - radius * 0.45)
 end
 
 function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
@@ -5288,6 +5747,34 @@ function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
         graphics.setColor(0.97, 0.98, 1, 1)
     end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
+end
+
+function mapEditor:drawGrid()
+    if not self.gridVisible then
+        return
+    end
+
+    local graphics = love.graphics
+    local step = sanitizeGridStep(self.gridStep)
+    local halfW, halfH = self:getCameraViewHalfExtents()
+    local startX = math.max(0, math.floor((self.camera.x - halfW) / step) * step)
+    local endX = math.min(self.mapSize.w, math.ceil((self.camera.x + halfW) / step) * step)
+    local startY = math.max(0, math.floor((self.camera.y - halfH) / step) * step)
+    local endY = math.min(self.mapSize.h, math.ceil((self.camera.y + halfH) / step) * step)
+    local majorStep = step * 4
+
+    graphics.setLineWidth(1 / math.max(self.camera.zoom, 0.0001))
+    for gridX = startX, endX, step do
+        local isMajor = (gridX % majorStep) == 0
+        graphics.setColor(0.62, 0.72, 0.82, isMajor and GRID_MAJOR_ALPHA or GRID_MINOR_ALPHA)
+        graphics.line(gridX, 0, gridX, self.mapSize.h)
+    end
+
+    for gridY = startY, endY, step do
+        local isMajor = (gridY % majorStep) == 0
+        graphics.setColor(0.62, 0.72, 0.82, isMajor and GRID_MAJOR_ALPHA or GRID_MINOR_ALPHA)
+        graphics.line(0, gridY, self.mapSize.w, gridY)
+    end
 end
 
 function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numberColor)
@@ -5315,6 +5802,39 @@ function mapEditor:drawWrappedList(font, items, x, y, width, limitY, color, numb
     end
 
     return currentY, renderedCount
+end
+
+function mapEditor:drawStatusToast(game)
+    if not self.statusText or self.statusTimer <= 0 then
+        return
+    end
+
+    local graphics = love.graphics
+    local fadeAlpha = 1
+    if self.statusTimer < STATUS_TOAST_FADE_TIME then
+        fadeAlpha = self.statusTimer / STATUS_TOAST_FADE_TIME
+    end
+
+    local font = game.fonts.small
+    local maxWidth = math.max(220, math.min(420, self:getCameraViewportRect().w - STATUS_TOAST_MARGIN * 2))
+    local textWidth = maxWidth - 24
+    local textHeight = getWrappedLineCount(font, self.statusText, textWidth) * font:getHeight()
+    local toastRect = {
+        x = STATUS_TOAST_MARGIN,
+        y = self.viewport.h - STATUS_TOAST_MARGIN - textHeight - 20,
+        w = maxWidth,
+        h = textHeight + 20,
+    }
+
+    love.graphics.setFont(font)
+    graphics.setColor(0.08, 0.1, 0.14, 0.96 * fadeAlpha)
+    graphics.rectangle("fill", toastRect.x, toastRect.y, toastRect.w, toastRect.h, 12, 12)
+    graphics.setColor(0.48, 0.92, 0.62, 0.95 * fadeAlpha)
+    graphics.rectangle("line", toastRect.x, toastRect.y, toastRect.w, toastRect.h, 12, 12)
+    graphics.setColor(0.48, 0.92, 0.62, 0.9 * fadeAlpha)
+    graphics.rectangle("fill", toastRect.x, toastRect.y, 4, toastRect.h, 12, 12)
+    graphics.setColor(0.92, 0.96, 1, fadeAlpha)
+    graphics.printf(self.statusText, toastRect.x + 14, toastRect.y + 10, textWidth)
 end
 
 function mapEditor:drawEditorStaticJunctionIcon(image, centerX, centerY, size, scaleMultiplier, alpha)
@@ -5416,7 +5936,10 @@ function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
     local graphics = love.graphics
     local root = layout.root
     local leftColor = #colorOptions > 0 and { 0.82, 0.86, 0.9, 0.92 } or { 0.24, 0.28, 0.32, 0.82 }
-    local rightColor = CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct
+    local isRouteEnd = self.colorPicker and self.colorPicker.mode == "route_end"
+    local rightColor = isRouteEnd
+        and { 0.36, 0.42, 0.5, 0.92 }
+        or (CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct)
     local hoverBranch = layout.hoverBranch
 
     graphics.setColor(0.05, 0.06, 0.08, 0.94)
@@ -5442,7 +5965,18 @@ function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
         graphics.circle("fill", root.x - root.radius * 0.36, dotY, JUNCTION_MENU_SWATCH_RADIUS)
     end
 
-    self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.33, root.y, JUNCTION_MENU_ICON_SIZE)
+    if isRouteEnd then
+        graphics.setColor(0.05, 0.06, 0.08, 1)
+        graphics.printf(
+            "END",
+            root.x + 4,
+            root.y - 9,
+            root.radius - 8,
+            "center"
+        )
+    else
+        self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.5, root.y, JUNCTION_MENU_ICON_SIZE)
+    end
 end
 
 function mapEditor:drawJunctionMenuSubmenu(layout, intersection)
@@ -5520,16 +6054,16 @@ end
 
 function mapEditor:drawValidationMarkers()
     local graphics = love.graphics
+    local cameraViewport = self:getCameraViewportRect()
 
     for index, entry in ipairs(self:getValidationEntries()) do
         local diagnostic = type(entry) == "table" and entry.diagnostic or nil
         if diagnostic and diagnostic.x and diagnostic.y then
-            local x = diagnostic.x * self.viewport.w
-            local y = diagnostic.y * self.viewport.h
+            local x, y = self:mapToScreen(diagnostic.x, diagnostic.y)
             local isHovered = self.hoveredValidationIndex == index
             local size = isHovered and 13 or 9
 
-            if pointInRect(x, y, self.canvas) then
+            if pointInRect(x, y, cameraViewport) then
                 graphics.setLineWidth(isHovered and 5 or 4)
                 graphics.setColor(0.96, 0.22, 0.22, isHovered and 1 or 0.92)
                 graphics.line(x - size, y - size, x + size, y + size)
@@ -5554,8 +6088,13 @@ function mapEditor:drawColorPicker(game)
     local lookup = self:getColorPickerSelectionLookup()
 
     if layout.kind == "junction_radial" then
-        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
-        if not intersection then
+        local intersection = nil
+        if self.colorPicker.mode == "junction" then
+            intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+            if not intersection then
+                return
+            end
+        elseif self.colorPicker.mode ~= "route_end" then
             return
         end
 
@@ -5937,49 +6476,82 @@ function mapEditor:drawSequencer(game)
         graphics.rectangle("fill", layout.scrollbar.thumb.x, layout.scrollbar.thumb.y, layout.scrollbar.thumb.w, layout.scrollbar.thumb.h, 4, 4)
     end
 
-    if self.statusText then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf(self.statusText, layout.panelX, layout.backRect.y - 52, layout.panelWidth)
-    end
-
     self:drawPanelButton(layout.backRect, "Back", { 0.99, 0.78, 0.32 })
 end
 
 function mapEditor:drawDefaultSidePanel(game)
     local graphics = love.graphics
+    local drawerLayout = self:getEditorDrawerLayout()
     local validationLayout = self:getValidationListLayout(game.fonts.small)
     local panelX = validationLayout.panelX
     local panelWidth = validationLayout.panelWidth
-    local panelBottom = validationLayout.panelBottom
-    local currentY = self.sidePanel.y + 76
+    local validationEntries = self:getValidationEntries()
+
+    love.graphics.setFont(game.fonts.small)
+    uiControls.drawSegmentedToggle(
+        drawerLayout.mapSizeRect,
+        MAP_SIZE_PRESETS,
+        self:getMapSizePreset().id,
+        nil,
+        game.fonts.small,
+        {
+            backgroundColor = { 0.08, 0.1, 0.14, 0.98 },
+            activeFillColor = { 0.98, 0.88, 0.34, 0.96 },
+            outlineColor = { 0.28, 0.4, 0.52, 1 },
+            innerOutlineColor = { 0.46, 0.66, 0.82, 0.45 },
+        }
+    )
+    self:drawPanelButton(
+        drawerLayout.gridToggleRect,
+        self.gridVisible and "Hide Grid (G)" or "Show Grid (G)",
+        { 0.99, 0.78, 0.32 }
+    )
+    self:drawTextField(
+        "Grid Step",
+        drawerLayout.gridStepRect,
+        self:getActiveTextFieldValue("map", "editor", "gridStep", tostring(self.gridStep)),
+        { 0.33, 0.8, 0.98 },
+        self.activeTextField and self.activeTextField.kind == "map" and self.activeTextField.fieldName == "gridStep"
+    )
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.print("Map Issues", panelX, currentY)
-    currentY = currentY + 28
+    graphics.print("Map Issues", panelX, validationLayout.issuesTitleY)
 
     love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.printf(
-        string.format("Routes: %d  |  Intersections: %d  |  Trains: %d", #self.routes, #self.intersections, #self.trains),
-        panelX,
-        currentY,
-        panelWidth
+    graphics.setColor(0.99, 0.78, 0.32, 1)
+    graphics.printf(validationLayout.resolveText, panelX, validationLayout.resolveTextY, panelWidth)
+
+    graphics.setColor(0.1, 0.12, 0.16, 1)
+    graphics.rectangle(
+        "fill",
+        validationLayout.listRect.x,
+        validationLayout.listRect.y,
+        validationLayout.listRect.w,
+        validationLayout.listRect.h,
+        12,
+        12
     )
-    currentY = currentY + 30
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle(
+        "line",
+        validationLayout.listRect.x,
+        validationLayout.listRect.y,
+        validationLayout.listRect.w,
+        validationLayout.listRect.h,
+        12,
+        12
+    )
 
-    graphics.setColor(0.68, 0.74, 0.8, 1)
-    graphics.printf("Right click a route segment to change its road type.", panelX, currentY, panelWidth)
-    currentY = currentY + 34
-
-    if #(self.validationErrors or {}) == 0 then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf("No blocking issues. This map can start.", panelX, currentY, panelWidth)
-        currentY = currentY + 40
+    if #validationEntries == 0 then
+        graphics.setColor(0.62, 0.67, 0.73, 1)
+        graphics.printf(
+            "No issues found. You're good to go and good to publish this map.",
+            validationLayout.listRect.x + 12,
+            validationLayout.listRect.y + 12,
+            validationLayout.listRect.w - 24
+        )
     else
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.printf("Resolve these before the run can start:", panelX, currentY, panelWidth)
-        currentY = currentY + 28
         local visibleRows = self:getVisibleValidationRows(game.fonts.small, validationLayout)
 
         graphics.setScissor(
@@ -5995,7 +6567,7 @@ function mapEditor:drawDefaultSidePanel(game)
                 graphics.rectangle("fill", row.rect.x - 6, row.rect.y - 4, row.rect.w + 8, row.rect.h + 8, 8, 8)
             end
 
-            local bulletX = row.rect.x + row.indentOffset
+            local bulletX = row.rect.x + row.indentOffset + 12
             local textX = bulletX + row.numberWidth
             graphics.setColor(0.99, 0.78, 0.32, 1)
             graphics.print(row.numberLabel .. " ", bulletX, row.rect.y)
@@ -6004,7 +6576,7 @@ function mapEditor:drawDefaultSidePanel(game)
                 row.message,
                 textX,
                 row.rect.y,
-                row.textWidth,
+                math.max(20, row.textWidth - 12),
                 { 0.84, 0.88, 0.92, 1 },
                 getValidationColorDisplayMode(self)
             )
@@ -6044,13 +6616,6 @@ function mapEditor:drawDefaultSidePanel(game)
                 4
             )
         end
-
-        currentY = validationLayout.listRect.y + validationLayout.listRect.h + 18
-    end
-
-    if self.statusText then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.printf(self.statusText, panelX, panelBottom - 42, panelWidth)
     end
 
     love.graphics.setFont(game.fonts.small)
@@ -6064,34 +6629,32 @@ end
 
 function mapEditor:draw(game)
     local graphics = love.graphics
+    local cameraCenterX, cameraCenterY = self:getCameraViewportCenter()
 
     self:updateHoveredValidationEntry(game.fonts.small)
 
     graphics.setColor(0.05, 0.07, 0.09, 1)
     graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
 
+    graphics.push()
+    graphics.translate(cameraCenterX, cameraCenterY)
+    graphics.scale(self.camera.zoom, self.camera.zoom)
+    graphics.translate(-self.camera.x, -self.camera.y)
+
     graphics.setColor(0.07, 0.09, 0.12, 1)
     graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
+    self:drawGrid()
 
-    graphics.setColor(0.1, 0.14, 0.18, 0.96)
-    graphics.rectangle("fill", self.canvas.x, self.canvas.y, self.canvas.w, self.spawnBandHeight, 18, 18)
+    if self.previewWorld then
+        trackSceneRenderer.drawScene(self.previewWorld, {
+            drawTrains = false,
+            drawCollision = false,
+        })
+    end
 
     graphics.setColor(0.25, 0.34, 0.42, 1)
-    graphics.setLineWidth(2)
+    graphics.setLineWidth(2 / math.max(self.camera.zoom, 0.0001))
     graphics.rectangle("line", self.canvas.x, self.canvas.y, self.canvas.w, self.canvas.h, 18, 18)
-
-    graphics.setColor(0.16, 0.2, 0.24, 1)
-    graphics.line(
-        self.canvas.x + 16,
-        self.canvas.y + self.spawnBandHeight,
-        self.canvas.x + self.canvas.w - 16,
-        self.canvas.y + self.spawnBandHeight
-    )
-
-    local segmentGroups = self:buildRouteSegmentGroups(self.selectedRouteId)
-    for _, group in ipairs(segmentGroups) do
-        self:drawRouteSegmentGroup(group)
-    end
 
     for _, intersection in ipairs(self.intersections) do
         self:drawIntersection(intersection)
@@ -6100,6 +6663,8 @@ function mapEditor:draw(game)
     for _, route in ipairs(self.routes) do
         self:drawRouteHandles(route, self.selectedRouteId)
     end
+
+    graphics.pop()
 
     graphics.setColor(0.09, 0.11, 0.15, 0.98)
     graphics.rectangle("fill", self.sidePanel.x, self.sidePanel.y, self.sidePanel.w, self.sidePanel.h, 18, 18)
@@ -6117,19 +6682,8 @@ function mapEditor:draw(game)
 
     self:drawColorPicker(game)
     self:drawRouteTypePicker(game)
+    self:drawStatusToast(game)
     self:drawValidationMarkers()
-
-    graphics.setColor(0.7, 0.76, 0.82, 1)
-    local sourceLabel
-    if self.sourceInfo and self.sourceInfo.source == "builtin" then
-        sourceLabel = "Current source: Tutorial Template - " .. (self.currentMapName or "Untitled")
-    elseif self.sourceInfo and self.sourceInfo.source == "user" then
-        sourceLabel = "Current source: Saved Map - " .. (self.currentMapName or "Untitled")
-    else
-        sourceLabel = "Current source: " .. (self.currentMapName or (self.level and self.level.title) or "Blank")
-    end
-    graphics.printf(sourceLabel, self.canvas.x + 18, self.canvas.y + 16, self.canvas.w - 36)
-    graphics.printf("Create starts from the top edge. Imported maps are editable immediately.", self.canvas.x + 18, self.canvas.y + self.spawnBandHeight - 24, self.canvas.w - 36)
 
     self:drawDialog(game)
 end

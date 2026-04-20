@@ -17,6 +17,7 @@ local ICON_PRESS_STIFFNESS = 118
 local ICON_PRESS_DAMPING = 15
 local ICON_PRESS_IMPULSE = 15
 local roadTypes = require("src.game.road_types")
+local trackSceneRenderer = require("src.game.track_scene_renderer")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
@@ -2086,6 +2087,10 @@ function world:getOutputDisplayColor(junction, outputIndex, isActive)
     return isActive and outputTrack.color or outputTrack.darkColor, outputTrack.darkColor
 end
 
+function world:pointOnPath(path, distance)
+    return pointOnPath(path, distance)
+end
+
 function world:getRenderedTrackWindow(track)
     local trimStartDistance = 0
     local trimEndDistance = track.path.length
@@ -2107,103 +2112,19 @@ function world:getRenderedTrackPoints(track)
 end
 
 function world:drawTrackPatternSegment(startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
-    local graphics = love.graphics
-    graphics.setColor(ROAD_PATTERN_OUTLINE[1], ROAD_PATTERN_OUTLINE[2], ROAD_PATTERN_OUTLINE[3], alpha)
-    graphics.setLineWidth(outlineWidth)
-    graphics.line(startX, startY, endX, endY)
-    graphics.setColor(ROAD_PATTERN_FILL[1], ROAD_PATTERN_FILL[2], ROAD_PATTERN_FILL[3], alpha)
-    graphics.setLineWidth(fillWidth)
-    graphics.line(startX, startY, endX, endY)
+    return trackSceneRenderer.drawTrackPatternSegment(self, startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
 end
 
 function world:drawTrackRoadTypeMarkers(track, isActive)
-    local startDistance, endDistance = self:getRenderedTrackWindow(track)
-    local alpha = isActive and 0.95 or 0.78
-
-    for _, section in ipairs(track.styleSections or {}) do
-        local roadTypeConfig = roadTypes.getConfig(section.roadType)
-        if roadTypeConfig.pattern ~= "plain" then
-            local sectionStartDistance = math.max(startDistance, section.startDistance)
-            local sectionEndDistance = math.min(endDistance, section.endDistance)
-            local markerDistance = sectionStartDistance + roadTypeConfig.markerSpacing * 0.5
-            local markerSize = roadTypeConfig.markerSize
-            local outlineWidth = roadTypeConfig.markerWidth + 2
-            local fillWidth = roadTypeConfig.markerWidth
-
-            while markerDistance < sectionEndDistance do
-                local markerX, markerY, angle = pointOnPath(track.path, markerDistance)
-                local directionX = math.cos(angle)
-                local directionY = math.sin(angle)
-                local normalX = -directionY
-                local normalY = directionX
-
-                if roadTypeConfig.pattern == "chevron" then
-                    local tipX = markerX + directionX * markerSize
-                    local tipY = markerY + directionY * markerSize
-                    local leftX = markerX - normalX * markerSize * 0.7
-                    local leftY = markerY - normalY * markerSize * 0.7
-                    local rightX = markerX + normalX * markerSize * 0.7
-                    local rightY = markerY + normalY * markerSize * 0.7
-                    self:drawTrackPatternSegment(leftX, leftY, tipX, tipY, alpha, outlineWidth, fillWidth)
-                    self:drawTrackPatternSegment(rightX, rightY, tipX, tipY, alpha, outlineWidth, fillWidth)
-                elseif roadTypeConfig.pattern == "crossbar" then
-                    local startX = markerX - normalX * markerSize
-                    local startY = markerY - normalY * markerSize
-                    local endX = markerX + normalX * markerSize
-                    local endY = markerY + normalY * markerSize
-                    self:drawTrackPatternSegment(startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
-                end
-
-                markerDistance = markerDistance + roadTypeConfig.markerSpacing
-            end
-        end
-    end
+    return trackSceneRenderer.drawTrackRoadTypeMarkers(self, track, isActive)
 end
 
 function world:drawTrackLine(points, width, color, alpha)
-    local graphics = love.graphics
-    graphics.setColor(color[1], color[2], color[3], alpha or 1)
-    graphics.setLineWidth(width)
-    graphics.line(points)
+    return trackSceneRenderer.drawTrackLine(self, points, width, color, alpha)
 end
 
 function world:drawStripedTrack(points, width, stripeColors, alpha)
-    local graphics = love.graphics
-    local stripeIndex = 1
-
-    graphics.setLineWidth(width)
-    for pointIndex = 1, #points - 3, 2 do
-        local ax = points[pointIndex]
-        local ay = points[pointIndex + 1]
-        local bx = points[pointIndex + 2]
-        local by = points[pointIndex + 3]
-        local dx = bx - ax
-        local dy = by - ay
-        local length = math.sqrt(dx * dx + dy * dy)
-
-        if length > 0.0001 then
-            local unitX = dx / length
-            local unitY = dy / length
-            local stripeLength = math.max(8, TRACK_STRIPE_LENGTH - #stripeColors)
-
-            for offset = 0, math.ceil(length / stripeLength) - 1 do
-                local startDistance = offset * stripeLength
-                local endDistance = math.min(length, startDistance + stripeLength)
-                local color = stripeColors[stripeIndex]
-                graphics.setColor(color[1], color[2], color[3], alpha or 1)
-                graphics.line(
-                    ax + unitX * startDistance,
-                    ay + unitY * startDistance,
-                    ax + unitX * endDistance,
-                    ay + unitY * endDistance
-                )
-                stripeIndex = stripeIndex + 1
-                if stripeIndex > #stripeColors then
-                    stripeIndex = 1
-                end
-            end
-        end
-    end
+    return trackSceneRenderer.drawStripedTrack(self, points, width, stripeColors, alpha)
 end
 
 function world:getInputTrackAngle(track)
@@ -2216,85 +2137,15 @@ function world:getInputTrackAngle(track)
 end
 
 function world:drawInputTrack(track, isActive)
-    local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
-    local stripeColors = buildTrackStripeColors(track.colors, isActive)
-    local renderedPoints = self:getRenderedTrackPoints(track)
-    if #renderedPoints < 2 then
-        return
-    end
-
-    local points = flattenPoints(renderedPoints)
-
-    graphics.setLineStyle("rough")
-    graphics.setColor(0.17, 0.21, 0.24, 0.95)
-    graphics.setLineWidth(self.trackWidth + 10)
-    graphics.line(points)
-
-    if stripeColors then
-        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
-    else
-        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
-    end
-
-    self:drawTrackRoadTypeMarkers(track, isActive)
+    return trackSceneRenderer.drawInputTrack(self, track, isActive)
 end
 
 function world:drawStandaloneTrack(track, isActive)
-    local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
-    local stripeColors = nil
-
-    if not track.adoptInputColor then
-        stripeColors = buildTrackStripeColors(track.colors, isActive)
-    end
-
-    local renderedPoints = self:getRenderedTrackPoints(track)
-    if #renderedPoints < 2 then
-        return
-    end
-
-    local points = flattenPoints(renderedPoints)
-
-    graphics.setLineStyle("rough")
-    graphics.setColor(0.17, 0.21, 0.24, 0.95)
-    graphics.setLineWidth(self.trackWidth + 10)
-    graphics.line(points)
-
-    if stripeColors then
-        self:drawStripedTrack(points, self.trackWidth, stripeColors, trackAlpha)
-    else
-        self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
-    end
-
-    self:drawTrackRoadTypeMarkers(track, isActive)
+    return trackSceneRenderer.drawStandaloneTrack(self, track, isActive)
 end
 
 function world:drawOutputTrack(junction, outputIndex, isActive)
-    local graphics = love.graphics
-    local outputTrack = junction.outputs[outputIndex]
-    local color = self:getOutputDisplayColor(junction, outputIndex, isActive)
-    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
-    local renderedPoints = self:getRenderedTrackPoints(outputTrack)
-    if #renderedPoints < 2 then
-        return
-    end
-
-    local points = flattenPoints(renderedPoints)
-
-    graphics.setColor(0.17, 0.21, 0.24, 0.95)
-    graphics.setLineWidth(self.sharedWidth + 10)
-    graphics.line(points)
-
-    if stripeColors then
-        self:drawStripedTrack(points, self.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
-    else
-        self:drawTrackLine(points, self.sharedWidth, color, isActive and 0.98 or 0.7)
-    end
-
-    self:drawTrackRoadTypeMarkers(outputTrack, isActive)
+    return trackSceneRenderer.drawOutputTrack(self, junction, outputIndex, isActive)
 end
 
 local function getTimerRatio(armed, remaining, duration)
@@ -2733,159 +2584,7 @@ local function drawJunctionCircle(graphics, junction, primaryColor, stripeColors
 end
 
 function world:drawControlOverlay(junction)
-    local graphics = love.graphics
-    local control = junction.control
-    local inputColor, inputStripeColors = getJunctionInputStyle(junction)
-    local iconScale = getControlIconScale(control)
-
-    if control.type == "direct" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            if not drawStaticJunctionIcon(graphics, self.directImage, centerX, centerY, innerRadius, 1.42, 0.98) then
-                local activeInput = junction.inputs[junction.activeInputIndex]
-
-                graphics.setLineWidth(6)
-                graphics.setColor(0.05, 0.06, 0.08, 0.98)
-                graphics.line(centerX - innerRadius * 0.34, centerY + innerRadius * 0.2, centerX + innerRadius * 0.02, centerY - innerRadius * 0.12)
-                graphics.circle("fill", centerX + innerRadius * 0.18, centerY - innerRadius * 0.28, innerRadius * 0.15)
-
-                if activeInput and #activeInput.path.points >= 2 then
-                    local angle = self:getInputTrackAngle(activeInput) - math.pi * 0.5
-
-                    graphics.push()
-                    graphics.translate(centerX, centerY)
-                    graphics.rotate(angle)
-                    graphics.setLineWidth(4)
-                    graphics.setColor(0.05, 0.06, 0.08, 0.9)
-                    graphics.line(0, -innerRadius * 0.48, 0, -innerRadius * 0.2)
-                    graphics.pop()
-                end
-            end
-        end)
-        return
-    end
-
-    if control.type == "delayed" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local ratio = 1
-        local progress = 0
-
-        if control.armed and control.delay > 0 then
-            ratio = clamp(control.remainingDelay / control.delay, 0, 1)
-            progress = 1 - ratio
-        elseif control.armed then
-            ratio = 0
-            progress = 1
-        end
-
-        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
-        end)
-        return
-    end
-
-    if control.type == "pump" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local previewInputIndex = junction.activeInputIndex + 1
-        if previewInputIndex > #junction.inputs then
-            previewInputIndex = 1
-        end
-        local previewColor, previewStripeColors = getJunctionInputStyle(junction, previewInputIndex)
-        local ratio = control.target > 0 and (control.pumpCount / control.target) or 0
-        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, previewColor, previewStripeColors, ratio, false, false)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            if not drawStaticJunctionIcon(graphics, self.chargeImage, centerX, centerY, innerRadius, 1.34, 0.98) then
-                love.graphics.setColor(0.05, 0.06, 0.08, 1)
-                love.graphics.printf(
-                    string.format("%d%%", math.floor(ratio * 100 + 0.5)),
-                    centerX - 24,
-                    centerY - 9,
-                    48,
-                    "center"
-                )
-            end
-        end)
-        return
-    end
-
-    if control.type == "spring" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local ratio = getTimerRatio(control.armed, control.remainingHold, control.holdTime)
-        local compression = 0
-        local releaseProgress = nil
-
-        if control.armed then
-            compression = 1 - ratio
-        elseif control.releaseTimer > 0 then
-            compression = 1
-            releaseProgress = 1 - (control.releaseTimer / SPRING_RELEASE_DURATION)
-        end
-
-        drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            drawSpringIcon(graphics, self.springImage, centerX, centerY, innerRadius * 0.8, compression, releaseProgress, { 0.4, 0.96, 0.74 })
-        end)
-        return
-    end
-
-    if control.type == "relay" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / RELAY_FLASH_DURATION) or 0
-
-        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
-        graphics.circle("fill", centerX, centerY, innerRadius)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            drawRelayIcon(graphics, self.relayImage, centerX, centerY, innerRadius * 0.84, flashAlpha)
-        end)
-        return
-    end
-
-    if control.type == "trip" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / TRIP_FLASH_DURATION) or 0
-
-        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
-        graphics.circle("fill", centerX, centerY, innerRadius)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            if not drawStaticJunctionIcon(graphics, self.tripImage, centerX, centerY, innerRadius, 1.4, 0.98) then
-                love.graphics.setColor(0.05, 0.06, 0.08, 1)
-                love.graphics.printf(
-                    control.remainingTrips > 0 and tostring(control.remainingTrips) or "T",
-                    centerX - 18,
-                    centerY - 9,
-                    36,
-                    "center"
-                )
-            end
-        end)
-        return
-    end
-
-    if control.type == "crossbar" then
-        local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
-        local flashAlpha = control.flashTimer > 0 and (control.flashTimer / CROSSBAR_FLASH_DURATION) or 0
-
-        graphics.setColor(inputColor[1], inputColor[2], inputColor[3], 0.14 + flashAlpha * 0.14)
-        graphics.circle("fill", centerX, centerY, innerRadius)
-        withIconScale(graphics, centerX, centerY, iconScale, function()
-            if not drawStaticJunctionIcon(graphics, self.crossImage, centerX, centerY, innerRadius, 1.42, 0.98) then
-                graphics.setLineWidth(4)
-                graphics.setColor(0.05, 0.06, 0.08, 0.96)
-                graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 0.15, math.pi * 0.85)
-                graphics.arc("line", centerX, centerY, innerRadius - 2, math.pi * 1.15, math.pi * 1.85)
-
-                love.graphics.setColor(0.05, 0.06, 0.08, 1)
-                love.graphics.printf(
-                    string.format("%d:%d", junction.activeInputIndex, junction.activeOutputIndex),
-                    centerX - 28,
-                    centerY - 9,
-                    56,
-                    "center"
-                )
-            end
-        end)
-    end
+    return trackSceneRenderer.drawControlOverlay(self, junction)
 end
 
 function world:getOutputTrackAngle(track)
@@ -2898,207 +2597,29 @@ function world:getOutputTrackAngle(track)
 end
 
 function world:drawActiveRouteIndicator(junction, activeInput, activeOutputColor)
-    local graphics = love.graphics
-    local activeOutput = junction.outputs[junction.activeOutputIndex]
-    if not activeInput or not activeOutput then
-        return
-    end
-
-    local coverPadding = 4
-    local routeInset = 2
-    local coverRadius = junction.crossingRadius + coverPadding
-    local routeRadius = coverRadius - routeInset
-    local routeOutlineWidth = self.trackWidth + 8
-    local routeInnerWidth = self.trackWidth
-    local curveControlDistance = routeRadius * 0.58
-    local curveStepCount = 12
-    local x = junction.mergePoint.x
-    local y = junction.mergePoint.y
-    local inputAngle = self:getInputTrackAngle(activeInput)
-    local outputAngle = self:getOutputTrackAngle(activeOutput)
-    local inputPoint = pointOnCircle(x, y, inputAngle + math.pi, routeRadius)
-    local outputPoint = pointOnCircle(x, y, outputAngle, routeRadius)
-    local controlPointA = pointOnCircle(
-        inputPoint.x,
-        inputPoint.y,
-        inputAngle,
-        curveControlDistance
-    )
-    local controlPointB = pointOnCircle(
-        outputPoint.x,
-        outputPoint.y,
-        outputAngle + math.pi,
-        curveControlDistance
-    )
-    local curvePoints = flattenPoints(buildCubicCurvePoints(
-        inputPoint,
-        controlPointA,
-        controlPointB,
-        outputPoint,
-        curveStepCount
-    ))
-
-    graphics.setColor(0.04, 0.05, 0.07, 0.98)
-    graphics.circle("fill", x, y, coverRadius)
-
-    graphics.setLineStyle("rough")
-    graphics.setLineWidth(routeOutlineWidth)
-    graphics.setColor(0.12, 0.15, 0.18, 1)
-    graphics.line(curvePoints)
-
-    graphics.setLineWidth(routeInnerWidth)
-    graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
-    graphics.line(curvePoints)
+    return trackSceneRenderer.drawActiveRouteIndicator(self, junction, activeInput, activeOutputColor)
 end
 
 function world:drawCrossing(junction)
-    local graphics = love.graphics
-    local activeInput = junction.inputs[junction.activeInputIndex]
-    local activeOutputColor = self:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
-    local activeInputColor = activeInput and activeInput.color or activeOutputColor
-    local x = junction.mergePoint.x
-    local y = junction.mergePoint.y
-    local inputStripeColors = activeInput and buildTrackStripeColors(activeInput.colors, true) or nil
-
-    graphics.setColor(0.05, 0.06, 0.08, 1)
-    graphics.circle("fill", x, y, junction.crossingRadius)
-
-    if inputStripeColors then
-        drawStripedSector(graphics, x, y, junction.crossingRadius + 4, -math.pi * 0.5, math.pi * 1.5, inputStripeColors, 0.12)
-    else
-        graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.12)
-        graphics.circle("fill", x, y, junction.crossingRadius + 4)
-    end
-
-    if #junction.outputs > 1 and junction.control.type ~= "relay" and junction.control.type ~= "crossbar" then
-        local selectorY = y + 36
-        local selectorScale = getSelectorIconScale(junction)
-
-        withIconScale(graphics, x, selectorY, selectorScale, function()
-            graphics.setColor(0.08, 0.1, 0.13, 1)
-            graphics.circle("fill", x, selectorY, 15)
-            graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
-            graphics.circle("line", x, selectorY, 15)
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.printf(tostring(junction.activeOutputIndex), x - 14, selectorY - 7, 28, "center")
-        end)
-    end
-
-    self:drawControlOverlay(junction)
+    return trackSceneRenderer.drawCrossing(self, junction)
 end
 
 function world:drawTrackSignal(junction, inputIndex)
-    local graphics = love.graphics
-    local track = junction.inputs[inputIndex]
-    local signalPoint = track.signalPoint
-    local pulse = 0.5 + 0.5 * math.sin(love.timer.getTime() * 6 + inputIndex)
-    local signalRadius = 12 + pulse * 3
-
-    graphics.setLineWidth(6)
-    if inputIndex == junction.activeInputIndex then
-        graphics.setColor(0.42, 0.92, 0.54, 1)
-    else
-        graphics.setColor(0.92, 0.26, 0.2, 1)
-    end
-    graphics.circle("fill", signalPoint.x, signalPoint.y, signalRadius)
+    return trackSceneRenderer.drawTrackSignal(self, junction, inputIndex)
 end
 
 function world:drawTrain(train)
-    if train.completed and not train.exiting then
-        return
-    end
-
-    local graphics = love.graphics
-    local carriages = self:getTrainCarriagePositions(train)
-    local width = self.carriageLength
-    local height = 18
-    local outlineWidth = 2
-    local alpha = 1
-
-    if train.exiting and self.exitFadeDuration > 0 then
-        alpha = clamp((train.exitFadeRemaining or 0) / self.exitFadeDuration, 0, 1)
-    end
-
-    if alpha <= 0 then
-        return
-    end
-
-    for carriageIndex = #carriages, 1, -1 do
-        local carriage = carriages[carriageIndex]
-
-        graphics.push()
-        graphics.translate(carriage.x, carriage.y)
-        graphics.rotate(carriage.angle)
-        graphics.setColor(train.darkColor[1], train.darkColor[2], train.darkColor[3], 0.95 * alpha)
-        graphics.rectangle("fill", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(train.color[1], train.color[2], train.color[3], alpha)
-        graphics.setLineWidth(outlineWidth)
-        graphics.rectangle("line", -width * 0.5, -height * 0.5, width, height, 5, 5)
-        graphics.setColor(0.94, 0.96, 0.98, 0.9 * alpha)
-        graphics.rectangle("fill", -width * 0.22, -height * 0.28, width * 0.44, height * 0.56, 3, 3)
-        graphics.pop()
-    end
+    return trackSceneRenderer.drawTrain(self, train)
 end
 
 function world:drawCollisionMarker()
-    if not self.collisionPoint then
-        return
-    end
-
-    local graphics = love.graphics
-    local x = self.collisionPoint.x
-    local y = self.collisionPoint.y
-
-    graphics.setColor(0.98, 0.28, 0.22, 0.95)
-    graphics.setLineWidth(6)
-    graphics.line(x - 24, y - 24, x + 24, y + 24)
-    graphics.line(x - 24, y + 24, x + 24, y - 24)
-    graphics.circle("line", x, y, 30)
+    return trackSceneRenderer.drawCollisionMarker(self)
 end
 
 function world:draw()
-    local graphics = love.graphics
-    local highlightedEdgeIds = self:getHighlightedEdgeIds()
-    local drawnEdgeIds = {}
-
-    graphics.setColor(0.08, 0.1, 0.12, 1)
-    graphics.rectangle("fill", 0, 0, self.viewport.w, self.viewport.h)
-
-    for _, junction in ipairs(self.junctionOrder) do
-        for outputIndex = 1, #junction.outputs do
-            local outputTrack = junction.outputs[outputIndex]
-            self:drawOutputTrack(junction, outputIndex, outputTrack and highlightedEdgeIds[outputTrack.id] == true)
-            if outputTrack then
-                drawnEdgeIds[outputTrack.id] = true
-            end
-        end
-
-        for inputIndex = 1, #junction.inputs do
-            local inputTrack = junction.inputs[inputIndex]
-            self:drawInputTrack(inputTrack, inputTrack and highlightedEdgeIds[inputTrack.id] == true)
-            if inputTrack then
-                drawnEdgeIds[inputTrack.id] = true
-            end
-        end
-
-        self:drawCrossing(junction)
-
-        for inputIndex = 1, #junction.inputs do
-            self:drawTrackSignal(junction, inputIndex)
-        end
-    end
-
-    for _, track in pairs(self.edges or {}) do
-        if track and not drawnEdgeIds[track.id] then
-            self:drawStandaloneTrack(track, highlightedEdgeIds[track.id] == true)
-        end
-    end
-
-    for _, train in ipairs(self.trains) do
-        self:drawTrain(train)
-    end
-
-    self:drawCollisionMarker()
+    return trackSceneRenderer.drawScene(self, {
+        backgroundColor = { 0.08, 0.1, 0.12, 1 },
+    })
 end
 
 return world

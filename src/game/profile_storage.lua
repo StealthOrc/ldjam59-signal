@@ -5,6 +5,7 @@ local PROFILE_FILE = "profile.lua"
 local PROFILE_VERSION = 2
 local PLAYER_ID_PREFIX = "player-"
 local UUID_PATTERN = "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$"
+local DEFAULT_EDITOR_GRID_STEP = 64
 local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
 
@@ -119,6 +120,10 @@ local function sanitizeProfile(profile)
         playerDisplayName = type(profile.playerDisplayName) == "string" and profile.playerDisplayName or "",
         playMode = normalizePlayMode(profile.playMode),
         debugMode = profile.debugMode == true,
+        editor = {
+            gridVisible = not (type(profile.editor) == "table" and profile.editor.gridVisible == false),
+            gridStep = math.max(16, math.min(256, math.floor(tonumber(type(profile.editor) == "table" and profile.editor.gridStep) or DEFAULT_EDITOR_GRID_STEP))),
+        },
     }
 
     if sanitized.player_uuid == "" then
@@ -161,6 +166,9 @@ function profileStorage.load()
         or loadedProfile.playerDisplayName ~= sanitized.playerDisplayName
         or loadedProfile.playMode ~= sanitized.playMode
         or loadedProfile.debugMode ~= sanitized.debugMode
+        or type(loadedProfile.editor) ~= "table"
+        or loadedProfile.editor.gridVisible ~= sanitized.editor.gridVisible
+        or loadedProfile.editor.gridStep ~= sanitized.editor.gridStep
 
     if needsSave then
         local savedProfile = profileStorage.save(sanitized)
@@ -173,5 +181,3 @@ function profileStorage.load()
 end
 
 return profileStorage
-
-
