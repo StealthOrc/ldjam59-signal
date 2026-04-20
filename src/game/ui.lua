@@ -4136,6 +4136,49 @@ local function getResultsButtonRects(game)
     }
 end
 
+local function getResultsPanelRect(game)
+    return {
+        x = game.viewport.w * 0.5 - 300,
+        y = 50,
+        w = 600,
+        h = 580,
+    }
+end
+
+local function getResultsBreakdownRowRects(game)
+    local panel = getResultsPanelRect(game)
+    local breakdownX = panel.x + 58
+    local valueX = panel.x + panel.w - 58
+    local rows = {}
+    local lineY = panel.y + 220
+
+    for index = 1, 5 do
+        rows[index] = {
+            label = {
+                x = breakdownX,
+                y = lineY,
+                w = math.max(0, valueX - breakdownX - 150),
+                h = 24,
+            },
+            value = {
+                x = valueX - 140,
+                y = lineY,
+                w = 140,
+                h = 24,
+            },
+            row = {
+                x = breakdownX,
+                y = lineY - 2,
+                w = valueX - breakdownX,
+                h = 26,
+            },
+        }
+        lineY = lineY + 28
+    end
+
+    return rows
+end
+
 function ui.getResultsHit(game, x, y)
     local buttons = getResultsButtonRects(game)
     if pointInRect(x, y, buttons.replay) then
@@ -4151,6 +4194,46 @@ function ui.getResultsHit(game, x, y)
         return "editor"
     end
     return nil
+end
+
+function ui.getResultsHoverInfoAt(game, x, y)
+    local summary = game.resultsSummary or {}
+    local rowRects = getResultsBreakdownRowRects(game)
+    local onTimeRow = rowRects[1]
+    if not onTimeRow or not pointInRect(x, y, onTimeRow.row) then
+        return nil
+    end
+
+    local lossBreakdown = summary.onTimePointLossBreakdown or {}
+    local lateLoss = lossBreakdown.lateClears or 0
+    local wrongDestinationLoss = lossBreakdown.wrongDestinations or 0
+    local unfinishedLoss = lossBreakdown.unfinished or 0
+    local lines = {
+        string.format(
+            "Correct routing: +%s",
+            formatScore((summary.scoreBreakdown and summary.scoreBreakdown.onTimeClears) or 0)
+        ),
+    }
+
+    if lateLoss > 0 then
+        lines[#lines + 1] = string.format("Late arrivals: -%s", formatScore(lateLoss))
+    end
+
+    if wrongDestinationLoss > 0 then
+        lines[#lines + 1] = string.format("Wrong destinations: -%s", formatScore(wrongDestinationLoss))
+    end
+
+    if unfinishedLoss > 0 then
+        lines[#lines + 1] = string.format("Unfinished trains: -%s", formatScore(unfinishedLoss))
+    end
+
+    return {
+        title = "On-Time Points",
+        text = table.concat(lines, "\n"),
+        x = onTimeRow.row.x + (onTimeRow.row.w * 0.5),
+        y = onTimeRow.row.y + onTimeRow.row.h,
+        preferBelow = true,
+    }
 end
 
 local function drawPlayGuideOverlay(game)
@@ -4818,13 +4901,12 @@ function ui.drawResults(game)
     local graphics = love.graphics
     local summary = game.resultsSummary or {}
     local level = game.world and game.world:getLevel() or {}
-    local panel = {
-        x = game.viewport.w * 0.5 - 300,
-        y = 50,
-        w = 600,
-        h = 580,
-    }
+    local finalScore = summary.finalScore or 0
+    local onTimePointCap = summary.onTimePointCap or 0
+    local panel = getResultsPanelRect(game)
     local buttons = getResultsButtonRects(game)
+    local rowRects = getResultsBreakdownRowRects(game)
+    local breakdownX = rowRects[1] and rowRects[1].label.x or (panel.x + 58)
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -4856,7 +4938,7 @@ function ui.drawResults(game)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(accent[1], accent[2], accent[3], 1)
-    graphics.printf(string.format("Score %s", formatScore(summary.finalScore or 0)), panel.x, panel.y + 108, panel.w, "center")
+    graphics.printf(string.format("Score %s", formatScore(finalScore)), panel.x, panel.y + 108, panel.w, "center")
 
     love.graphics.setFont(game.fonts.small)
     local onlineState = game.resultsOnlineState or {}
@@ -4875,21 +4957,20 @@ function ui.drawResults(game)
         "center"
     )
 
-    local breakdownX = panel.x + 58
-    local valueX = panel.x + panel.w - 58
-    local lineY = panel.y + 220
     local rows = {
-        { "On-time clears", string.format("+%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.onTimeClears) or 0)) },
+        { "On-time clears", string.format("%s / %s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.onTimeClears) or 0), formatScore(onTimePointCap)) },
         { "Late clears", string.format("+%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.lateClears) or 0)) },
         { "Time penalty", string.format("-%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.timePenalty) or 0)) },
         { "Interaction penalty", string.format("-%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.interactionPenalty) or 0)) },
         { "Distance penalty", string.format("-%s", formatScore((summary.scoreBreakdown and summary.scoreBreakdown.extraDistancePenalty) or 0)) },
     }
 
-    for _, row in ipairs(rows) do
+    local lineY = panel.y + 220
+    for index, row in ipairs(rows) do
+        local rowRect = rowRects[index]
         graphics.setColor(0.84, 0.88, 0.92, 1)
-        graphics.print(row[1], breakdownX, lineY)
-        graphics.printf(row[2], valueX - 140, lineY, 140, "right")
+        graphics.print(row[1], rowRect.label.x, lineY)
+        graphics.printf(row[2], rowRect.value.x, lineY, rowRect.value.w, "right")
         lineY = lineY + 28
     end
 
@@ -4919,6 +5000,10 @@ function ui.drawResults(game)
     )
     drawButton(buttons.editor, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
     drawButton(buttons.menu, getRunBackLabel(game), { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+
+    if game.resultsHoverInfo then
+        drawPlayTooltip(game, game.resultsHoverInfo)
+    end
 end
 
 ui.formatLeaderboardScore = formatLeaderboardScore

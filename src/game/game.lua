@@ -474,6 +474,7 @@ function Game.new()
     drainChannel(self.leaderboardResponseChannel)
     self.playPhase = nil
     self.playHoverInfo = nil
+    self.resultsHoverInfo = nil
 
     self:updateRenderTransform()
     self:refreshMaps()
@@ -3187,6 +3188,7 @@ function Game:openResults()
     end
 
     self.resultsSummary = self.world:getRunSummary()
+    self.resultsHoverInfo = nil
     self.failureReason = self.resultsSummary.endReason == "level_clear" and nil or self.resultsSummary.endReason
     self.levelComplete = self.resultsSummary.endReason == "level_clear"
     self.screen = "results"
@@ -3700,6 +3702,7 @@ end
 
 function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
+    self.resultsHoverInfo = nil
     self.levelSelectHoverInfo = nil
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
@@ -3723,6 +3726,12 @@ function Game:mousemoved(x, y, dx, dy)
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
+        return
+    end
+
+    if self.screen == "results" then
+        local viewportX, viewportY = self:toViewportPosition(x, y)
+        self.resultsHoverInfo = ui.getResultsHoverInfoAt(self, viewportX, viewportY)
         return
     end
 

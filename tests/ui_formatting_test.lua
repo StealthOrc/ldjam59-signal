@@ -329,6 +329,29 @@ assertEqual(selectorHover.text:find("West Exit", 1, true) ~= nil, true, "selecto
 local speedHover = ui.getPlayHoverInfoAt(hoverGame, 810, 414)
 assertEqual(speedHover.title, "Fast Section", "play hover identifies speed-modified track sections")
 
+local resultsHoverGame = {
+    viewport = { w = 1280, h = 720 },
+    resultsSummary = {
+        scoreBreakdown = {
+            onTimeClears = 30,
+        },
+        onTimePointCap = 50,
+        onTimePointLossBreakdown = {
+            lateClears = 10,
+            wrongDestinations = 10,
+            unfinished = 0,
+        },
+    },
+}
+
+local resultsHover = ui.getResultsHoverInfoAt(resultsHoverGame, 640, 272)
+assertEqual(resultsHover.title, "On-Time Points", "results hover identifies the on-time points row")
+assertEqual(resultsHover.preferBelow, true, "results hover prefers showing the tooltip below the row")
+assertEqual(resultsHover.text:find("Correct routing: +30", 1, true) ~= nil, true, "results hover includes earned routing points")
+assertEqual(resultsHover.text:find("Late arrivals: -10", 1, true) ~= nil, true, "results hover includes late arrival losses")
+assertEqual(resultsHover.text:find("Wrong destinations: -10", 1, true) ~= nil, true, "results hover includes wrong destination losses")
+assertEqual(ui.getResultsHoverInfoAt(resultsHoverGame, 640, 340), nil, "results hover ignores non-hover rows")
+
 hoverGame.playPhase = "play"
 assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
 hoverGame.playPhase = "prepare"

@@ -1905,10 +1905,12 @@ end
 
 function world:getRunSummary()
     local scoring = self:getScoringConstants()
+    local onTimePointCap = #self.trains * scoring.onTimeClear
     local summary = {
         endReason = self:getRunEndReason(),
         mapUuid = self.level and (self.level.mapUuid or self.level.id) or nil,
         mapTitle = self.level and self.level.title or nil,
+        totalTrainCount = #self.trains,
         correctOnTimeCount = 0,
         correctLateCount = 0,
         wrongDestinationCount = 0,
@@ -1925,6 +1927,13 @@ function world:getRunSummary()
             extraDistancePenalty = 0,
         },
         finalScore = 0,
+        maxPossibleScore = onTimePointCap,
+        onTimePointCap = onTimePointCap,
+        onTimePointLossBreakdown = {
+            lateClears = 0,
+            wrongDestinations = 0,
+            unfinished = 0,
+        },
     }
 
     for _, train in ipairs(self.trains) do
@@ -1947,6 +1956,16 @@ function world:getRunSummary()
             summary.wrongDestinationCount = summary.wrongDestinationCount + 1
         end
     end
+
+    summary.onTimePointLossBreakdown.lateClears = summary.correctLateCount * (scoring.onTimeClear - scoring.lateClear)
+    summary.onTimePointLossBreakdown.wrongDestinations = summary.wrongDestinationCount * scoring.onTimeClear
+    summary.onTimePointLossBreakdown.unfinished = math.max(
+        0,
+        summary.onTimePointCap
+            - summary.scoreBreakdown.onTimeClears
+            - summary.onTimePointLossBreakdown.lateClears
+            - summary.onTimePointLossBreakdown.wrongDestinations
+    )
 
     summary.scoreBreakdown.timePenalty = summary.elapsedSeconds * scoring.secondsPenalty
     summary.scoreBreakdown.interactionPenalty = roundScoreValue(summary.interactionCount * scoring.interactionPenalty)
