@@ -1,5 +1,6 @@
 local json = require("src.game.json")
 local httpTransport = require("src.game.http_transport")
+local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
 
 local REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
@@ -101,6 +102,21 @@ local function runJsonPost(config, endpointPath, payload, requestId)
     end
 
     return httpTransport.postJson({
+        url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
+        apiKey = config.apiKey,
+        hmacSecret = config.hmacSecret,
+        payload = payload,
+        timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    })
+end
+
+local function runJsonDelete(config, endpointPath, payload, requestId)
+    local _, validationError = validateConfig(config)
+    if validationError then
+        return nil, validationError
+    end
+
+    return httpTransport.deleteJson({
         url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
         apiKey = config.apiKey,
         hmacSecret = config.hmacSecret,
@@ -211,10 +227,13 @@ local function favoriteMarketplaceMap(config, requestId)
         return nil, "The current player UUID is missing."
     end
 
-    return runJsonPost(config, string.format("/api/maps/%s/favorites", mapUuid), {
-        liked = config.liked == true,
-        player_uuid = playerUuid,
-    }, requestId)
+    local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
+    local payload = marketplaceFavoriteLogic.buildRequestPayload(playerUuid)
+    if config.liked == true then
+        return runJsonPost(config, endpointPath, payload, requestId)
+    end
+
+    return runJsonDelete(config, endpointPath, payload, requestId)
 end
 
 local function submitScore(config, requestId)

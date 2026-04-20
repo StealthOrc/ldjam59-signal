@@ -1,5 +1,6 @@
 local envLoader = require("src.game.env_loader")
 local httpTransport = require("src.game.http_transport")
+local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
 
 local leaderboardClient = {}
 
@@ -104,12 +105,17 @@ function leaderboardClient.favoriteMap(submission, config)
     end
 
     local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
-    local payload = {
-        liked = submission.liked == true,
-        player_uuid = playerUuid,
-    }
+    local payload = marketplaceFavoriteLogic.buildRequestPayload(playerUuid)
+    if submission.liked == true then
+        return postJson(resolvedConfig, endpointPath, payload)
+    end
 
-    return postJson(resolvedConfig, endpointPath, payload)
+    return httpTransport.deleteJson({
+        url = normalizeBaseUrl(resolvedConfig.apiBaseUrl) .. endpointPath,
+        apiKey = resolvedConfig.apiKey,
+        hmacSecret = resolvedConfig.hmacSecret,
+        payload = payload,
+    })
 end
 
 return leaderboardClient

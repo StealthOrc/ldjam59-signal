@@ -20,4 +20,22 @@ assertEqual(
     "display refresh time falls back to the scheduled retry when no visible data timestamp exists"
 )
 
+assertEqual(
+    refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(false, 100, 180, 60),
+    180,
+    "empty visible previews use the scheduled retry instead of an expired cache timestamp"
+)
+
+assertEqual(
+    refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(false, 100, nil, 60),
+    160,
+    "empty visible previews still use the cache expiry when no separate retry has been scheduled"
+)
+
+assertEqual(
+    refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(true, 100, 180, 60),
+    160,
+    "visible leaderboard data still uses the timestamp of the shown cache entry"
+)
+
 print("refresh indicator logic tests passed")
