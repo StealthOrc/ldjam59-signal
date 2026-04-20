@@ -219,11 +219,6 @@ local MENU_LAYOUT = {
     buttonHeight = 56,
     buttonGap = 16,
     firstButtonY = 248,
-    debugMarginX = 36,
-    debugMarginY = 36,
-    debugWidth = 240,
-    debugHeight = 48,
-    footerY = 654,
 }
 
 local PROFILE_MODE_SETUP_LAYOUT = {
@@ -846,17 +841,6 @@ local function drawPlayTooltip(game, hoverInfo)
         contentWidth,
         "left"
     )
-end
-
-local function getMenuDebugButton(game)
-    return {
-        id = "debug",
-        x = MENU_LAYOUT.debugMarginX,
-        y = game.viewport.h - MENU_LAYOUT.debugMarginY - MENU_LAYOUT.debugHeight,
-        w = MENU_LAYOUT.debugWidth,
-        h = MENU_LAYOUT.debugHeight,
-        label = game:isDebugModeEnabled() and "Debug Mode: On" or "Debug Mode: Off",
-    }
 end
 
 local function getPlayInfoOverlayRect(game)
@@ -3034,10 +3018,6 @@ function ui.getMenuActionAt(game, x, y)
         end
     end
 
-    if pointInRect(x, y, getMenuDebugButton(game)) then
-        return "debug"
-    end
-
     return nil
 end
 
@@ -4659,7 +4639,6 @@ end
 function ui.drawMenu(game)
     local graphics = love.graphics
     local buttons = getMenuButtons(game)
-    local debugButton = getMenuDebugButton(game)
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -4687,21 +4666,6 @@ function ui.drawMenu(game)
     for _, rect in ipairs(buttons) do
         drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
     end
-
-    local debugStrokeColor = game:isDebugModeEnabled() and { 0.99, 0.78, 0.32, 1 } or { 0.3, 0.42, 0.54, 1 }
-    drawButton(debugButton, debugButton.label, { 0.09, 0.11, 0.15, 0.98 }, debugStrokeColor, game.fonts.small)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf(
-        game:isOfflineMode()
-            and "Enter starts. L opens personal scores. O toggles online or offline mode. D toggles debug mode. Esc quits."
-            or "Enter starts. L opens the leaderboard. O toggles online or offline mode. D toggles debug mode. Esc quits.",
-        0,
-        MENU_LAYOUT.footerY,
-        game.viewport.w,
-        "center"
-    )
 end
 
 function ui.drawProfileSetup(game)
