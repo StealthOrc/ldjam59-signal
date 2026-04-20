@@ -981,11 +981,12 @@ local function getTrainStatusText(worldState, train)
 end
 
 local function buildPlayHelpSections(game)
+    local backTarget = game.currentRunOrigin == "editor" and "editor" or "level select"
     local controlLines = {
         "Left click a junction to activate its control.",
         "Left click the selector below a junction to cycle outputs forward.",
         "Right click the selector below a junction to cycle outputs backward.",
-        "M opens the menu. E opens the editor. R restarts the run.",
+        string.format("M returns to the %s. E opens the editor. R restarts the run.", backTarget),
         "F2 closes this help panel. F3 opens the debug panel.",
     }
 
@@ -2843,11 +2844,13 @@ function ui.getLevelSelectHoverId(game, x, y)
     return nil
 end
 
-local function getPlayBackRect()
+local function getPlayBackRect(game)
+    local width = game and game.currentRunOrigin == "editor" and 162 or 138
+    local viewportWidth = game and game.viewport and game.viewport.w or 1280
     return {
-        x = 1114,
+        x = viewportWidth - width - 32,
         y = 28,
-        w = 134,
+        w = width,
         h = 38,
     }
 end
@@ -2859,6 +2862,14 @@ local function getPlayStartRect()
         w = 200,
         h = 46,
     }
+end
+
+local function getRunBackLabel(game)
+    if game and game.currentRunOrigin == "editor" then
+        return "Back to Editor"
+    end
+
+    return "Level Select"
 end
 
 local function formatTimeValue(value)
@@ -3369,8 +3380,8 @@ function ui.getPlayHoverInfoAt(game, x, y)
         or getTrackSectionHoverInfo(game, x, y)
 end
 
-function ui.getPlayBackHit(_, x, y)
-    return pointInRect(x, y, getPlayBackRect())
+function ui.getPlayBackHit(game, x, y)
+    return pointInRect(x, y, getPlayBackRect(game))
 end
 
 function ui.getPlayStartHit(game, x, y)
@@ -3382,13 +3393,26 @@ function ui.getPlayStartHit(game, x, y)
 end
 
 local function getResultsButtonRects(game)
-    local panelX = game.viewport.w * 0.5 - 240
+    local widths = {
+        replay = 112,
+        leaderboard = 112,
+        editor = 112,
+        menu = game and game.currentRunOrigin == "editor" and 154 or 132,
+    }
+    local gap = 16
+    local totalWidth = widths.replay + widths.leaderboard + widths.editor + widths.menu + (gap * 3)
+    local panelX = math.floor((game.viewport.w - totalWidth) * 0.5 + 0.5)
     local buttonY = game.viewport.h - 72
     return {
-        replay = { x = panelX, y = buttonY, w = 112, h = 42 },
-        leaderboard = { x = panelX + 128, y = buttonY, w = 112, h = 42 },
-        editor = { x = panelX + 256, y = buttonY, w = 112, h = 42 },
-        menu = { x = panelX + 384, y = buttonY, w = 112, h = 42 },
+        replay = { x = panelX, y = buttonY, w = widths.replay, h = 42 },
+        leaderboard = { x = panelX + widths.replay + gap, y = buttonY, w = widths.leaderboard, h = 42 },
+        editor = { x = panelX + widths.replay + widths.leaderboard + (gap * 2), y = buttonY, w = widths.editor, h = 42 },
+        menu = {
+            x = panelX + widths.replay + widths.leaderboard + widths.editor + (gap * 3),
+            y = buttonY,
+            w = widths.menu,
+            h = 42,
+        },
     }
 end
 
@@ -3932,13 +3956,20 @@ function ui.drawPlay(game)
         end
     end
 
-    drawButton(getPlayBackRect(), "Main Menu", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+    drawButton(getPlayBackRect(game), getRunBackLabel(game), { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 
     if game.playPhase == "prepare" then
         drawButton(getPlayStartRect(), "Start Run", { 0.12, 0.17, 0.2, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
         love.graphics.setFont(game.fonts.small)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf("Preparation Phase: set your routes, then start the clock.", 0, 34, game.viewport.w, "center")
+
+        local blinkAlpha = 0.3
+        if love and love.timer and love.timer.getTime then
+            blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+        end
+        graphics.setColor(1, 1, 1, blinkAlpha)
+        graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
     end
 
     graphics.setColor(0, 0, 0, 0.3)
@@ -3946,8 +3977,8 @@ function ui.drawPlay(game)
     graphics.setColor(0.8, 0.84, 0.9, 0.82)
     graphics.printf(
         game.playPhase == "prepare"
-            and "Press F2 for help, F3 for debug, M for menu, E for editor, or R to reset prep"
-            or "Press F2 for help, F3 for debug, M for menu, E for editor, or R to restart",
+            and string.format("Press F2 for help, F3 for debug, M for %s, E for editor, or R to reset prep", getRunBackLabel(game))
+            or string.format("Press F2 for help, F3 for debug, M for %s, E for editor, or R to restart", getRunBackLabel(game)),
         0,
         game.viewport.h - 42,
         game.viewport.w,
@@ -4064,7 +4095,7 @@ function ui.drawResults(game)
         game.fonts.small
     )
     drawButton(buttons.editor, "Open In Editor", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
-    drawButton(buttons.menu, "Main Menu", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+    drawButton(buttons.menu, getRunBackLabel(game), { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
 end
 
 ui.formatLeaderboardScore = formatLeaderboardScore

@@ -2923,7 +2923,7 @@ function Game:navigateBackFromRun()
         end
     end
 
-    self:openMenu()
+    self:openLevelSelect()
 end
 
 function Game:restart()
@@ -3261,6 +3261,11 @@ function Game:keypressed(key)
         return
     end
 
+    if self.playPhase == "prepare" and key == "space" then
+        self:startPlayPhase()
+        return
+    end
+
     if self:isRunLocked() and (key == "return" or key == "space") then
         self:restart()
     end
@@ -3408,7 +3413,7 @@ function Game:mousepressed(x, y, button)
                 mapUuid = self.resultsSummary and self.resultsSummary.mapUuid or nil,
             })
         elseif hit == "menu" then
-            self:openMenu()
+            self:navigateBackFromRun()
         elseif hit == "editor" and self.currentMapDescriptor then
             self:openEditorMap(self.currentMapDescriptor)
         end
