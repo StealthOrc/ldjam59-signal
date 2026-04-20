@@ -3450,8 +3450,6 @@ function Game:keypressed(key)
             self:openLevelSelect()
         elseif key == "e" then
             self:openEditorBlank()
-        elseif key == "d" then
-            self:toggleDebugMode()
         elseif key == "l" then
             self:openLeaderboard({ returnScreen = "menu" })
         elseif key == "o" then
@@ -3702,8 +3700,6 @@ function Game:mousepressed(x, y, button)
             self:togglePlayMode()
         elseif action == "editor" then
             self:openEditorBlank()
-        elseif action == "debug" then
-            self:toggleDebugMode()
         elseif action == "quit" then
             love.event.quit()
         end
