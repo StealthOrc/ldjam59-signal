@@ -1392,11 +1392,12 @@ function world:isCrossingHit(junction, x, y)
 end
 
 function world:isOutputSelectorHit(junction, x, y)
-    if #junction.outputs <= 1 or junction.control.type == "relay" or junction.control.type == "crossbar" then
+    local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
+    if not selectorX then
         return false
     end
 
-    return distanceSquared(x, y, junction.mergePoint.x, junction.mergePoint.y + 36) <= 15 * 15
+    return distanceSquared(x, y, selectorX, selectorY) <= selectorRadius * selectorRadius
 end
 
 function world:handleClick(x, y, button, isPreparationPhase)
