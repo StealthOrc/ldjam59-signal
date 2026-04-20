@@ -24,6 +24,7 @@ local response, responseError = leaderboardClient.uploadMap({
     mapUuid = "map-1",
     creator_uuid = "creator-1",
     mapName = "Test Map",
+    playerDisplayName = "Player One",
     map = {
         nodes = {},
     },
@@ -44,5 +45,6 @@ end
 
 assertEqual(capturedRequest.url, "https://example.com/api/maps", "uploadMap uses the correct endpoint")
 assertEqual(capturedRequest.payload.map_category, "online", "uploadMap keeps the default map category contract")
+assertEqual(capturedRequest.payload.display_name, "Player One", "uploadMap includes the player display name in the payload")
 
 print("leaderboard client upload map category tests passed")

@@ -1431,6 +1431,7 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
             map = deepCopy(mapData.level),
             mapCategory = MAP_CATEGORY_ONLINE,
             mapName = mapData.name or selectedMap.displayName or selectedMap.name,
+            playerDisplayName = self.profile and self.profile.playerDisplayName or "",
             mapUuid = mapData.mapUuid or selectedMap.mapUuid,
             mode = "upload_map",
         },

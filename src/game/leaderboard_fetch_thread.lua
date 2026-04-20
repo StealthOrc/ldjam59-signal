@@ -260,6 +260,7 @@ local function uploadMap(config, requestId)
         map_name = tostring(config.mapName or ""),
         map_category = tostring(config.mapCategory or MAP_CATEGORY_ONLINE),
         creator_uuid = tostring(config.creator_uuid or config.creatorUuid or ""),
+        display_name = tostring(config.playerDisplayName or ""),
         map = config.map,
     }, requestId)
 end
