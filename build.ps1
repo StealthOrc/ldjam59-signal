@@ -13,6 +13,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $envFileName = ".env"
 $buildEnvFileName = "build.env"
+$nativeHttpsModuleRelativePath = "third_party\native\windows\x64\https.dll"
 $envKeys = @(
     "API_KEY",
     "API_BASE_URL",
@@ -36,6 +37,7 @@ $exeFile = Join-Path $buildDir ($buildName + ".exe")
 $zipFile = Join-Path $OutputRoot ($buildName + "_windows.zip")
 $loveExe = Join-Path $LoveRoot "love.exe"
 $projectEnvFile = Join-Path $projectRoot $envFileName
+$nativeHttpsModulePath = Join-Path $projectRoot $nativeHttpsModuleRelativePath
 
 if (-not (Test-Path -LiteralPath $loveExe)) {
     throw "LOVE executable not found at '$loveExe'."
@@ -252,6 +254,10 @@ $runtimeFiles = Get-ChildItem -LiteralPath $LoveRoot -File | Where-Object {
 
 foreach ($runtimeFile in $runtimeFiles) {
     Copy-Item -LiteralPath $runtimeFile.FullName -Destination (Join-Path $buildDir $runtimeFile.Name) -Force
+}
+
+if (Test-Path -LiteralPath $nativeHttpsModulePath) {
+    Copy-Item -LiteralPath $nativeHttpsModulePath -Destination (Join-Path $buildDir "https.dll") -Force
 }
 
 Remove-Item -LiteralPath $stageDir -Recurse -Force

@@ -1,5 +1,5 @@
 local json = require("src.game.json")
-local storagePaths = require("src.game.storage_paths")
+local httpTransport = require("src.game.http_transport")
 
 local REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
@@ -9,7 +9,6 @@ local REQUEST_KIND_MARKETPLACE = "marketplace"
 local REQUEST_KIND_FAVORITE_MAP = "favorite_map"
 local REQUEST_KIND_SCORE_SUBMIT = "score_submit"
 local REQUEST_KIND_UPLOAD_MAP = "upload_map"
-local CURL_STATUS_PREFIX = "__STATUS__"
 local DEFAULT_LEADERBOARD_LIMIT = 50
 local DEFAULT_PREVIEW_LIMIT = 5
 local DEFAULT_MARKETPLACE_LIMIT = 10
@@ -21,125 +20,9 @@ local MAP_CATEGORY_ONLINE = "online"
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
-local POWERSHELL_POST_SCRIPT_FILE = storagePaths.getTempFilePath("leaderboard_thread_post_request.ps1")
-local DIRECTORY_SEPARATOR = package.config:sub(1, 1)
-
-local POWERSHELL_POST_SCRIPT = [[
-param(
-    [string]$ApiKey,
-    [string]$Uri,
-    [string]$BodyPath,
-    [string]$HmacSecret
-)
-
-$ErrorActionPreference = 'Stop'
-$headers = @{ 'x-api-key' = $ApiKey }
-
-try {
-    $body = Get-Content -Raw -Path $BodyPath
-    if ($HmacSecret -and $HmacSecret.Trim().Length -gt 0) {
-        $encoding = [System.Text.Encoding]::UTF8
-        $hmac = [System.Security.Cryptography.HMACSHA256]::new($encoding.GetBytes($HmacSecret))
-        try {
-            $signatureBytes = $hmac.ComputeHash($encoding.GetBytes($body))
-        }
-        finally {
-            $hmac.Dispose()
-        }
-        $signature = [System.BitConverter]::ToString($signatureBytes).Replace('-', '').ToLowerInvariant()
-        $headers['x-signature'] = 'sha256=' + $signature
-    }
-
-    $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Uri -Headers $headers -ContentType 'application/json' -Body $body
-    $data = $null
-    if ($response.Content -and $response.Content.Trim().Length -gt 0) {
-        $data = $response.Content | ConvertFrom-Json
-    }
-
-    @{ ok = $true; status = [int]$response.StatusCode; data = $data } | ConvertTo-Json -Depth 12 -Compress
-}
-catch {
-    $detail = ''
-    $statusCode = $null
-    if ($_.Exception.Response) {
-        try {
-            $statusCode = [int]$_.Exception.Response.StatusCode
-        }
-        catch {
-            $statusCode = $null
-        }
-
-        try {
-            $stream = $_.Exception.Response.GetResponseStream()
-            if ($stream) {
-                $reader = New-Object System.IO.StreamReader($stream)
-                $detail = $reader.ReadToEnd()
-            }
-        }
-        catch {
-            $detail = ''
-        }
-    }
-
-    $message = $_.Exception.Message
-    if ($detail -and $detail.Trim().Length -gt 0) {
-        $message = $detail.Trim()
-    }
-
-    @{ ok = $false; status = $statusCode; error = $message } | ConvertTo-Json -Depth 8 -Compress
-    exit 1
-}
-]]
-
-local function quoteArgument(value)
-    return '"' .. tostring(value or ""):gsub('"', '\\"') .. '"'
-end
-
-local function absoluteSavePath(relativePath)
-    return love.filesystem.getSaveDirectory() .. DIRECTORY_SEPARATOR .. relativePath:gsub("/", DIRECTORY_SEPARATOR)
-end
-
-local function runCommand(command)
-    local handle = io.popen(command .. " 2>&1")
-    if not handle then
-        return nil
-    end
-
-    local output = handle:read("*a") or ""
-    handle:close()
-    return output
-end
-
-local function splitCurlOutput(output)
-    local text = tostring(output or "")
-    local statusLineStart, statusLineEnd, statusCode = text:find("\r?\n" .. CURL_STATUS_PREFIX .. "(%d%d%d)%s*$")
-    if not statusCode then
-        return nil, nil, text
-    end
-
-    local body = text:sub(1, statusLineStart - 1)
-    return tonumber(statusCode), body, nil
-end
 
 local function normalizeBaseUrl(baseUrl)
     return tostring(baseUrl or ""):gsub("/+$", "")
-end
-
-local function ensurePowerShellPostScript()
-    storagePaths.ensureTempDirectory()
-    local existingScript = nil
-    if love.filesystem.getInfo(POWERSHELL_POST_SCRIPT_FILE, "file") then
-        existingScript = love.filesystem.read(POWERSHELL_POST_SCRIPT_FILE)
-    end
-
-    if existingScript ~= POWERSHELL_POST_SCRIPT then
-        local ok, writeError = love.filesystem.write(POWERSHELL_POST_SCRIPT_FILE, POWERSHELL_POST_SCRIPT)
-        if not ok then
-            return nil, writeError or "The online request helper could not be written."
-        end
-    end
-
-    return absoluteSavePath(POWERSHELL_POST_SCRIPT_FILE)
 end
 
 local function validateConfig(config)
@@ -204,39 +87,11 @@ local function buildMarketplaceSearchUri(baseUrl, query, limit, playerUuid)
 end
 
 local function fetchJson(uri, apiKey)
-    local header = string.format("x-api-key: %s", tostring(apiKey or ""))
-    local command = table.concat({
-        "curl.exe",
-        "-sS",
-        "--max-time",
-        tostring(DEFAULT_REQUEST_TIMEOUT_SECONDS),
-        quoteArgument(uri),
-        "-H",
-        quoteArgument(header),
-        "-w",
-        quoteArgument("\\n" .. CURL_STATUS_PREFIX .. "%{http_code}"),
-    }, " ")
-
-    local output = runCommand(command)
-    if not output then
-        return nil, "Leaderboard request could not be started."
-    end
-
-    local statusCode, body, splitError = splitCurlOutput(output)
-    if not statusCode then
-        return nil, splitError or "Leaderboard response could not be parsed."
-    end
-
-    if statusCode ~= 200 then
-        return nil, (body and body ~= "") and body or string.format("Leaderboard request failed with status %d.", statusCode), statusCode
-    end
-
-    local decodedPayload = json.decode(body)
-    if type(decodedPayload) ~= "table" then
-        return nil, "Leaderboard response was not valid JSON."
-    end
-
-    return decodedPayload, nil, statusCode
+    return httpTransport.getJson({
+        url = uri,
+        apiKey = apiKey,
+        timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    })
 end
 
 local function runJsonPost(config, endpointPath, payload, requestId)
@@ -245,51 +100,13 @@ local function runJsonPost(config, endpointPath, payload, requestId)
         return nil, validationError
     end
 
-    local scriptPath, scriptError = ensurePowerShellPostScript()
-    if not scriptPath then
-        return nil, scriptError
-    end
-
-    local bodyText = json.encode(payload)
-    storagePaths.ensureTempDirectory()
-    local requestFile = storagePaths.getTempFilePath(
-        string.format("leaderboard_thread_request_%s_%s.json", tostring(requestId or "0"), tostring(config.mode or "post"))
-    )
-    local ok, writeError = love.filesystem.write(requestFile, bodyText)
-    if not ok then
-        return nil, writeError or "The online request payload could not be written."
-    end
-
-    local uri = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or "")
-    local command = table.concat({
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File",
-        quoteArgument(scriptPath),
-        "-ApiKey",
-        quoteArgument(config.apiKey),
-        "-Uri",
-        quoteArgument(uri),
-        "-BodyPath",
-        quoteArgument(absoluteSavePath(requestFile)),
-        "-HmacSecret",
-        quoteArgument(config.hmacSecret),
-    }, " ")
-
-    local output = runCommand(command)
-    love.filesystem.remove(requestFile)
-    if not output then
-        return nil, "The online request could not be started."
-    end
-
-    local response, decodeError = json.decode(output)
-    if type(response) ~= "table" then
-        return nil, decodeError or "The online response could not be parsed."
-    end
-
-    if response.ok ~= true then
-        return nil, tostring(response.error or "The online request failed."), response.status
-    end
-
-    return response.data, nil, response.status
+    return httpTransport.postJson({
+        url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
+        apiKey = config.apiKey,
+        hmacSecret = config.hmacSecret,
+        payload = payload,
+        timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    })
 end
 
 local function fetchLeaderboardEntries(config)
