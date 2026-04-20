@@ -15,6 +15,18 @@ assertEqual(ui.formatLeaderboardScore(70.3), "70.300", "leaderboard score keeps 
 assertEqual(ui.formatLeaderboardScore(70.013), "70.013", "leaderboard score keeps thousandths")
 assertEqual(ui.formatLeaderboardScore(70), "70.000", "leaderboard score shows three decimals for integers")
 
+assert(type(ui.formatLeaderboardEntryTimestamp) == "function", "ui.formatLeaderboardEntryTimestamp should exist")
+assertEqual(
+    ui.formatLeaderboardEntryTimestamp("2026-04-20T13:45:59Z"),
+    "2026-04-20 13:45",
+    "leaderboard timestamp trims ISO timestamps to date and minute"
+)
+assertEqual(
+    ui.formatLeaderboardEntryTimestamp(nil),
+    "Unknown",
+    "leaderboard timestamp falls back when no timestamp is available"
+)
+
 assert(type(ui.formatLevelSelectLeaderboardPlayerName) == "function", "ui.formatLevelSelectLeaderboardPlayerName should exist")
 assertEqual(
     ui.formatLevelSelectLeaderboardPlayerName("ABCDEFGHIJKLMN"),
@@ -74,6 +86,49 @@ assertEqual(
     ui.formatLevelSelectLeaderboardRefreshLabel(nil, 100),
     "Refresh in 0s",
     "level select leaderboard refresh label clamps to zero without a cooldown"
+)
+
+assert(type(ui.getLevelSelectLeaderboardVisibleEntries) == "function", "ui.getLevelSelectLeaderboardVisibleEntries should exist")
+
+local visibleTopEntriesOnly, visiblePinnedEntryOnly = ui.getLevelSelectLeaderboardVisibleEntries(
+    { { rank = 1 }, { rank = 2 }, { rank = 3 }, { rank = 4 }, { rank = 5 }, { rank = 6 } },
+    nil,
+    5
+)
+assertEqual(#visibleTopEntriesOnly, 5, "level select leaderboard shows at most five top rows without a pinned player")
+assertEqual(visiblePinnedEntryOnly, nil, "level select leaderboard keeps pinned player empty when none exists")
+
+local pinnedPlayerEntry = { rank = 12 }
+local visibleTopEntriesWithPinned, visiblePinnedEntryWithPinned = ui.getLevelSelectLeaderboardVisibleEntries(
+    { { rank = 1 }, { rank = 2 }, { rank = 3 }, { rank = 4 }, { rank = 5 } },
+    pinnedPlayerEntry,
+    5
+)
+assertEqual(#visibleTopEntriesWithPinned, 4, "level select leaderboard reserves one slot for the pinned player")
+assertEqual(visiblePinnedEntryWithPinned, pinnedPlayerEntry, "level select leaderboard keeps the pinned player visible")
+
+assert(type(ui.getLevelSelectLeaderboardPinnedRowY) == "function", "ui.getLevelSelectLeaderboardPinnedRowY should exist")
+assertEqual(
+    ui.getLevelSelectLeaderboardPinnedRowY({ y = 100 }, 0),
+    156,
+    "level select leaderboard places a pinned row in the first slot when no top rows exist"
+)
+assertEqual(
+    ui.getLevelSelectLeaderboardPinnedRowY({ y = 100 }, 4),
+    282,
+    "level select leaderboard places a pinned row directly below the visible entries"
+)
+
+assert(type(ui.formatMarketplaceFavoriteLabel) == "function", "ui.formatMarketplaceFavoriteLabel should exist")
+assertEqual(
+    ui.formatMarketplaceFavoriteLabel(12),
+    "12",
+    "marketplace favorite label shows the current favorite count"
+)
+assertEqual(
+    ui.formatMarketplaceFavoriteLabel(nil),
+    "0",
+    "marketplace favorite label falls back to zero without a count"
 )
 
 print("ui formatting tests passed")
