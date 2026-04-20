@@ -14,7 +14,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   LOVE_VERSION: "11.5"
@@ -100,9 +100,10 @@ jobs:
               -Version "${{ steps.resolve_version.outputs.build_version }}" `
               -OutputRoot $env:OUTPUT_ROOT
 
-      - name: Upload packages artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload ZIP to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          name: packages-windows-${{ steps.resolve_version.outputs.build_version }}
-          path: ${{ env.OUTPUT_ROOT }}\*_windows.zip
-          if-no-files-found: error
+          files: ${{ env.OUTPUT_ROOT }}\*_windows.zip
+          generate_release_notes: true
+
