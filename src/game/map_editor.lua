@@ -2361,6 +2361,19 @@ function mapEditor:findIntersectionHit(x, y)
     return nil
 end
 
+function mapEditor:getMagnetHitRect(point, magnetKind)
+    local width = magnetKind == "start" and 58 or 46
+    local height = 24
+    local padding = 8
+
+    return {
+        x = point.x - width * 0.5 - padding,
+        y = point.y - height * 0.5 - padding,
+        w = width + padding * 2,
+        h = height + padding * 2,
+    }
+end
+
 function mapEditor:findPointHit(x, y)
     local radiusScale = 1 / math.max(self.camera.zoom, 0.0001)
     for routeIndex = #self.routes, 1, -1 do
@@ -2370,14 +2383,22 @@ function mapEditor:findPointHit(x, y)
             local isMagnet = pointIndex == 1 or pointIndex == #route.points
             local isSharedJunctionPoint = not isMagnet and point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
             if not isSharedJunctionPoint then
-                local radius = (isMagnet and 16 or 12) * radiusScale
-                if distanceSquared(x, y, point.x, point.y) <= radius * radius then
-                    local magnetKind = nil
-                    if pointIndex == 1 then
-                        magnetKind = "start"
-                    elseif pointIndex == #route.points then
-                        magnetKind = "end"
-                    end
+                local magnetKind = nil
+                if pointIndex == 1 then
+                    magnetKind = "start"
+                elseif pointIndex == #route.points then
+                    magnetKind = "end"
+                end
+
+                local hit = false
+                if isMagnet then
+                    hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
+                else
+                    local radius = 12 * radiusScale
+                    hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
+                end
+
+                if hit then
                     return route, pointIndex, magnetKind
                 end
             end
