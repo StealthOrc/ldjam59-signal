@@ -79,6 +79,7 @@ local LEVEL_SELECT_ACTION_STATUS_SUCCESS = "success"
 local LEVEL_SELECT_ACTION_STATUS_ERROR = "error"
 local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
+local MAP_CATEGORY_ONLINE = PLAY_MODE_ONLINE
 local PROFILE_NAME_MAX_LENGTH = 24
 local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
 local LEADERBOARD_MESSAGE_NO_LOCAL_SCORES = "No local personal scores yet."
@@ -1317,6 +1318,7 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
             creator_uuid = getProfilePlayerUuid(self.profile),
             hmacSecret = onlineConfig.hmacSecret,
             map = deepCopy(mapData.level),
+            mapCategory = MAP_CATEGORY_ONLINE,
             mapName = mapData.name or selectedMap.displayName or selectedMap.name,
             mapUuid = mapData.mapUuid or selectedMap.mapUuid,
             mode = "upload_map",

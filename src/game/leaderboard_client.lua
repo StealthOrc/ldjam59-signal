@@ -9,6 +9,7 @@ local REQUEST_FILE = storagePaths.getTempFilePath("leaderboard_request.json")
 local REQUEST_MODE_SUBMIT = "submit"
 local REQUEST_MODE_UPLOAD_MAP = "upload_map"
 local REQUEST_MODE_FAVORITE_MAP = "favorite_map"
+local MAP_CATEGORY_ONLINE = "online"
 
 local POWERSHELL_SCRIPT = [[
 param(
@@ -255,6 +256,7 @@ function leaderboardClient.uploadMap(submission, config)
     local payload = {
         map_uuid = mapUuid,
         map_name = mapName,
+        map_category = tostring(submission.mapCategory or MAP_CATEGORY_ONLINE),
         creator_uuid = creatorUuid,
         map = submission.map,
     }

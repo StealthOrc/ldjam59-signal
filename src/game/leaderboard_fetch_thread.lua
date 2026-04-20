@@ -17,6 +17,7 @@ local DEFAULT_REQUEST_TIMEOUT_SECONDS = 5
 local MARKETPLACE_MODE_FAVORITES = "favorites"
 local MARKETPLACE_MODE_SEARCH = "search"
 local LEADERBOARD_UNAVAILABLE_MESSAGE = "Leaderboard unavailable."
+local MAP_CATEGORY_ONLINE = "online"
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
@@ -421,7 +422,8 @@ local function uploadMap(config, requestId)
     return runJsonPost(config, "/api/maps", {
         map_uuid = mapUuid,
         map_name = tostring(config.mapName or ""),
-        creator_uuid = tostring(config.creator_uuid or ""),
+        map_category = tostring(config.mapCategory or MAP_CATEGORY_ONLINE),
+        creator_uuid = tostring(config.creator_uuid or config.creatorUuid or ""),
         map = config.map,
     }, requestId)
 end
