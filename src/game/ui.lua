@@ -47,6 +47,8 @@ local MARKETPLACE_LAYOUT = {
     favoriteButtonW = 86,
     favoriteLift = 14,
     favoriteSpacing = 10,
+    favoritePlusOneBaseOffset = 12,
+    favoritePlusOneRise = 18,
     titleMetaTop = 48,
 }
 local MARKETPLACE_REMOTE_SOURCE = "remote"
@@ -171,12 +173,14 @@ local LEADERBOARD_LAYOUT = {
     rowRadius = 10,
     rankWidth = 40,
     mapGap = 28,
-    mapWidth = 260,
-    recordedGap = 24,
-    recordedWidth = 164,
+    mapMinWidth = 176,
     playerXOffset = 52,
     playerRightPadding = 36,
     scoreWidth = 120,
+    maxVisibleRows = 12,
+    recordWidth = 152,
+    recordGap = 18,
+    recordRightPadding = 16,
     rowBottomPadding = 56,
     rowPrimaryTextOffsetY = 2,
     tooltipWidth = 360,
@@ -355,6 +359,34 @@ local function formatLeaderboardScore(value)
     return string.format("%." .. tostring(LEADERBOARD_SCORE_DECIMAL_PLACES) .. "f", value or 0)
 end
 
+local function formatLeaderboardEntryTimestamp(value)
+    if type(value) == "number" then
+        return os.date("%Y-%m-%d %H:%M", value)
+    end
+
+    local text = trim(tostring(value or ""))
+    if text == "" then
+        return "Unknown"
+    end
+
+    local numericValue = tonumber(text)
+    if numericValue then
+        return os.date("%Y-%m-%d %H:%M", numericValue)
+    end
+
+    local year, month, day, hour, minute = text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt%s](%d%d):(%d%d)")
+    if year and month and day and hour and minute then
+        return string.format("%s-%s-%s %s:%s", year, month, day, hour, minute)
+    end
+
+    local dateOnlyYear, dateOnlyMonth, dateOnlyDay = text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if dateOnlyYear and dateOnlyMonth and dateOnlyDay then
+        return string.format("%s-%s-%s", dateOnlyYear, dateOnlyMonth, dateOnlyDay)
+    end
+
+    return safeUiText(text, "Unknown")
+end
+
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
         return love.timer.getTime()
@@ -503,10 +535,6 @@ local function shouldShowLeaderboardMapColumn(game)
     return state.scope == "global"
 end
 
-local function shouldShowLeaderboardRecordedColumn(game)
-    return game:isOfflineMode()
-end
-
 local function formatLeaderboardRecordedAt(value)
     local timestamp = tonumber(value)
     if timestamp then
@@ -521,21 +549,10 @@ local function getLeaderboardContentLayout(game)
     local panel = getLeaderboardPanelRect(game)
     local contentX = panel.x + LEADERBOARD_LAYOUT.contentPadding
     local contentW = panel.w - (LEADERBOARD_LAYOUT.contentPadding * 2)
-    local recordedX = nil
-    local scoreX = nil
-    local mapX = nil
-
-    if shouldShowLeaderboardRecordedColumn(game) then
-        recordedX = contentX + contentW - LEADERBOARD_LAYOUT.recordedWidth
-        scoreX = recordedX - LEADERBOARD_LAYOUT.recordedGap - LEADERBOARD_LAYOUT.scoreWidth
-        if shouldShowLeaderboardMapColumn(game) then
-            mapX = scoreX - LEADERBOARD_LAYOUT.mapGap - LEADERBOARD_LAYOUT.mapWidth
-        end
-    else
-        scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth) * 0.5 + 0.5)
-        mapX = shouldShowLeaderboardMapColumn(game) and (scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap) or nil
-    end
-
+    local recordX = contentX + contentW - LEADERBOARD_LAYOUT.recordWidth - LEADERBOARD_LAYOUT.recordRightPadding
+    local scoreX = contentX + math.floor((contentW - LEADERBOARD_LAYOUT.scoreWidth - LEADERBOARD_LAYOUT.recordWidth - LEADERBOARD_LAYOUT.recordGap) * 0.5 + 0.5)
+    local mapX = scoreX + LEADERBOARD_LAYOUT.scoreWidth + LEADERBOARD_LAYOUT.mapGap
+    local mapWidth = math.max(LEADERBOARD_LAYOUT.mapMinWidth, recordX - mapX - LEADERBOARD_LAYOUT.recordGap)
     local playerX = contentX + LEADERBOARD_LAYOUT.playerXOffset
     local playerRightEdge = shouldShowLeaderboardMapColumn(game)
         and (mapX - LEADERBOARD_LAYOUT.mapGap)
@@ -547,7 +564,8 @@ local function getLeaderboardContentLayout(game)
         contentX = contentX,
         contentW = contentW,
         mapX = mapX,
-        recordedX = recordedX,
+        mapWidth = mapWidth,
+        recordX = recordX,
         scoreX = scoreX,
         playerX = playerX,
         playerWidth = playerWidth,
@@ -580,6 +598,7 @@ local function buildLeaderboardRowRects(game, entries)
     local rowStep = rowHeight + LEADERBOARD_LAYOUT.rowGap
     local availableHeight = layout.panel.h - LEADERBOARD_LAYOUT.headerY - LEADERBOARD_LAYOUT.rowYOffset - LEADERBOARD_LAYOUT.rowBottomPadding
     local maxEntries = math.min(
+        LEADERBOARD_LAYOUT.maxVisibleRows,
         #(entries or {}),
         math.max(1, math.floor((availableHeight + LEADERBOARD_LAYOUT.rowGap) / rowStep))
     )
@@ -604,15 +623,15 @@ local function buildLeaderboardRowRects(game, entries)
             map = shouldShowLeaderboardMapColumn(game) and {
                 x = layout.mapX,
                 y = rowY,
-                w = LEADERBOARD_LAYOUT.mapWidth,
+                w = layout.mapWidth,
                 h = rowHeight - 8,
             } or nil,
-            recorded = shouldShowLeaderboardRecordedColumn(game) and {
-                x = layout.recordedX,
+            record = {
+                x = layout.recordX,
                 y = rowY,
-                w = LEADERBOARD_LAYOUT.recordedWidth,
+                w = LEADERBOARD_LAYOUT.recordWidth,
                 h = rowHeight - 8,
-            } or nil,
+            },
         }
 
         rects[#rects + 1] = rowRect
@@ -1172,6 +1191,7 @@ local function buildMarketplaceEntries(game)
             local displayName = getMapDisplayName(descriptor)
             local kindLabel = getMapKindLabel(descriptor)
             local controlsSummary = getMarketplaceControlsSummary(descriptor)
+            local favoriteAnimation = descriptor.mapUuid ~= "" and game:getMarketplaceFavoriteAnimation(descriptor.mapUuid) or nil
             entries[#entries + 1] = {
                 descriptor = descriptor,
                 title = displayName,
@@ -1179,6 +1199,7 @@ local function buildMarketplaceEntries(game)
                 creatorDisplayName = tostring(sourceEntry.creator_display_name or "Unknown"),
                 creatorUuid = tostring(sourceEntry.creator_uuid or ""),
                 favoriteCount = descriptor.favoriteCount or 0,
+                favoriteAnimation = favoriteAnimation,
                 internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
                 likedByPlayer = descriptor.likedByPlayer == true,
                 featuredWeight = descriptor.favoriteCount or 0,
@@ -1674,9 +1695,14 @@ local function getMarketplaceFavoriteHoverId(descriptor)
     return descriptor and ("favorite:" .. tostring(descriptor.id or "")) or nil
 end
 
+local function formatMarketplaceFavoriteLabel(favoriteCount)
+    local resolvedFavoriteCount = tonumber(favoriteCount or 0) or 0
+    return tostring(resolvedFavoriteCount)
+end
+
 local function getMarketplaceFavoriteLabel(marketplaceEntry)
     local favoriteCount = tonumber(marketplaceEntry and marketplaceEntry.favoriteCount or 0) or 0
-    return tostring(favoriteCount)
+    return formatMarketplaceFavoriteLabel(favoriteCount)
 end
 
 local function getMarketplaceFavoriteContentLayout(rect)
@@ -1776,6 +1802,22 @@ local function drawMarketplaceFavoriteButton(game, descriptor, rect, marketplace
         math.max(0, textRightEdge - contentLayout.textX),
         "right"
     )
+
+    local favoriteAnimation = marketplaceEntry.favoriteAnimation
+    local favoriteAnimationDelta = type(favoriteAnimation) == "table" and tonumber(favoriteAnimation.delta or 0) or 0
+    if favoriteAnimationDelta ~= 0 then
+        local progress = math.max(0, math.min(1, tonumber(favoriteAnimation.progress or 0) or 0))
+        local alpha = 1 - progress
+        local deltaLabel = string.format("%+d", favoriteAnimationDelta)
+        graphics.setColor(textColor[1], textColor[2], textColor[3], alpha)
+        graphics.printf(
+            deltaLabel,
+            contentLayout.textX,
+            rect.y - MARKETPLACE_LAYOUT.favoritePlusOneBaseOffset - math.floor(MARKETPLACE_LAYOUT.favoritePlusOneRise * progress + 0.5),
+            math.max(0, textRightEdge - contentLayout.textX),
+            "right"
+        )
+    end
 end
 
 local function buildLevelSelectCardRects(game)
@@ -2065,6 +2107,45 @@ local function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted
     )
 end
 
+local function getLevelSelectLeaderboardVisibleEntries(topEntries, pinnedPlayerEntry, maxRows)
+    local resolvedMaxRows = math.max(0, tonumber(maxRows) or LEVEL_SELECT_LEADERBOARD_CARD.maxRows)
+    local visibleTopEntries = {}
+    local visiblePinnedPlayerEntry = pinnedPlayerEntry
+    local visibleTopEntryLimit = resolvedMaxRows
+
+    if visiblePinnedPlayerEntry and visibleTopEntryLimit > 0 then
+        visibleTopEntryLimit = visibleTopEntryLimit - 1
+    end
+
+    for index, entry in ipairs(topEntries or {}) do
+        if index > visibleTopEntryLimit then
+            break
+        end
+
+        visibleTopEntries[#visibleTopEntries + 1] = entry
+    end
+
+    if resolvedMaxRows <= 0 then
+        visiblePinnedPlayerEntry = nil
+    end
+
+    return visibleTopEntries, visiblePinnedPlayerEntry
+end
+
+local function getLevelSelectLeaderboardPinnedRowY(contentRect, visibleEntryCount)
+    local resolvedVisibleEntryCount = math.max(0, tonumber(visibleEntryCount) or 0)
+    local baseRowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
+
+    if resolvedVisibleEntryCount == 0 then
+        return baseRowY
+    end
+
+    return baseRowY
+        + (resolvedVisibleEntryCount * LEVEL_SELECT_LEADERBOARD_CARD.rowHeight)
+        + ((resolvedVisibleEntryCount - 1) * LEVEL_SELECT_LEADERBOARD_CARD.rowGap)
+        + LEVEL_SELECT_LEADERBOARD_CARD.pinnedGap
+end
+
 local function drawLevelSelectLeaderboardBack(game, rect)
     local graphics = love.graphics
     local contentRect = {
@@ -2074,8 +2155,11 @@ local function drawLevelSelectLeaderboardBack(game, rect)
         h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
     }
     local previewState = game:getLevelSelectPreviewDisplayState(rect.map.mapUuid)
-    local topEntries = previewState.topEntries or {}
-    local pinnedPlayerEntry = previewState.pinnedPlayerEntry
+    local topEntries, pinnedPlayerEntry = getLevelSelectLeaderboardVisibleEntries(
+        previewState.topEntries or {},
+        previewState.pinnedPlayerEntry,
+        LEVEL_SELECT_LEADERBOARD_CARD.maxRows
+    )
     local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
 
     love.graphics.setFont(game.fonts.body)
@@ -2101,7 +2185,7 @@ local function drawLevelSelectLeaderboardBack(game, rect)
     if pinnedPlayerEntry then
         local pinnedRowRect = {
             x = contentRect.x,
-            y = contentRect.y + contentRect.h - LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+            y = getLevelSelectLeaderboardPinnedRowY(contentRect, #topEntries),
             w = contentRect.w,
             h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
         }
@@ -3175,11 +3259,9 @@ function ui.drawLeaderboard(game)
     graphics.print("Player", layout.playerX, headerY)
     graphics.printf("Score", layout.scoreX, headerY, LEADERBOARD_LAYOUT.scoreWidth, "center")
     if shouldShowLeaderboardMapColumn(game) then
-        graphics.printf(game:isOfflineMode() and "Map" or "Latest Map", layout.mapX, headerY, LEADERBOARD_LAYOUT.mapWidth, "left")
+        graphics.printf(game:isOfflineMode() and "Map" or "Latest Map", layout.mapX, headerY, layout.mapWidth, "left")
     end
-    if shouldShowLeaderboardRecordedColumn(game) and layout.recordedX then
-        graphics.printf("Recorded", layout.recordedX, headerY, LEADERBOARD_LAYOUT.recordedWidth, "left")
-    end
+    graphics.printf(game:isOfflineMode() and "Recorded" or "Record", layout.recordX, headerY, LEADERBOARD_LAYOUT.recordWidth, "left")
 
     local rowRects = buildLeaderboardRowRects(game, state.entries or {})
     for _, rowRect in ipairs(rowRects) do
@@ -3206,17 +3288,6 @@ function ui.drawLeaderboard(game)
             LEADERBOARD_LAYOUT.scoreWidth,
             "center"
         )
-        if rowRect.recorded then
-            graphics.setColor(0.72, 0.78, 0.84, 1)
-            graphics.printf(
-                formatLeaderboardRecordedAt(entry.recordedAt or entry.updatedAt),
-                rowRect.recorded.x,
-                rowY + LEADERBOARD_LAYOUT.rowPrimaryTextOffsetY,
-                rowRect.recorded.w,
-                "left"
-            )
-            graphics.setColor(0.97, 0.98, 1, 1)
-        end
         if rowRect.map then
             graphics.setColor(0.72, 0.78, 0.84, 1)
             graphics.printf(
@@ -3227,6 +3298,17 @@ function ui.drawLeaderboard(game)
                 "left"
             )
         end
+
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.printf(
+            game:isOfflineMode()
+                and formatLeaderboardRecordedAt(entry.recordedAt or entry.updatedAt)
+                or formatLeaderboardEntryTimestamp(entry.updatedAt or entry.recordedAt),
+            rowRect.record.x,
+            rowY + 2,
+            rowRect.record.w,
+            "left"
+        )
     end
 
     if #(state.entries or {}) > #rowRects then
@@ -3588,8 +3670,12 @@ end
 
 ui.formatLeaderboardScore = formatLeaderboardScore
 ui.formatLeaderboardRecordedAt = formatLeaderboardRecordedAt
+ui.formatLeaderboardEntryTimestamp = formatLeaderboardEntryTimestamp
 ui.formatLevelSelectLeaderboardPlayerName = formatLevelSelectLeaderboardPlayerName
 ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
+ui.getLevelSelectLeaderboardVisibleEntries = getLevelSelectLeaderboardVisibleEntries
+ui.getLevelSelectLeaderboardPinnedRowY = getLevelSelectLeaderboardPinnedRowY
+ui.formatMarketplaceFavoriteLabel = formatMarketplaceFavoriteLabel
 
 return ui
