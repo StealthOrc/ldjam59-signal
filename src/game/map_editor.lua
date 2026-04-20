@@ -373,6 +373,34 @@ local function colorsToLookup(source, fallbackId)
     return lookup
 end
 
+local function normalizeEndpointColors(kind, source, fallbackId)
+    local lookup = colorsToLookup(source, fallbackId)
+    if kind ~= "input" then
+        return lookup
+    end
+
+    local orderedIds = lookupToSortedIds(lookup)
+    local resolvedId = orderedIds[1] or fallbackId
+    local normalizedLookup = {}
+    if resolvedId then
+        normalizedLookup[resolvedId] = true
+    end
+    return normalizedLookup
+end
+
+local function getEndpointColorIds(endpoint)
+    if not endpoint then
+        return {}
+    end
+
+    local orderedIds = lookupToSortedIds(endpoint.colors)
+    if endpoint.kind == "input" then
+        return orderedIds[1] and { orderedIds[1] } or {}
+    end
+
+    return orderedIds
+end
+
 local function getColorOptionById(colorId)
     for _, option in ipairs(COLOR_OPTIONS) do
         if option.id == colorId then
@@ -993,7 +1021,7 @@ function mapEditor:getAvailableLineColorIds()
 
     for _, endpoint in ipairs(self.endpoints) do
         if endpoint.kind == "input" then
-            for _, colorId in ipairs(lookupToSortedIds(endpoint.colors)) do
+            for _, colorId in ipairs(getEndpointColorIds(endpoint)) do
                 if not lookup[colorId] then
                     lookup[colorId] = true
                     colors[#colors + 1] = colorId
@@ -1415,7 +1443,7 @@ function mapEditor:createEndpoint(kind, x, y, colors, id)
         kind = kind,
         x = x,
         y = y,
-        colors = colorsToLookup(colors, fallbackColorId),
+        colors = normalizeEndpointColors(kind, colors, fallbackColorId),
     }
     self.endpoints[#self.endpoints + 1] = endpoint
     self.nextEndpointId = self.nextEndpointId + 1
@@ -1898,14 +1926,21 @@ function mapEditor:screenToJunctionPickerSpace(x, y)
 end
 
 function mapEditor:openColorPicker(route, magnetKind)
+    if magnetKind ~= "end" then
+        return
+    end
+
     local point = magnetKind == "start" and route.points[1] or route.points[#route.points]
     local anchorX, anchorY = self:mapToScreen(point.x, point.y)
     self.colorPicker = {
-        mode = "route",
+        mode = "route_end",
         routeId = route.id,
         magnetKind = magnetKind,
         anchorX = anchorX,
         anchorY = anchorY,
+        hoverBranch = nil,
+        branch = "disconnect",
+        hoverOptionIndex = nil,
     }
     self:closeRouteTypePicker()
 end
@@ -1958,8 +1993,8 @@ function mapEditor:getColorPickerOptions()
     end
 
     local lookup = {}
-    if self.colorPicker.mode == "route" then
-        local route = self:getSelectedRoute()
+    if self.colorPicker.mode == "route" or self.colorPicker.mode == "route_end" then
+        local route = self:getRouteById(self.colorPicker.routeId)
         local endpoint = route and route.id == self.colorPicker.routeId
             and (self.colorPicker.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route))
             or nil
@@ -1985,8 +2020,8 @@ function mapEditor:getColorPickerSelectionLookup()
         return lookup
     end
 
-    if self.colorPicker.mode == "route" then
-        local route = self:getSelectedRoute()
+    if self.colorPicker.mode == "route" or self.colorPicker.mode == "route_end" then
+        local route = self:getRouteById(self.colorPicker.routeId)
         if not route or route.id ~= self.colorPicker.routeId then
             return lookup
         end
@@ -2009,7 +2044,7 @@ function mapEditor:getColorPickerSelectionLookup()
 end
 
 function mapEditor:getJunctionPickerRootHover(x, y)
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return nil
     end
 
@@ -2022,7 +2057,7 @@ function mapEditor:getJunctionPickerRootHover(x, y)
     if dx < 0 then
         return "disconnect"
     end
-    if dx > 0 then
+    if dx > 0 and self.colorPicker.mode == "junction" then
         return "junctions"
     end
     return nil
@@ -2068,7 +2103,7 @@ function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRad
 end
 
 function mapEditor:getJunctionPickerLayout()
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return nil
     end
 
@@ -2142,7 +2177,7 @@ function mapEditor:getJunctionPickerOptionHit(submenu, x, y)
 end
 
 function mapEditor:updateJunctionPickerHover(x, y)
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+    if not self.colorPicker or (self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end") then
         return false
     end
 
@@ -2169,11 +2204,11 @@ function mapEditor:getColorPickerLayout()
     end
 
     local options = self:getColorPickerOptions()
-    if self.colorPicker.mode ~= "junction" and #options == 0 then
+    if self.colorPicker.mode ~= "junction" and self.colorPicker.mode ~= "route_end" and #options == 0 then
         return nil
     end
 
-    if self.colorPicker.mode == "junction" then
+    if self.colorPicker.mode == "junction" or self.colorPicker.mode == "route_end" then
         return self:getJunctionPickerLayout()
     end
 
@@ -2580,7 +2615,7 @@ function mapEditor:getExportData()
             kind = endpoint.kind,
             x = endpoint.x / self.mapSize.w,
             y = endpoint.y / self.mapSize.h,
-            colors = lookupToSortedIds(endpoint.colors),
+            colors = getEndpointColorIds(endpoint),
         }
     end
 
@@ -4107,6 +4142,11 @@ function mapEditor:cycleIntersectionPassCount(intersection, direction)
 end
 
 function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
+    if magnetKind == "start" then
+        self:showStatus("Starts use a single fixed color.")
+        return
+    end
+
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint then
         return
@@ -4126,10 +4166,14 @@ function mapEditor:toggleMagnetColor(route, magnetKind, colorId)
 end
 
 function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, startMouseY)
+    if magnetKind ~= "end" then
+        return false
+    end
+
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint or not endpoint.colors[colorId] or countLookupEntries(endpoint.colors) <= 1 then
         self:showStatus("That color cannot be split from this endpoint.")
-        return
+        return false
     end
 
     endpoint.colors[colorId] = nil
@@ -4161,6 +4205,7 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
     self:closeColorPicker()
     self:rebuildIntersections()
     self:showStatus("Color split into a new " .. (endpoint.kind == "input" and "start" or "end") .. " endpoint.")
+    return true
 end
 
 function mapEditor:splitSharedJunctionColor(intersection, colorId, startMouseX, startMouseY)
@@ -4210,6 +4255,10 @@ function mapEditor:splitSharedJunctionColor(intersection, colorId, startMouseX, 
 end
 
 function mapEditor:mergeEndpointInto(route, magnetKind, targetEndpoint)
+    if magnetKind == "start" then
+        return false
+    end
+
     local currentEndpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not currentEndpoint or not targetEndpoint or currentEndpoint.id == targetEndpoint.id or currentEndpoint.kind ~= targetEndpoint.kind then
         return false
@@ -4355,10 +4404,20 @@ function mapEditor:handleColorPickerClick(x, y, button)
         local rawX = x
         local rawY = y
         x, y = self:screenToJunctionPickerSpace(x, y)
-        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
-        if not intersection then
-            self:closeColorPicker()
-            return true
+        local intersection = nil
+        local route = nil
+        if self.colorPicker.mode == "junction" then
+            intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+            if not intersection then
+                self:closeColorPicker()
+                return true
+            end
+        elseif self.colorPicker.mode == "route_end" then
+            route = self:getRouteById(self.colorPicker.routeId)
+            if not route then
+                self:closeColorPicker()
+                return true
+            end
         end
 
         local insideRoot = not layout.branch
@@ -4389,7 +4448,12 @@ function mapEditor:handleColorPickerClick(x, y, button)
             local hitEntry = self:getJunctionPickerOptionHit(layout.submenu, x, y)
             if hitEntry then
                 if layout.submenu.branch == "disconnect" then
-                    self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
+                    if self.colorPicker.mode == "junction" then
+                        self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
+                    elseif self.colorPicker.mode == "route_end" then
+                        local mapX, mapY = self:screenToMap(rawX, rawY)
+                        self:splitEndpointColor(route, "end", hitEntry.option.id, mapX, mapY)
+                    end
                 else
                     self:setIntersectionControlType(intersection, hitEntry.option.controlType)
                     self:closeColorPicker()
@@ -4953,8 +5017,13 @@ function mapEditor:mousepressed(screenX, screenY, button)
         if route and magnetKind then
             self.selectedRouteId = route.id
             self.selectedPointIndex = pointIndex
-            self:openColorPicker(route, magnetKind)
-            self:showStatus((magnetKind == "start" and "Start" or "End") .. " color picker opened.")
+            if magnetKind == "end" then
+                self:openColorPicker(route, magnetKind)
+                self:updateJunctionPickerHover(screenX, screenY)
+                self:showStatus("End color menu opened.")
+            else
+                self:closeColorPicker()
+            end
             return true
         end
 
@@ -5150,7 +5219,7 @@ function mapEditor:mousemoved(screenX, screenY, deltaX, deltaY)
         return true
     end
 
-    if self.colorPicker and self.colorPicker.mode == "junction" then
+    if self.colorPicker and (self.colorPicker.mode == "junction" or self.colorPicker.mode == "route_end") then
         self:updateJunctionPickerHover(screenX, screenY)
     end
 
@@ -5204,7 +5273,7 @@ function mapEditor:mousereleased(screenX, screenY, button)
         else
             self:showStatus("Route created. Drag any segment to add a bend point.")
         end
-    elseif route and self.drag.kind == "point" and self.drag.isMagnet then
+    elseif route and self.drag.kind == "point" and self.drag.isMagnet and self.drag.magnetKind == "end" then
         local currentEndpoint = self.drag.magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
         local target = currentEndpoint and self:findEndpointAt(x, y, currentEndpoint.kind, currentEndpoint.id) or nil
         if target then
@@ -5246,7 +5315,7 @@ function mapEditor:serialize()
         lines[#lines + 1] = string.format("            x = %s,", formatNumber(endpoint.x / self.mapSize.w))
         lines[#lines + 1] = string.format("            y = %s,", formatNumber(endpoint.y / self.mapSize.h))
         lines[#lines + 1] = "            colors = {"
-        for _, colorId in ipairs(lookupToSortedIds(endpoint.colors)) do
+        for _, colorId in ipairs(getEndpointColorIds(endpoint)) do
             lines[#lines + 1] = string.format("                %q,", colorId)
         end
         lines[#lines + 1] = "            },"
@@ -5336,8 +5405,7 @@ end
 function mapEditor:drawMagnet(route, point, magnetKind, selected)
     local graphics = love.graphics
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
-    local lookup = endpoint and endpoint.colors or {}
-    local selectedColors = lookupToSortedIds(lookup)
+    local selectedColors = magnetKind == "end" and getEndpointColorIds(endpoint) or {}
     local width = magnetKind == "start" and 58 or 46
     local height = 24
 
@@ -5845,7 +5913,10 @@ function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
     local graphics = love.graphics
     local root = layout.root
     local leftColor = #colorOptions > 0 and { 0.82, 0.86, 0.9, 0.92 } or { 0.24, 0.28, 0.32, 0.82 }
-    local rightColor = CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct
+    local isRouteEnd = self.colorPicker and self.colorPicker.mode == "route_end"
+    local rightColor = isRouteEnd
+        and { 0.36, 0.42, 0.5, 0.92 }
+        or (CONTROL_FILL_COLORS[intersection.controlType] or CONTROL_FILL_COLORS.direct)
     local hoverBranch = layout.hoverBranch
 
     graphics.setColor(0.05, 0.06, 0.08, 0.94)
@@ -5871,7 +5942,18 @@ function mapEditor:drawJunctionMenuRoot(layout, intersection, colorOptions)
         graphics.circle("fill", root.x - root.radius * 0.36, dotY, JUNCTION_MENU_SWATCH_RADIUS)
     end
 
-    self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.5, root.y, JUNCTION_MENU_ICON_SIZE)
+    if isRouteEnd then
+        graphics.setColor(0.05, 0.06, 0.08, 1)
+        graphics.printf(
+            "END",
+            root.x + 4,
+            root.y - 9,
+            root.radius - 8,
+            "center"
+        )
+    else
+        self:drawEditorControlIcon(intersection.controlType, root.x + root.radius * 0.5, root.y, JUNCTION_MENU_ICON_SIZE)
+    end
 end
 
 function mapEditor:drawJunctionMenuSubmenu(layout, intersection)
@@ -5983,8 +6065,13 @@ function mapEditor:drawColorPicker(game)
     local lookup = self:getColorPickerSelectionLookup()
 
     if layout.kind == "junction_radial" then
-        local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
-        if not intersection then
+        local intersection = nil
+        if self.colorPicker.mode == "junction" then
+            intersection = self:getIntersectionById(self.colorPicker.intersectionId)
+            if not intersection then
+                return
+            end
+        elseif self.colorPicker.mode ~= "route_end" then
             return
         end
 
