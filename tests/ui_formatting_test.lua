@@ -390,6 +390,9 @@ local marketplaceDescriptorGame = {
     levelSelectMode = "marketplace",
     levelSelectMarketplaceTab = "top",
     levelSelectMarketplaceSearchQuery = "",
+    getMarketplaceFavoriteAnimation = function()
+        return nil
+    end,
     getMarketplaceEntries = function()
         return {
             {
