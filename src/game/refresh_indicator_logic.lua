@@ -8,4 +8,23 @@ function refreshIndicatorLogic.getDisplayNextRefreshAt(fetchedAt, scheduledNextR
     return scheduledNextRefreshAt
 end
 
+function refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(hasVisibleData, fetchedAt, scheduledNextRefreshAt, cacheDurationSeconds)
+    if not hasVisibleData then
+        local emptyStateRefreshAt = refreshIndicatorLogic.getDisplayNextRefreshAt(
+            fetchedAt,
+            scheduledNextRefreshAt,
+            cacheDurationSeconds
+        )
+        if type(scheduledNextRefreshAt) == "number"
+            and (type(emptyStateRefreshAt) ~= "number" or scheduledNextRefreshAt > emptyStateRefreshAt)
+        then
+            return scheduledNextRefreshAt
+        end
+
+        return emptyStateRefreshAt
+    end
+
+    return refreshIndicatorLogic.getDisplayNextRefreshAt(fetchedAt, scheduledNextRefreshAt, cacheDurationSeconds)
+end
+
 return refreshIndicatorLogic

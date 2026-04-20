@@ -456,6 +456,51 @@ local levelSelectGame = {
     },
 }
 
+local marketplaceDescriptorGame = {
+    levelSelectMode = "marketplace",
+    levelSelectMarketplaceTab = "top",
+    levelSelectMarketplaceSearchQuery = "",
+    getMarketplaceEntries = function()
+        return {
+            {
+                map_uuid = "shared-market-map",
+                internal_identifier = "A1B2",
+                creator_uuid = "creator-1",
+                creator_display_name = "Creator",
+                map_name = "Shared Map",
+                map_category = "users",
+                liked_by_player = false,
+                favorite_count = 2,
+                map = {
+                    junctions = {},
+                    trains = {},
+                },
+            },
+            {
+                map_uuid = "shared-market-map",
+                internal_identifier = "C3D4",
+                creator_uuid = "creator-1",
+                creator_display_name = "Creator",
+                map_name = "Shared Map Variant",
+                map_category = "users",
+                liked_by_player = true,
+                favorite_count = 5,
+                map = {
+                    junctions = {},
+                    trains = {},
+                },
+            },
+        }
+    end,
+}
+
+local marketplaceDescriptors = ui.getLevelSelectMapDescriptors(marketplaceDescriptorGame)
+assertEqual(#marketplaceDescriptors, 2, "marketplace descriptors include both entries even when they share a map UUID")
+assert(
+    marketplaceDescriptors[1].id ~= marketplaceDescriptors[2].id,
+    "marketplace descriptors keep unique ids when entries share a map UUID"
+)
+
 local delayBadgeHover = nil
 for y = 360, 390 do
     for x = 500, 780 do

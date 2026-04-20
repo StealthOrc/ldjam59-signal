@@ -2,6 +2,7 @@ local ui = {}
 local uiControls = require("src.game.ui_controls")
 local roadTypes = require("src.game.road_types")
 local trackSceneRenderer = require("src.game.track_scene_renderer")
+local levelSelectSelection = require("src.game.level_select_selection")
 
 local LEVEL_SELECT = {
     titleBarY = 28,
@@ -1311,31 +1312,16 @@ local function getLevelSelectMaps(game)
 end
 
 local function getSelectedMapIndex(game, maps)
-    local fallbackIndex = #maps > 0 and 1 or nil
-    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
-
-    for index, descriptor in ipairs(maps or {}) do
-        if descriptor.id == game.levelSelectSelectedId then
-            game.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return index
-        end
-
-        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
-            game.levelSelectSelectedId = descriptor.id
-            game.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return index
-        end
-    end
-
-    if fallbackIndex then
-        game.levelSelectSelectedId = maps[fallbackIndex].id
-        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
+    local selectedIndex = levelSelectSelection.findIndex(maps, game.levelSelectSelectedId, game.levelSelectSelectedMapUuid)
+    if selectedIndex then
+        game.levelSelectSelectedId = maps[selectedIndex].id
+        game.levelSelectSelectedMapUuid = maps[selectedIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
         game.levelSelectSelectedMapUuid = nil
     end
 
-    return fallbackIndex
+    return selectedIndex
 end
 
 local function getLevelSelectBottomBarRect(game)
@@ -1431,6 +1417,7 @@ local function buildMarketplaceDescriptor(entry)
 
     local remoteMap = type(entry.map) == "table" and entry.map or {}
     local mapUuid = tostring(entry.map_uuid or "")
+    local internalIdentifier = tostring(entry.internal_identifier or "")
     if mapUuid ~= "" then
         remoteMap.id = remoteMap.id or mapUuid
         remoteMap.mapUuid = remoteMap.mapUuid or mapUuid
@@ -1439,10 +1426,11 @@ local function buildMarketplaceDescriptor(entry)
     local displayName = tostring(entry.map_name or "Untitled Map")
     return {
         id = string.format(
-            "%s:%s:%s",
+            "%s:%s:%s:%s",
             MARKETPLACE_REMOTE_SOURCE,
             tostring(entry.creator_uuid or "unknown"),
-            mapUuid ~= "" and mapUuid or tostring(entry.internal_identifier or "map")
+            mapUuid ~= "" and mapUuid or "map",
+            internalIdentifier ~= "" and internalIdentifier or "listing"
         ),
         mapUuid = mapUuid,
         source = MARKETPLACE_REMOTE_SOURCE,

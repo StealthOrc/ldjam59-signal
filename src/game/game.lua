@@ -6,6 +6,8 @@ local profileStorage = require("src.game.profile_storage")
 local leaderboardClient = require("src.game.leaderboard_client")
 local leaderboardPreviewCache = require("src.game.leaderboard_preview_cache")
 local levelSelectPreviewLogic = require("src.game.level_select_preview_logic")
+local levelSelectSelection = require("src.game.level_select_selection")
+local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
 local refreshIndicatorLogic = require("src.game.refresh_indicator_logic")
 local world = require("src.game.world")
 local ui = require("src.game.ui")
@@ -190,31 +192,16 @@ local function drainChannel(channel)
 end
 
 local function findLevelSelectIndex(game, maps)
-    local fallbackIndex = #maps > 0 and 1 or nil
-    local selectedMapUuid = tostring(game.levelSelectSelectedMapUuid or "")
-
-    for index, descriptor in ipairs(maps or {}) do
-        if descriptor.id == game.levelSelectSelectedId then
-            game.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return index
-        end
-
-        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
-            game.levelSelectSelectedId = descriptor.id
-            game.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return index
-        end
-    end
-
-    if fallbackIndex then
-        game.levelSelectSelectedId = maps[fallbackIndex].id
-        game.levelSelectSelectedMapUuid = maps[fallbackIndex].mapUuid
+    local selectedIndex = levelSelectSelection.findIndex(maps, game.levelSelectSelectedId, game.levelSelectSelectedMapUuid)
+    if selectedIndex then
+        game.levelSelectSelectedId = maps[selectedIndex].id
+        game.levelSelectSelectedMapUuid = maps[selectedIndex].mapUuid
     else
         game.levelSelectSelectedId = nil
         game.levelSelectSelectedMapUuid = nil
     end
 
-    return fallbackIndex
+    return selectedIndex
 end
 
 local function closestWrappedIndex(currentValue, targetIndex, count)
@@ -1102,7 +1089,8 @@ function Game:getLevelSelectPreviewDisplayState(mapUuid)
         hasCache = hasCache,
         showCachedEntries = shouldShowCachedEntries,
         isLoading = shouldShowSpinner,
-        nextRefreshAt = refreshIndicatorLogic.getDisplayNextRefreshAt(
+        nextRefreshAt = refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(
+            hasVisibleEntries,
             shouldShowCachedEntries and tonumber(cacheEntry and cacheEntry.fetched_at) or nil,
             self.levelSelectPreviewNextFetchAtByMap[mapUuid],
             LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
@@ -1281,8 +1269,10 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
     local previewState = self.levelSelectPreviewState or {}
     if response.ok and type(response.payload) == "table" then
         local fetchedAt = getNowUnixSeconds()
+        local payloadToPersist = levelSelectPreviewLogic.getPayloadToPersistAfterFetch(response.payload, cacheEntry)
         self.levelSelectPreviewNextFetchAtByMap[mapUuid] = fetchedAt + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
         if not levelSelectPreviewPayloadHasData(response.payload) and cacheEntry ~= nil then
+            self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, payloadToPersist, fetchedAt))
             self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
                 hasResolvedInitialRemoteAttempt = true,
             })
@@ -1300,7 +1290,7 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
             return
         end
 
-        self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, response.payload, fetchedAt))
+        self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, payloadToPersist, fetchedAt))
         self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
             hasResolvedInitialRemoteAttempt = true,
         })
@@ -1674,8 +1664,11 @@ function Game:updateLeaderboardFetchState()
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
                 local responseMapUuid = tostring(decodedResponse.payload.map_uuid or mapUuid or "")
                 local favoriteCount = tonumber(decodedResponse.payload.favorite_count)
-                local likedByPlayer = decodedResponse.payload.liked_by_player == true
-                local targetLikedByPlayer = previousState and (previousState.likedByPlayer ~= true) or true
+                local targetLikedByPlayer = marketplaceFavoriteLogic.getTargetLikedByPlayer(previousState)
+                local likedByPlayer = marketplaceFavoriteLogic.resolveLikedByPlayer(decodedResponse.payload, targetLikedByPlayer)
+                local wasAccepted = marketplaceFavoriteLogic.wasMutationAccepted(decodedResponse.payload, targetLikedByPlayer)
+                local wasAlreadyFavorited = marketplaceFavoriteLogic.wasAlreadyFavorited(decodedResponse.payload, targetLikedByPlayer)
+                local wasAlreadyRemoved = marketplaceFavoriteLogic.wasAlreadyRemoved(decodedResponse.payload, targetLikedByPlayer)
                 if favoriteCount == nil then
                     local resolvedPreviousFavoriteCount = previousState and tonumber(previousState.favoriteCount) or 0
                     favoriteCount = targetLikedByPlayer
@@ -1683,8 +1676,8 @@ function Game:updateLeaderboardFetchState()
                         or math.max(0, resolvedPreviousFavoriteCount - MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA)
                 end
                 self:updateMarketplaceFavoriteState(responseMapUuid, favoriteCount, likedByPlayer)
-                if decodedResponse.payload.accepted == true then
-                    local actionMessage = likedByPlayer
+                if wasAccepted then
+                    local actionMessage = targetLikedByPlayer
                         and string.format("Map liked. It now has %d vote(s).", favoriteCount)
                         or string.format("Like removed. It now has %d vote(s).", favoriteCount)
                     self:setLevelSelectActionState(
@@ -1697,8 +1690,9 @@ function Game:updateLeaderboardFetchState()
                         self:restoreMarketplaceFavoriteState(previousState)
                     end
                     self:setLevelSelectActionState(
-                        LEVEL_SELECT_ACTION_STATUS_INFO,
-                        likedByPlayer and "The map was already liked." or "The like was already removed."
+                        (wasAlreadyFavorited or wasAlreadyRemoved) and LEVEL_SELECT_ACTION_STATUS_INFO or LEVEL_SELECT_ACTION_STATUS_ERROR,
+                        wasAlreadyFavorited and "The map was already liked."
+                            or (wasAlreadyRemoved and "The like was already removed." or "The like request could not be completed.")
                     )
                 end
                 if self:processQueuedMarketplaceFavoriteState(responseMapUuid) then
@@ -2755,32 +2749,18 @@ end
 
 function Game:getSelectedLevelMap()
     local maps = self:getLevelSelectMaps()
-    local fallback = nil
-    local selectedMapUuid = tostring(self.levelSelectSelectedMapUuid or "")
+    local selectedIndex = levelSelectSelection.findIndex(maps, self.levelSelectSelectedId, self.levelSelectSelectedMapUuid)
+    local selectedMap = selectedIndex and maps[selectedIndex] or nil
 
-    for _, descriptor in ipairs(maps) do
-        fallback = fallback or descriptor
-        if descriptor.id == self.levelSelectSelectedId then
-            self.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return descriptor
-        end
-
-        if selectedMapUuid ~= "" and tostring(descriptor.mapUuid or "") == selectedMapUuid then
-            self.levelSelectSelectedId = descriptor.id
-            self.levelSelectSelectedMapUuid = descriptor.mapUuid
-            return descriptor
-        end
-    end
-
-    if fallback then
-        self.levelSelectSelectedId = fallback.id
-        self.levelSelectSelectedMapUuid = fallback.mapUuid
+    if selectedMap then
+        self.levelSelectSelectedId = selectedMap.id
+        self.levelSelectSelectedMapUuid = selectedMap.mapUuid
     else
         self.levelSelectSelectedId = nil
         self.levelSelectSelectedMapUuid = nil
     end
 
-    return fallback
+    return selectedMap
 end
 
 function Game:isLevelSelectMarketplaceMode()

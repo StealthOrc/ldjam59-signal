@@ -7,6 +7,7 @@ local DEFAULT_REQUEST_TIMEOUT_SECONDS = 5
 local DEFAULT_REMOTE_ERROR_MESSAGE = "The online request failed."
 local HTTP_METHOD_GET = "GET"
 local HTTP_METHOD_POST = "POST"
+local HTTP_METHOD_DELETE = "DELETE"
 local HTTP_STATUS_MIN_SUCCESS = 200
 local HTTP_STATUS_MAX_SUCCESS = 299
 local HTTPS_MODULE_NAME = "https"
@@ -319,6 +320,17 @@ end
 function httpTransport.postJson(options)
     return httpTransport.requestJson({
         method = HTTP_METHOD_POST,
+        url = options.url,
+        apiKey = options.apiKey,
+        hmacSecret = options.hmacSecret,
+        timeoutSeconds = options.timeoutSeconds,
+        body = json.encode(options.payload or {}),
+    })
+end
+
+function httpTransport.deleteJson(options)
+    return httpTransport.requestJson({
+        method = HTTP_METHOD_DELETE,
         url = options.url,
         apiKey = options.apiKey,
         hmacSecret = options.hmacSecret,
