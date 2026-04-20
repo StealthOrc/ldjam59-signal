@@ -296,7 +296,13 @@ function Game.new()
     self.levelComplete = false
     self.failureReason = nil
     self.world = nil
-    self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil)
+    self.editor = mapEditor.new(self.viewport.w, self.viewport.h, nil, {
+        editorPreferences = self.profile.editor,
+        onPreferencesChanged = function(editorPreferences)
+            self.profile.editor = deepCopy(editorPreferences)
+            profileStorage.save(self.profile or {})
+        end,
+    })
     self.availableMaps = {}
     self.mapNameByUuid = {}
     self.currentMapDescriptor = nil
@@ -2886,7 +2892,9 @@ end
 
 function Game:wheelmoved(screenX, screenY)
     if self.screen == "editor" then
-        return self.editor:wheelmoved(screenX, screenY)
+        local mouseX, mouseY = love.mouse.getPosition()
+        local viewportX, viewportY = self:toViewportPosition(mouseX, mouseY)
+        return self.editor:wheelmoved(viewportX, viewportY, screenX, screenY)
     end
 
     local y = screenY
