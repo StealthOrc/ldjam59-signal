@@ -1,0 +1,268 @@
+mapUuid = "c1b2124c-ed71-4b1e-8ec6-8c56bbb1e0a1"
+name = "Map 2: Delayed Button"
+template = true
+version = 1
+[editor]
+[editor.endpoints.1]
+colors = ["mint"]
+id = "left_in_mint"
+kind = "input"
+x = 0.1422
+y = 0.0583
+[editor.endpoints.2]
+colors = ["rose"]
+id = "left_in_rose"
+kind = "input"
+x = 0.2828
+y = 0.0583
+[editor.endpoints.3]
+colors = ["mint", "rose"]
+id = "left_out"
+kind = "output"
+x = 0.2125
+y = 0.9722
+[editor.endpoints.4]
+colors = ["blue"]
+id = "right_in_blue"
+kind = "input"
+x = 0.4516
+y = 0.0583
+[editor.endpoints.5]
+colors = ["yellow"]
+id = "right_in_yellow"
+kind = "input"
+x = 0.5922
+y = 0.0583
+[editor.endpoints.6]
+colors = ["blue", "yellow"]
+id = "right_out"
+kind = "output"
+x = 0.5219
+y = 0.9722
+[editor.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+control = "direct"
+id = "junction_left"
+inputEndpointIds = ["left_in_mint", "left_in_rose"]
+outputEndpointIds = ["left_out"]
+routes = ["left_route_mint", "left_route_rose"]
+x = 0.2125
+y = 0.5
+[editor.junctions.2]
+activeInputIndex = 1
+activeOutputIndex = 1
+control = "delayed"
+id = "junction_right"
+inputEndpointIds = ["right_in_blue", "right_in_yellow"]
+outputEndpointIds = ["right_out"]
+routes = ["right_route_blue", "right_route_yellow"]
+x = 0.5219
+y = 0.5
+[editor.routes.1]
+color = "mint"
+endEndpointId = "left_out"
+id = "left_route_mint"
+label = "Mint"
+startEndpointId = "left_in_mint"
+[editor.routes.1.points.1]
+x = 0.1422
+y = 0.0583
+[editor.routes.1.points.2]
+x = 0.1422
+y = 0.2922
+[editor.routes.1.points.3]
+x = 0.2125
+y = 0.5
+[editor.routes.1.points.4]
+x = 0.2125
+y = 0.9722
+[editor.routes.2]
+color = "rose"
+endEndpointId = "left_out"
+id = "left_route_rose"
+label = "Rose"
+startEndpointId = "left_in_rose"
+[editor.routes.2.points.1]
+x = 0.2828
+y = 0.0583
+[editor.routes.2.points.2]
+x = 0.2828
+y = 0.2922
+[editor.routes.2.points.3]
+x = 0.2125
+y = 0.5
+[editor.routes.2.points.4]
+x = 0.2125
+y = 0.9722
+[editor.routes.3]
+color = "blue"
+endEndpointId = "right_out"
+id = "right_route_blue"
+label = "Blue"
+startEndpointId = "right_in_blue"
+[editor.routes.3.points.1]
+x = 0.4516
+y = 0.0583
+[editor.routes.3.points.2]
+x = 0.4516
+y = 0.2922
+[editor.routes.3.points.3]
+x = 0.5219
+y = 0.5
+[editor.routes.3.points.4]
+x = 0.5219
+y = 0.9722
+[editor.routes.4]
+color = "yellow"
+endEndpointId = "right_out"
+id = "right_route_yellow"
+label = "Gold"
+startEndpointId = "right_in_yellow"
+[editor.routes.4.points.1]
+x = 0.5922
+y = 0.0583
+[editor.routes.4.points.2]
+x = 0.5922
+y = 0.2922
+[editor.routes.4.points.3]
+x = 0.5219
+y = 0.5
+[editor.routes.4.points.4]
+x = 0.5219
+y = 0.9722
+[level]
+description = "Two merges, four trains, and a timer. The left crossing flips instantly, the right button swaps after a delay."
+footer = "Clear all four trains before the timer expires. The delayed swap only happens after its countdown finishes."
+hint = "Arm the delayed button early so the second right-side train gets its route in time."
+timeLimit = 15
+title = "Map 2: Delayed Button"
+[level.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+id = "left_direct"
+[level.junctions.1.control]
+label = "Direct Lever"
+type = "direct"
+[level.junctions.1.inputs.1]
+color = [0.4, 0.92, 0.76]
+colors = ["mint"]
+darkColor = [0.12, 0.38, 0.31]
+id = "left_route_mint_input"
+label = "Input 1"
+[level.junctions.1.inputs.1.inputPoints.1]
+x = 0.1422
+y = 0.0583
+[level.junctions.1.inputs.1.inputPoints.2]
+x = 0.1422
+y = 0.2922
+[level.junctions.1.inputs.1.inputPoints.3]
+x = 0.2125
+y = 0.5
+[level.junctions.1.inputs.2]
+color = [0.98, 0.48, 0.62]
+colors = ["rose"]
+darkColor = [0.42, 0.14, 0.22]
+id = "left_route_rose_input"
+label = "Input 2"
+[level.junctions.1.inputs.2.inputPoints.1]
+x = 0.2828
+y = 0.0583
+[level.junctions.1.inputs.2.inputPoints.2]
+x = 0.2828
+y = 0.2922
+[level.junctions.1.inputs.2.inputPoints.3]
+x = 0.2125
+y = 0.5
+[level.junctions.1.outputs.1]
+adoptInputColor = true
+color = [0.4, 0.92, 0.76]
+colors = ["mint", "rose"]
+darkColor = [0.12, 0.38, 0.31]
+id = "left_out"
+label = "Output 1"
+[level.junctions.1.outputs.1.outputPoints.1]
+x = 0.2125
+y = 0.5
+[level.junctions.1.outputs.1.outputPoints.2]
+x = 0.2125
+y = 0.9722
+[level.junctions.2]
+activeInputIndex = 1
+activeOutputIndex = 1
+id = "right_delayed"
+[level.junctions.2.control]
+delay = 2.25
+label = "Delayed Button"
+type = "delayed"
+[level.junctions.2.inputs.1]
+color = [0.33, 0.8, 0.98]
+colors = ["blue"]
+darkColor = [0.12, 0.32, 0.44]
+id = "right_route_blue_input"
+label = "Input 1"
+[level.junctions.2.inputs.1.inputPoints.1]
+x = 0.4516
+y = 0.0583
+[level.junctions.2.inputs.1.inputPoints.2]
+x = 0.4516
+y = 0.2922
+[level.junctions.2.inputs.1.inputPoints.3]
+x = 0.5219
+y = 0.5
+[level.junctions.2.inputs.2]
+color = [0.98, 0.82, 0.34]
+colors = ["yellow"]
+darkColor = [0.46, 0.34, 0.08]
+id = "right_route_yellow_input"
+label = "Input 2"
+[level.junctions.2.inputs.2.inputPoints.1]
+x = 0.5922
+y = 0.0583
+[level.junctions.2.inputs.2.inputPoints.2]
+x = 0.5922
+y = 0.2922
+[level.junctions.2.inputs.2.inputPoints.3]
+x = 0.5219
+y = 0.5
+[level.junctions.2.outputs.1]
+adoptInputColor = true
+color = [0.33, 0.8, 0.98]
+colors = ["blue", "yellow"]
+darkColor = [0.12, 0.32, 0.44]
+id = "right_out"
+label = "Output 1"
+[level.junctions.2.outputs.1.outputPoints.1]
+x = 0.5219
+y = 0.5
+[level.junctions.2.outputs.1.outputPoints.2]
+x = 0.5219
+y = 0.9722
+[level.trains.1]
+color = [0.4, 0.92, 0.76]
+id = "left_mint_train"
+inputIndex = 1
+junctionId = "left_direct"
+progress = -40
+speedScale = 1
+[level.trains.2]
+color = [0.98, 0.48, 0.62]
+id = "left_rose_train"
+inputIndex = 2
+junctionId = "left_direct"
+progress = -175
+speedScale = 0.96
+[level.trains.3]
+color = [0.33, 0.8, 0.98]
+id = "right_blue_train"
+inputIndex = 1
+junctionId = "right_delayed"
+progress = -60
+speedScale = 1
+[level.trains.4]
+color = [0.98, 0.82, 0.34]
+id = "right_gold_train"
+inputIndex = 2
+junctionId = "right_delayed"
+progress = -205
+speedScale = 0.95

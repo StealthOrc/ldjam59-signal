@@ -1,0 +1,138 @@
+mapUuid = "83ea86be-9245-41c3-8ce3-7c1b1b845b7c"
+name = "Map 1: Direct Lever"
+template = true
+version = 1
+[editor]
+[editor.endpoints.1]
+colors = ["blue"]
+id = "in_blue"
+kind = "input"
+x = 0.2477
+y = 0.0583
+[editor.endpoints.2]
+colors = ["orange"]
+id = "in_orange"
+kind = "input"
+x = 0.4867
+y = 0.0583
+[editor.endpoints.3]
+colors = ["blue", "orange"]
+id = "out_main"
+kind = "output"
+x = 0.3672
+y = 0.9722
+[editor.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+control = "direct"
+id = "junction_direct"
+inputEndpointIds = ["in_blue", "in_orange"]
+outputEndpointIds = ["out_main"]
+routes = ["route_blue", "route_orange"]
+x = 0.3672
+y = 0.4811
+[editor.routes.1]
+color = "blue"
+endEndpointId = "out_main"
+id = "route_blue"
+label = "Blue"
+startEndpointId = "in_blue"
+[editor.routes.1.points.1]
+x = 0.2477
+y = 0.0583
+[editor.routes.1.points.2]
+x = 0.2477
+y = 0.2733
+[editor.routes.1.points.3]
+x = 0.3672
+y = 0.4811
+[editor.routes.1.points.4]
+x = 0.3672
+y = 0.9722
+[editor.routes.2]
+color = "orange"
+endEndpointId = "out_main"
+id = "route_orange"
+label = "Amber"
+startEndpointId = "in_orange"
+[editor.routes.2.points.1]
+x = 0.4867
+y = 0.0583
+[editor.routes.2.points.2]
+x = 0.4867
+y = 0.2733
+[editor.routes.2.points.3]
+x = 0.3672
+y = 0.4811
+[editor.routes.2.points.4]
+x = 0.3672
+y = 0.9722
+[level]
+description = "Tutorial: click the crossing to flip the route instantly and clear both trains."
+footer = "Route both trains through the merge. Fast switching can still crash them."
+hint = "The crossing itself is the lever. One click flips the live route immediately."
+title = "Map 1: Direct Lever"
+[level.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+id = "direct_tutorial"
+[level.junctions.1.control]
+label = "Direct Lever"
+type = "direct"
+[level.junctions.1.inputs.1]
+color = [0.33, 0.8, 0.98]
+colors = ["blue"]
+darkColor = [0.12, 0.32, 0.44]
+id = "route_blue_input"
+label = "Input 1"
+[level.junctions.1.inputs.1.inputPoints.1]
+x = 0.2477
+y = 0.0583
+[level.junctions.1.inputs.1.inputPoints.2]
+x = 0.2477
+y = 0.2733
+[level.junctions.1.inputs.1.inputPoints.3]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.inputs.2]
+color = [0.98, 0.7, 0.28]
+colors = ["orange"]
+darkColor = [0.42, 0.24, 0.08]
+id = "route_orange_input"
+label = "Input 2"
+[level.junctions.1.inputs.2.inputPoints.1]
+x = 0.4867
+y = 0.0583
+[level.junctions.1.inputs.2.inputPoints.2]
+x = 0.4867
+y = 0.2733
+[level.junctions.1.inputs.2.inputPoints.3]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.outputs.1]
+adoptInputColor = true
+color = [0.33, 0.8, 0.98]
+colors = ["blue", "orange"]
+darkColor = [0.12, 0.32, 0.44]
+id = "out_main"
+label = "Output 1"
+[level.junctions.1.outputs.1.outputPoints.1]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.outputs.1.outputPoints.2]
+x = 0.3672
+y = 0.9722
+[level.trains.1]
+color = [0.33, 0.8, 0.98]
+id = "direct_blue_train"
+inputIndex = 1
+junctionId = "direct_tutorial"
+progress = -70
+speedScale = 1
+[level.trains.2]
+color = [0.98, 0.7, 0.28]
+id = "direct_amber_train"
+inputIndex = 2
+junctionId = "direct_tutorial"
+progress = -210
+speedScale = 0.93

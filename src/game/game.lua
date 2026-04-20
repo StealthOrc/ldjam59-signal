@@ -188,7 +188,7 @@ local function getProfilePlayerUuid(profile)
         return ""
     end
 
-    return tostring(profile.player_uuid or profile.playerId or profile.playerUuid or "")
+    return tostring(profile.player_uuid or "")
 end
 
 local function getProfilePlayMode(profile)
@@ -218,14 +218,14 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
     end
 
     return {
-        playerDisplayName = entry.display_name or entry.playerDisplayName or "Unknown",
-        playerUuid = entry.player_uuid or entry.playerUuid or "",
+        playerDisplayName = entry.display_name or "Unknown",
+        playerUuid = entry.player_uuid or "",
         mapCount = tonumber(entry.map_count) or 0,
         score = tonumber(entry.score or 0) or 0,
         rank = tonumber(entry.rank) or fallbackRank or 0,
         mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
-        recordedAt = entry.recorded_at or entry.recordedAt or entry.updated_at or entry.updatedAt,
-        updatedAt = entry.updated_at or entry.updatedAt,
+        recordedAt = entry.recorded_at or entry.updated_at,
+        updatedAt = entry.updated_at,
     }
 end
 
@@ -574,19 +574,8 @@ function Game:getLocalScoreEntry(mapUuid)
     end
 
     local scoreboard = self.localScoreboard or {}
-    local entriesByMap = scoreboard.entries_by_map or scoreboard.entriesByMap or {}
+    local entriesByMap = scoreboard.entries_by_map or {}
     local entry = entriesByMap[resolvedMapUuid]
-    if type(entry) ~= "table" then
-        for _, candidateEntry in pairs(entriesByMap) do
-            local candidateMapUuid = type(candidateEntry) == "table"
-                and tostring(candidateEntry.map_uuid or candidateEntry.mapUuid or candidateEntry.id or "")
-                or ""
-            if candidateMapUuid == resolvedMapUuid then
-                entry = candidateEntry
-                break
-            end
-        end
-    end
 
     if type(entry) ~= "table" then
         return nil
@@ -606,7 +595,7 @@ function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
         score = tonumber(scoreEntry.score or 0) or 0,
         rank = rank or 1,
         map_uuid = mapUuid,
-        recorded_at = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0,
+        recorded_at = tonumber(scoreEntry.recorded_at or 0) or 0,
     }
 end
 
@@ -627,15 +616,15 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
 
         local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
         payload.entries[1] = localEntry
-        return payload, tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
+        return payload, tonumber(scoreEntry.recorded_at or 0) or 0
     end
 
-    local entriesByMap = self.localScoreboard and (self.localScoreboard.entries_by_map or self.localScoreboard.entriesByMap) or {}
+    local entriesByMap = self.localScoreboard and self.localScoreboard.entries_by_map or {}
     for entryMapUuid, scoreEntry in pairs(entriesByMap or {}) do
         local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
         if localEntry then
             payload.entries[#payload.entries + 1] = localEntry
-            local recordedAt = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
+            local recordedAt = tonumber(scoreEntry.recorded_at or 0) or 0
             if latestRecordedAt == nil or recordedAt > latestRecordedAt then
                 latestRecordedAt = recordedAt
             end
@@ -647,8 +636,8 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
             return a.score > b.score
         end
 
-        local aRecordedAt = tonumber(a.recorded_at or a.recordedAt or a.updated_at or a.updatedAt or 0) or 0
-        local bRecordedAt = tonumber(b.recorded_at or b.recordedAt or b.updated_at or b.updatedAt or 0) or 0
+        local aRecordedAt = tonumber(a.recorded_at or 0) or 0
+        local bRecordedAt = tonumber(b.recorded_at or 0) or 0
         if aRecordedAt ~= bRecordedAt then
             return aRecordedAt > bRecordedAt
         end
@@ -1079,7 +1068,7 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
 
     local topEntries = {}
     for _, entry in ipairs(cacheEntry.top_entries or {}) do
-        if type(entry) == "table" and tostring(entry.player_uuid or entry.playerUuid or "") ~= submittedEntry.player_uuid then
+        if type(entry) == "table" and tostring(entry.player_uuid or "") ~= submittedEntry.player_uuid then
             topEntries[#topEntries + 1] = entry
         end
     end

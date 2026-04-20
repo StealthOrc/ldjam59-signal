@@ -1,0 +1,139 @@
+mapUuid = "5316d5c9-8e75-4252-8f2f-547bf9e928d3"
+name = "Map 4: Spring Switch"
+template = true
+version = 1
+[editor]
+[editor.endpoints.1]
+colors = ["blue"]
+id = "in_blue"
+kind = "input"
+x = 0.2477
+y = 0.0583
+[editor.endpoints.2]
+colors = ["violet"]
+id = "in_violet"
+kind = "input"
+x = 0.4867
+y = 0.0583
+[editor.endpoints.3]
+colors = ["blue", "violet"]
+id = "out_main"
+kind = "output"
+x = 0.3672
+y = 0.9722
+[editor.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+control = "spring"
+id = "junction_spring"
+inputEndpointIds = ["in_blue", "in_violet"]
+outputEndpointIds = ["out_main"]
+routes = ["route_blue", "route_violet"]
+x = 0.3672
+y = 0.4811
+[editor.routes.1]
+color = "blue"
+endEndpointId = "out_main"
+id = "route_blue"
+label = "Blue"
+startEndpointId = "in_blue"
+[editor.routes.1.points.1]
+x = 0.2477
+y = 0.0583
+[editor.routes.1.points.2]
+x = 0.2477
+y = 0.2733
+[editor.routes.1.points.3]
+x = 0.3672
+y = 0.4811
+[editor.routes.1.points.4]
+x = 0.3672
+y = 0.9722
+[editor.routes.2]
+color = "violet"
+endEndpointId = "out_main"
+id = "route_violet"
+label = "Violet"
+startEndpointId = "in_violet"
+[editor.routes.2.points.1]
+x = 0.4867
+y = 0.0583
+[editor.routes.2.points.2]
+x = 0.4867
+y = 0.2733
+[editor.routes.2.points.3]
+x = 0.3672
+y = 0.4811
+[editor.routes.2.points.4]
+x = 0.3672
+y = 0.9722
+[level]
+description = "A spring-loaded switch flips over for a moment, then snaps back to its previous route on its own."
+footer = "Spring switches reward late timing. Flip too early and the reset happens before the train arrives."
+hint = "Let the near violet train slip through, then trust the spring to reset for the delayed blue train."
+title = "Map 4: Spring Switch"
+[level.junctions.1]
+activeInputIndex = 1
+activeOutputIndex = 1
+id = "spring_tutorial"
+[level.junctions.1.control]
+holdTime = 1.6
+label = "Spring Switch"
+type = "spring"
+[level.junctions.1.inputs.1]
+color = [0.33, 0.8, 0.98]
+colors = ["blue"]
+darkColor = [0.12, 0.32, 0.44]
+id = "route_blue_input"
+label = "Input 1"
+[level.junctions.1.inputs.1.inputPoints.1]
+x = 0.2477
+y = 0.0583
+[level.junctions.1.inputs.1.inputPoints.2]
+x = 0.2477
+y = 0.2733
+[level.junctions.1.inputs.1.inputPoints.3]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.inputs.2]
+color = [0.82, 0.56, 0.98]
+colors = ["violet"]
+darkColor = [0.34, 0.2, 0.44]
+id = "route_violet_input"
+label = "Input 2"
+[level.junctions.1.inputs.2.inputPoints.1]
+x = 0.4867
+y = 0.0583
+[level.junctions.1.inputs.2.inputPoints.2]
+x = 0.4867
+y = 0.2733
+[level.junctions.1.inputs.2.inputPoints.3]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.outputs.1]
+adoptInputColor = true
+color = [0.33, 0.8, 0.98]
+colors = ["blue", "violet"]
+darkColor = [0.12, 0.32, 0.44]
+id = "out_main"
+label = "Output 1"
+[level.junctions.1.outputs.1.outputPoints.1]
+x = 0.3672
+y = 0.4811
+[level.junctions.1.outputs.1.outputPoints.2]
+x = 0.3672
+y = 0.9722
+[level.trains.1]
+color = [0.33, 0.8, 0.98]
+id = "spring_blue_train"
+inputIndex = 1
+junctionId = "spring_tutorial"
+progress = -250
+speedScale = 0.94
+[level.trains.2]
+color = [0.82, 0.56, 0.98]
+id = "spring_violet_train"
+inputIndex = 2
+junctionId = "spring_tutorial"
+progress = -78
+speedScale = 1
