@@ -18,6 +18,7 @@ local SPRING_RELEASE_DURATION = 0.42
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
+local OUTPUT_SELECTOR_RADIUS = 15
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -35,6 +36,14 @@ local function copyColor(color)
     end
 
     return { color[1], color[2], color[3] }
+end
+
+local function hasOutputSelector(junction)
+    return junction
+        and #(junction.outputs or {}) > 1
+        and junction.control
+        and junction.control.type ~= "relay"
+        and junction.control.type ~= "crossbar"
 end
 
 local function getColorById(colorId)
@@ -373,8 +382,7 @@ local function withIconScale(graphics, centerX, centerY, iconScale, drawFn)
 end
 
 local function getControlBubbleLayout(junction)
-    local bubbleRadius = junction.crossingRadius - 4
-    return junction.mergePoint.x, junction.mergePoint.y, bubbleRadius
+    return junction.mergePoint.x, junction.mergePoint.y, junction.crossingRadius
 end
 
 local function drawJunctionCircle(graphics, junction, primaryColor, stripeColors)
@@ -406,6 +414,19 @@ end
 local function getSelectorIconScale(junction)
     local press = clamp(junction and junction.selectorPress or 0, -0.4, 1.2)
     return 1 - press * 0.25
+end
+
+function renderer.getControlBubbleLayout(junction)
+    return getControlBubbleLayout(junction)
+end
+
+function renderer.getOutputSelectorLayout(junction)
+    if not hasOutputSelector(junction) then
+        return nil
+    end
+
+    local bubbleX, bubbleY, bubbleRadius = getControlBubbleLayout(junction)
+    return bubbleX, bubbleY + bubbleRadius, OUTPUT_SELECTOR_RADIUS
 end
 
 function renderer.drawTrackPatternSegment(_, startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
@@ -778,20 +799,19 @@ function renderer.drawCrossing(scene, junction)
         graphics.circle("fill", x, y, junction.crossingRadius + 4)
     end
 
-    if #junction.outputs > 1 and junction.control.type ~= "relay" and junction.control.type ~= "crossbar" then
-        local selectorY = y + 36
+    renderer.drawControlOverlay(scene, junction)
+
+    local selectorX, selectorY, selectorRadius = renderer.getOutputSelectorLayout(junction)
+    if selectorX then
         local selectorScale = getSelectorIconScale(junction)
-        withIconScale(graphics, x, selectorY, selectorScale, function()
-            graphics.setColor(0.08, 0.1, 0.13, 1)
-            graphics.circle("fill", x, selectorY, 15)
+        withIconScale(graphics, selectorX, selectorY, selectorScale, function()
             graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
-            graphics.circle("line", x, selectorY, 15)
-            graphics.setColor(0.97, 0.98, 1, 1)
-            graphics.printf(tostring(junction.activeOutputIndex), x - 14, selectorY - 7, 28, "center")
+            graphics.circle("fill", selectorX, selectorY, selectorRadius)
+            graphics.setLineWidth(3)
+            graphics.setColor(0.05, 0.06, 0.08, 1)
+            graphics.circle("line", selectorX, selectorY, selectorRadius)
         end)
     end
-
-    renderer.drawControlOverlay(scene, junction)
 end
 
 function renderer.drawTrackSignal(_, junction, inputIndex)

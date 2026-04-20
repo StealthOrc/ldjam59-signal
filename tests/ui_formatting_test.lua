@@ -233,6 +233,11 @@ local testWorld = {
             mergePoint = { x = 600, y = 300 },
             crossingRadius = 20,
             control = { type = "delayed", delay = 2.25 },
+            activeOutputIndex = 2,
+            outputs = {
+                { label = "South Exit" },
+                { label = "West Exit" },
+            },
         },
     },
     edges = {
@@ -268,8 +273,8 @@ function testWorld:isCrossingHit(junction, x, y)
     return (dx * dx) + (dy * dy) <= junction.crossingRadius * junction.crossingRadius
 end
 
-function testWorld:isOutputSelectorHit()
-    return false
+function testWorld:isOutputSelectorHit(_, x, y)
+    return x == 600 and y == 320
 end
 
 local hoverGame = {
@@ -302,6 +307,10 @@ assertEqual(badgeHover.title, "Expected Trains", "play hover identifies exit bad
 
 local junctionHover = ui.getPlayHoverInfoAt(hoverGame, 600, 300)
 assertEqual(junctionHover.title, "Delay Junction", "play hover identifies junction controls")
+
+local selectorHover = ui.getPlayHoverInfoAt(hoverGame, 600, 320)
+assertEqual(selectorHover.title, "Output Selector", "play hover identifies outgoing selector controls")
+assertEqual(selectorHover.text:find("West Exit", 1, true) ~= nil, true, "selector hover includes the active output label")
 
 local speedHover = ui.getPlayHoverInfoAt(hoverGame, 810, 414)
 assertEqual(speedHover.title, "Fast Section", "play hover identifies speed-modified track sections")
