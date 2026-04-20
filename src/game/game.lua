@@ -347,6 +347,7 @@ function Game.new()
     self.levelSelectSelectedMapUuid = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectVisualIndex = nil
     self.levelSelectTargetVisualIndex = nil
     self.levelSelectScroll = 0
@@ -2617,6 +2618,7 @@ function Game:setLevelSelectMode(mode)
 
     self.levelSelectMode = resolvedMode
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectIssue = nil
     self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
@@ -2643,6 +2645,7 @@ function Game:setLevelSelectMarketplaceTab(tabId)
         if tabId == allowedTabId then
             self.levelSelectMarketplaceTab = tabId
             self.levelSelectHoverId = nil
+            self.levelSelectHoverInfo = nil
             self:clearLevelSelectActionState()
             self:getSelectedLevelMap()
             self:resetLevelSelectVisualIndex()
@@ -2834,6 +2837,7 @@ function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self:clearLevelSelectActionState()
     self.resultsSummary = nil
     self.playOverlayMode = nil
@@ -2846,6 +2850,7 @@ function Game:openLevelSelect()
     self.levelSelectIssue = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
     self.levelSelectMarketplaceTab = LEVEL_SELECT_MARKETPLACE_TAB_TOP
     self.levelSelectMarketplaceSearchQuery = ""
@@ -3487,6 +3492,7 @@ end
 
 function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
+    self.levelSelectHoverInfo = nil
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
@@ -3502,6 +3508,7 @@ function Game:mousemoved(x, y, dx, dy)
     if self.screen == "level_select" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
+        self.levelSelectHoverInfo = ui.getLevelSelectHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
