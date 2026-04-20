@@ -28,15 +28,17 @@ local INTERSECTION_POINT_TOLERANCE_SQUARED = 9
 local INTERNAL_POINT_MATCH_DISTANCE_SQUARED = 1
 local INTERSECTION_SHARED_POINT_DISTANCE_SQUARED = 12 * 12
 local INTERSECTION_STATE_MATCH_DISTANCE_SQUARED = 24 * 24
-local JUNCTION_MENU_ROOT_RADIUS = 36
-local JUNCTION_MENU_RING_INNER_RADIUS = 22
-local JUNCTION_MENU_COLOR_OUTER_RADIUS = 56
-local JUNCTION_MENU_TYPE_OUTER_RADIUS = 72
+local JUNCTION_MENU_SIZE_MULTIPLIER = 1.5
+local JUNCTION_MENU_POP_DURATION = 0.14
+local JUNCTION_MENU_ROOT_RADIUS = 36 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_RING_INNER_RADIUS = 22 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_COLOR_OUTER_RADIUS = 56 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_TYPE_OUTER_RADIUS = 72 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_BRANCH_RATIO = 0.35
-local JUNCTION_MENU_ICON_SIZE = 15
-local JUNCTION_MENU_TYPE_ICON_SIZE = 18
-local JUNCTION_MENU_SWATCH_RADIUS = 8
-local JUNCTION_MENU_EDGE_MARGIN = 8
+local JUNCTION_MENU_ICON_SIZE = 15 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_TYPE_ICON_SIZE = 18 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_SWATCH_RADIUS = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
+local JUNCTION_MENU_EDGE_MARGIN = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -1173,6 +1175,54 @@ function mapEditor:closeRouteTypePicker()
     self.routeTypePicker = nil
 end
 
+local function easeOutBack(t)
+    local overshoot = 1.15
+    local shifted = t - 1
+    return 1 + (overshoot + 1) * shifted * shifted * shifted + overshoot * shifted * shifted
+end
+
+function mapEditor:restartJunctionPickerPopup(originX, originY)
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return
+    end
+
+    self.colorPicker.popupOriginX = originX or self.colorPicker.anchorX
+    self.colorPicker.popupOriginY = originY or self.colorPicker.anchorY
+    self.colorPicker.popupTimer = 0
+end
+
+function mapEditor:getJunctionPickerPopupScale()
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return 1
+    end
+
+    local timer = self.colorPicker.popupTimer
+    if timer == nil then
+        return 1
+    end
+
+    local progress = clamp(timer / JUNCTION_MENU_POP_DURATION, 0, 1)
+    return math.max(0.06, easeOutBack(progress))
+end
+
+function mapEditor:getJunctionPickerPopupOrigin()
+    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
+        return 0, 0
+    end
+
+    return self.colorPicker.popupOriginX or self.colorPicker.anchorX, self.colorPicker.popupOriginY or self.colorPicker.anchorY
+end
+
+function mapEditor:screenToJunctionPickerSpace(x, y)
+    local scale = self:getJunctionPickerPopupScale()
+    if scale == 1 then
+        return x, y
+    end
+
+    local originX, originY = self:getJunctionPickerPopupOrigin()
+    return originX + (x - originX) / scale, originY + (y - originY) / scale
+end
+
 function mapEditor:openColorPicker(route, magnetKind)
     local point = magnetKind == "start" and route.points[1] or route.points[#route.points]
     self.colorPicker = {
@@ -1195,7 +1245,7 @@ function mapEditor:openRouteTypePicker(route, segmentIndex, anchorX, anchorY)
     self:closeColorPicker()
 end
 
-function mapEditor:openJunctionPicker(intersection)
+function mapEditor:openJunctionPicker(intersection, clickX, clickY)
     self:prepareIntersectionForDrag(intersection)
 
     local liveIntersection = self:getIntersectionById(intersection.id) or intersection
@@ -1208,6 +1258,7 @@ function mapEditor:openJunctionPicker(intersection)
         branch = nil,
         hoverOptionIndex = nil,
     }
+    self:restartJunctionPickerPopup(clickX, clickY)
     self:closeRouteTypePicker()
 end
 
@@ -1401,13 +1452,15 @@ function mapEditor:getJunctionPickerOptionHit(submenu, x, y)
     end
 
     local distance = math.sqrt(distanceSquared(x, y, submenu.x, submenu.y))
-    if distance < submenu.innerRadius or distance > submenu.outerRadius then
+    if distance > submenu.outerRadius then
         return nil
     end
 
     local fullTurn = math.pi * 2
-    local baseAngle = normalizeAngle(angleBetweenCoordinates(submenu.x, submenu.y, x, y) + math.pi * 0.5)
     local step = fullTurn / #submenu.entries
+    -- The top wedge is centered on the zero-angle seam, so shift by half a step
+    -- before quantizing to keep hover and click boundaries aligned with the arcs.
+    local baseAngle = normalizeAngle(angleBetweenCoordinates(submenu.x, submenu.y, x, y) + math.pi * 0.5 + step * 0.5)
     local entryIndex = math.floor(baseAngle / step) + 1
     return submenu.entries[entryIndex]
 end
@@ -1416,6 +1469,8 @@ function mapEditor:updateJunctionPickerHover(x, y)
     if not self.colorPicker or self.colorPicker.mode ~= "junction" then
         return false
     end
+
+    x, y = self:screenToJunctionPickerSpace(x, y)
 
     local rootDistance = math.sqrt(distanceSquared(x, y, self.colorPicker.anchorX, self.colorPicker.anchorY))
     local hoverBranch = rootDistance <= JUNCTION_MENU_ROOT_RADIUS and self:getJunctionPickerRootHover(x, y) or nil
@@ -2270,6 +2325,10 @@ function mapEditor:update(dt)
         if self.statusTimer <= 0 then
             self.statusText = nil
         end
+    end
+
+    if self.colorPicker and self.colorPicker.mode == "junction" and self.colorPicker.popupTimer ~= nil then
+        self.colorPicker.popupTimer = math.min(JUNCTION_MENU_POP_DURATION, self.colorPicker.popupTimer + dt)
     end
 end
 
@@ -3355,6 +3414,9 @@ function mapEditor:handleColorPickerClick(x, y, button)
     end
 
     if layout.kind == "junction_radial" then
+        local rawX = x
+        local rawY = y
+        x, y = self:screenToJunctionPickerSpace(x, y)
         local intersection = self:getIntersectionById(self.colorPicker.intersectionId)
         if not intersection then
             self:closeColorPicker()
@@ -3380,6 +3442,7 @@ function mapEditor:handleColorPickerClick(x, y, button)
                 self.colorPicker.branch = selectedBranch
                 self.colorPicker.hoverBranch = nil
                 self.colorPicker.hoverOptionIndex = nil
+                self:restartJunctionPickerPopup(rawX, rawY)
             end
             return true
         end
@@ -3388,7 +3451,7 @@ function mapEditor:handleColorPickerClick(x, y, button)
             local hitEntry = self:getJunctionPickerOptionHit(layout.submenu, x, y)
             if hitEntry then
                 if layout.submenu.branch == "disconnect" then
-                    self:splitSharedJunctionColor(intersection, hitEntry.option.id, x, y)
+                    self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
                 else
                     self:setIntersectionControlType(intersection, hitEntry.option.controlType)
                     self:closeColorPicker()
@@ -3889,7 +3952,7 @@ function mapEditor:mousepressed(x, y, button)
             return true
         end
         if hitIntersection then
-            self:openJunctionPicker(hitIntersection)
+            self:openJunctionPicker(hitIntersection, x, y)
             self:updateJunctionPickerHover(x, y)
             return true
         end
@@ -4763,8 +4826,6 @@ function mapEditor:drawJunctionMenuSubmenu(layout, intersection)
     graphics.setColor(0.97, 0.98, 1, 0.86)
     graphics.setLineWidth(2)
     graphics.circle("line", submenu.x, submenu.y, submenu.radius)
-    graphics.setColor(0.12, 0.14, 0.18, 0.92)
-    graphics.circle("fill", submenu.x, submenu.y, submenu.innerRadius - 4)
 
     if #submenu.entries == 0 then
         return
@@ -4817,11 +4878,19 @@ function mapEditor:drawColorPicker(game)
         end
 
         local colorOptions = self:getColorPickerOptions()
+        local popupScale = self:getJunctionPickerPopupScale()
+        local originX, originY = self:getJunctionPickerPopupOrigin()
+
+        graphics.push()
+        graphics.translate(originX, originY)
+        graphics.scale(popupScale, popupScale)
+        graphics.translate(-originX, -originY)
         if layout.branch then
             self:drawJunctionMenuSubmenu(layout, intersection)
         else
             self:drawJunctionMenuRoot(layout, intersection, colorOptions)
         end
+        graphics.pop()
         return
     end
 
