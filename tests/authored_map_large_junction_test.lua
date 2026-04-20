@@ -50,7 +50,7 @@ local editorData = {
     trains = {},
 }
 
-local level, buildErrors, firstError = authoredMap.buildPlayableLevel("Large Junction", editorData, nil)
+local level, firstError, buildErrors = authoredMap.buildPlayableLevel("Large Junction", editorData, nil)
 
 assertTrue(level ~= nil, "authored map should allow a junction with more than five inputs and outputs")
 assertTrue(firstError == nil, "large junction validation should not report a first error")
