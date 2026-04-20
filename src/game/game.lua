@@ -389,7 +389,7 @@ function Game.new()
     self.levelSelectIssue = nil
     self.levelSelectSelectedId = nil
     self.levelSelectSelectedMapUuid = nil
-    self.levelSelectFilter = "all"
+    self.levelSelectFilter = "campaign"
     self.levelSelectHoverId = nil
     self.levelSelectHoverInfo = nil
     self.levelSelectVisualIndex = nil
@@ -2702,7 +2702,7 @@ function Game:resetLevelSelectVisualIndex()
 end
 
 function Game:setLevelSelectFilter(filterId)
-    self.levelSelectFilter = filterId or "all"
+    self.levelSelectFilter = filterId or "campaign"
     self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
     self:resetLevelSelectVisualIndex()
@@ -2956,7 +2956,7 @@ end
 function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
-    self.levelSelectFilter = "all"
+    self.levelSelectFilter = "campaign"
     self.levelSelectHoverId = nil
     self.levelSelectHoverInfo = nil
     self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
