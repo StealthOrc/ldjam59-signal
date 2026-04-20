@@ -3352,6 +3352,12 @@ local function getPlayGuideFocusShapes(game, step)
         }
     end
 
+    if step.target == "start_run_button" then
+        return {
+            createGuideRectShape(getPlayStartRect(), 10, 22),
+        }
+    end
+
     return {}
 end
 
@@ -3472,7 +3478,7 @@ local function getPlayGuideLayout(game)
             w = PLAY_GUIDE_LAYOUT.buttonNextW,
             h = PLAY_GUIDE_LAYOUT.buttonH,
         },
-        nextLabel = stepIndex >= stepCount and "Done" or "Next",
+        nextLabel = stepIndex >= stepCount and "I'm Ready" or "Next",
     }
 end
 
@@ -4591,12 +4597,14 @@ function ui.drawPlay(game)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf("Preparation Phase: set your routes, then start the clock.", 0, 34, game.viewport.w, "center")
 
-        local blinkAlpha = 0.3
-        if love and love.timer and love.timer.getTime then
-            blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+        if not activeGuideStep then
+            local blinkAlpha = 0.3
+            if love and love.timer and love.timer.getTime then
+                blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+            end
+            graphics.setColor(1, 1, 1, blinkAlpha)
+            graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
         end
-        graphics.setColor(1, 1, 1, blinkAlpha)
-        graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
     end
 
     graphics.setColor(0, 0, 0, 0.3)

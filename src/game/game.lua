@@ -119,9 +119,9 @@ local SIMPLE_BEGINNING_GUIDE_STEPS = {
         text = "Here you can see how many trains we expect here. In this case, we're expecting blue and yellow trains for this exit, so don't mind the colors too much.",
     },
     {
-        target = "first_output_badge",
-        placement = "above",
-        text = "I think you're ready. If you want to inspect a few things, feel free to do so. Otherwise, you can start the run with Start Run Button or by pressing Spacebar.",
+        target = "start_run_button",
+        placement = "below",
+        text = "I think you're ready. If you want to inspect a few things, feel free to do so. Otherthan that you're ready to do the job alone now! Click the Start Run Button or press Spacebar.",
     },
 }
 local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
