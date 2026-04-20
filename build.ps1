@@ -44,7 +44,8 @@ if (-not (Test-Path -LiteralPath $loveExe)) {
 $includeRoots = @(
     "main.lua",
     "conf.lua",
-    "src"
+    "src",
+    "assets"
 )
 
 $excludedDirectoryNames = @(
@@ -258,6 +259,6 @@ Remove-Item -LiteralPath $stageDir -Recurse -Force
 
 Create-ZipFromDirectory -SourceDirectory $buildDir -DestinationZip $zipFile -ExcludedFileNames @($buildName + ".love")
 
-Write-Host "Built LOVE archive: $loveFile"
-Write-Host "Built Windows executable: $exeFile"
+Remove-Item -LiteralPath $buildDir -Recurse -Force
+
 Write-Host "Built distributable zip: $zipFile"
