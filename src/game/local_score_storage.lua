@@ -1,21 +1,25 @@
-local json = require("src.game.json")
+local toml = require("src.game.toml")
+local storagePaths = require("src.game.storage_paths")
 
 local localScoreStorage = {}
 
-local SCOREBOARD_FILE = "local_scoreboard.json"
-local STORAGE_VERSION = 2
+local SCOREBOARD_FILE = storagePaths.getCacheFilePath("offline_leaderboard_cache.toml")
+local STORAGE_VERSION = 3
 
 local function sanitizeEntry(mapUuid, entry)
-    local entryMapUuid = type(entry) == "table" and tostring(entry.map_uuid or entry.mapUuid or entry.id or "") or ""
-    local resolvedMapUuid = entryMapUuid ~= "" and entryMapUuid or tostring(mapUuid or "")
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    local resolvedMapUuid = tostring(entry.map_uuid or mapUuid or "")
     if resolvedMapUuid == "" then
         return nil
     end
 
     return {
         map_uuid = resolvedMapUuid,
-        score = tonumber(entry and entry.score or 0) or 0,
-        recorded_at = tonumber(entry and (entry.recorded_at or entry.recordedAt or entry.updated_at or entry.updatedAt) or 0) or 0,
+        score = tonumber(entry.score or 0) or 0,
+        recorded_at = tonumber(entry.recorded_at or 0) or 0,
     }
 end
 
@@ -24,7 +28,7 @@ local function sanitizeStore(store)
         version = STORAGE_VERSION,
         entries_by_map = {},
     }
-    local sourceEntries = type(store) == "table" and (store.entries_by_map or store.entriesByMap) or nil
+    local sourceEntries = type(store) == "table" and store.entries_by_map or nil
 
     if type(sourceEntries) ~= "table" then
         return sanitized
@@ -45,12 +49,7 @@ local function readStoreFile()
         return nil
     end
 
-    local content = love.filesystem.read(SCOREBOARD_FILE)
-    if not content then
-        return nil
-    end
-
-    local decoded = json.decode(content)
+    local decoded = toml.parseFile(SCOREBOARD_FILE)
     if type(decoded) ~= "table" then
         return nil
     end
@@ -59,8 +58,9 @@ local function readStoreFile()
 end
 
 function localScoreStorage.save(store)
+    storagePaths.ensureCacheDirectory()
     local sanitized = sanitizeStore(store)
-    local encodedStore = json.encode(sanitized)
+    local encodedStore = toml.stringify(sanitized)
     local ok, writeError = love.filesystem.write(SCOREBOARD_FILE, encodedStore)
     if not ok then
         return nil, writeError or "The local scoreboard could not be saved."
@@ -72,12 +72,8 @@ end
 function localScoreStorage.load()
     local loadedStore = readStoreFile()
     local sanitized = sanitizeStore(loadedStore)
-    local needsSave = loadedStore == nil
-        or loadedStore.version ~= sanitized.version
-        or loadedStore.entries_by_map == nil
-        or loadedStore.entriesByMap ~= nil
 
-    if needsSave then
+    if loadedStore == nil then
         local savedStore = localScoreStorage.save(sanitized)
         if savedStore then
             sanitized = savedStore
@@ -95,7 +91,7 @@ function localScoreStorage.updateBestScore(store, summary)
     end
 
     local score = tonumber(summary and (summary.finalScore or summary.score) or 0) or 0
-    local recordedAt = tonumber(summary and (summary.recorded_at or summary.recordedAt or summary.updated_at or summary.updatedAt))
+    local recordedAt = tonumber(summary and summary.recorded_at)
     if not recordedAt or recordedAt <= 0 then
         recordedAt = os.time() or 0
     end

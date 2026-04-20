@@ -2559,7 +2559,7 @@ local function drawLevelSelectLeaderboardBack(game, rect)
             w = contentRect.w,
             h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
         }
-        local profilePlayerUuid = tostring(game.profile and (game.profile.player_uuid or game.profile.playerId or game.profile.playerUuid) or "")
+        local profilePlayerUuid = tostring(game.profile and game.profile.player_uuid or "")
         local isPlayerEntry = tostring(entry.playerUuid or "") == profilePlayerUuid
         drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
         rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
