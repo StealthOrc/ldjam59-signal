@@ -652,7 +652,7 @@ function renderer.drawControlOverlay(scene, junction)
         end
         drawJunctionTimerPie(graphics, centerX, centerY, innerRadius, inputColor, inputStripeColors, ratio)
         withIconScale(graphics, centerX, centerY, iconScale, function()
-            drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.99, 0.77, 0.32 })
+            drawHourglassIcon(graphics, centerX, centerY, innerRadius * 0.84, progress, { 0.05, 0.06, 0.08 })
         end)
         return
     end

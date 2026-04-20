@@ -5965,7 +5965,7 @@ function mapEditor:drawEditorControlIcon(controlType, centerX, centerY, size)
             return
         end
     elseif controlType == "delayed" then
-        self:drawEditorHourglassIcon(centerX, centerY, size, { 0.99, 0.77, 0.32 })
+        self:drawEditorHourglassIcon(centerX, centerY, size, { 0.05, 0.06, 0.08 })
         return
     elseif controlType == "pump" then
         if self:drawEditorStaticJunctionIcon(self.editorChargeImage, centerX, centerY, size, 1.32, 0.98) then
