@@ -1,0 +1,108 @@
+name: Build Windows Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional build version override
+        required: false
+        type: string
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  LOVE_VERSION: "11.5"
+  PROJECT_NAME: "out-of-signal"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      OUTPUT_ROOT: ${{ github.workspace }}\packages
+      API_KEY: ${{ secrets.API_KEY }}
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      HMAC_SECRET: ${{ secrets.HMAC_SECRET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate required secrets
+        shell: pwsh
+        run: |
+          $requiredSecrets = @(
+              "API_KEY",
+              "API_BASE_URL"
+          )
+
+          foreach ($secretName in $requiredSecrets) {
+              $secretValue = [Environment]::GetEnvironmentVariable($secretName)
+              if ([string]::IsNullOrWhiteSpace($secretValue)) {
+                  throw "GitHub Actions secret '$secretName' is required for this build."
+              }
+          }
+
+      - name: Resolve build version
+        id: resolve_version
+        shell: pwsh
+        run: |
+          $manualVersion = '${{ github.event.inputs.version }}'
+          $gitRef = '${{ github.ref }}'
+          $defaultVersionPrefix = "0.1"
+          $resolvedVersion = $null
+
+          if (-not [string]::IsNullOrWhiteSpace($manualVersion)) {
+              $resolvedVersion = $manualVersion.Trim()
+          }
+          elseif ($gitRef.StartsWith("refs/tags/v")) {
+              $resolvedVersion = $gitRef.Substring("refs/tags/v".Length)
+          }
+          else {
+              $resolvedVersion = "$defaultVersionPrefix.${{ github.run_number }}"
+          }
+
+          "build_version=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download LÖVE runtime
+        id: download_love
+        shell: pwsh
+        run: |
+          $loveVersion = $env:LOVE_VERSION
+          $downloadUrl = "https://github.com/love2d/love/releases/download/$loveVersion/love-$loveVersion-win64.zip"
+          $archivePath = Join-Path $env:RUNNER_TEMP ("love-" + $loveVersion + "-win64.zip")
+          $extractRoot = Join-Path $env:RUNNER_TEMP ("love-" + $loveVersion)
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+
+          $loveRoot = Join-Path $extractRoot ("love-" + $loveVersion + "-win64")
+          $loveExePath = Join-Path $loveRoot "love.exe"
+
+          if (-not (Test-Path -LiteralPath $loveExePath)) {
+              throw "LÖVE executable was not found at '$loveExePath'."
+          }
+
+          "love_root=$loveRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Run build script
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:OUTPUT_ROOT -Force | Out-Null
+
+          .\build.ps1 `
+              -LoveRoot "${{ steps.download_love.outputs.love_root }}" `
+              -ProjectName $env:PROJECT_NAME `
+              -Version "${{ steps.resolve_version.outputs.build_version }}" `
+              -OutputRoot $env:OUTPUT_ROOT
+
+      - name: Upload packages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows-${{ steps.resolve_version.outputs.build_version }}
+          path: ${{ env.OUTPUT_ROOT }}
+          if-no-files-found: error
