@@ -2605,7 +2605,7 @@ function Game:setLevelSelectMode(mode)
     local resolvedMode = mode == LEVEL_SELECT_MODE_MARKETPLACE
         and LEVEL_SELECT_MODE_MARKETPLACE
         or LEVEL_SELECT_MODE_LIBRARY
-    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMapsAvailable() then
+    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMode() then
         self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
         self:clearLevelSelectLeaderboardFlip()
         return
@@ -3391,8 +3391,8 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
-        elseif hit.kind == "toggle_mode" then
-            self:toggleLevelSelectMode()
+        elseif hit.kind == "set_mode" then
+            self:setLevelSelectMode(hit.mode)
         elseif hit.kind == "set_marketplace_tab" then
             self:setLevelSelectMarketplaceTab(hit.tab)
         elseif hit.kind == "set_filter" then
