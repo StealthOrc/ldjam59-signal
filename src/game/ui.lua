@@ -4021,28 +4021,8 @@ end
 
 function ui.drawPlay(game)
     local graphics = love.graphics
-    local runSummary = game.world:getRunSummary()
     local inputGroups = game.world:getInputEdgeGroups()
     local outputGroups = game.world:getOutputBadgeGroups()
-    local scorePanel = {
-        x = math.floor(game.viewport.w - 274 + 0.5),
-        y = math.floor(game.viewport.h * 0.5 - 52 + 0.5),
-        w = 236,
-        h = 104,
-    }
-
-    graphics.setColor(0.08, 0.1, 0.13, 0.94)
-    graphics.rectangle("fill", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
-    graphics.setColor(0.3, 0.36, 0.42, 1)
-    graphics.rectangle("line", scorePanel.x, scorePanel.y, scorePanel.w, scorePanel.h, 18, 18)
-
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.8, 0.84, 0.9, 0.95)
-    graphics.printf("Score", scorePanel.x + 20, scorePanel.y + 18, scorePanel.w - 40, "left")
-
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf(formatScore(runSummary.finalScore or 0), scorePanel.x + 20, scorePanel.y + 44, scorePanel.w - 40, "left")
 
     for _, badge in ipairs(outputGroups) do
         drawOutputBadge(game, badge)

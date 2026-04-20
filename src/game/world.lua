@@ -1429,8 +1429,8 @@ function world:handleClick(x, y, button, isPreparationPhase)
             if changed then
                 if not isPreparationPhase then
                     self:pressOutputSelector(junction, 1)
+                    self:registerInteraction()
                 end
-                self:registerInteraction()
             end
             return true
         end
@@ -1446,8 +1446,8 @@ function world:handleClick(x, y, button, isPreparationPhase)
             if changed then
                 if not isPreparationPhase then
                     self:pressJunctionIcon(junction, 1)
+                    self:registerInteraction()
                 end
-                self:registerInteraction()
             end
             return true
         end
