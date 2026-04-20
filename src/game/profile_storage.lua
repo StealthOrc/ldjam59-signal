@@ -2,12 +2,47 @@ local profileStorage = {}
 local uuid = require("src.game.uuid")
 
 local PROFILE_FILE = "profile.lua"
-local PROFILE_VERSION = 2
+local PROFILE_VERSION = 3
 local PLAYER_ID_PREFIX = "player-"
 local UUID_PATTERN = "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$"
 local DEFAULT_EDITOR_GRID_STEP = 64
 local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
+
+local function normalizeDismissedMapGuides(value)
+    local normalized = {}
+
+    if type(value) ~= "table" then
+        return normalized
+    end
+
+    for key, entry in pairs(value) do
+        if type(key) == "string" and entry == true then
+            normalized[key] = true
+        end
+    end
+
+    return normalized
+end
+
+local function sameBooleanKeySet(firstValue, secondValue)
+    local seen = {}
+
+    for key, entry in pairs(firstValue or {}) do
+        seen[key] = true
+        if secondValue[key] ~= entry then
+            return false
+        end
+    end
+
+    for key, entry in pairs(secondValue or {}) do
+        if not seen[key] and firstValue[key] ~= entry then
+            return false
+        end
+    end
+
+    return true
+end
 
 local function normalizePlayMode(value)
     if value == PLAY_MODE_ONLINE or value == PLAY_MODE_OFFLINE then
@@ -124,6 +159,9 @@ local function sanitizeProfile(profile)
             gridVisible = not (type(profile.editor) == "table" and profile.editor.gridVisible == false),
             gridStep = math.max(16, math.min(256, math.floor(tonumber(type(profile.editor) == "table" and profile.editor.gridStep) or DEFAULT_EDITOR_GRID_STEP))),
         },
+        tutorials = {
+            dismissedMapGuides = normalizeDismissedMapGuides(type(profile.tutorials) == "table" and profile.tutorials.dismissedMapGuides or nil),
+        },
     }
 
     if sanitized.player_uuid == "" then
@@ -169,6 +207,11 @@ function profileStorage.load()
         or type(loadedProfile.editor) ~= "table"
         or loadedProfile.editor.gridVisible ~= sanitized.editor.gridVisible
         or loadedProfile.editor.gridStep ~= sanitized.editor.gridStep
+        or type(loadedProfile.tutorials) ~= "table"
+        or not sameBooleanKeySet(
+            normalizeDismissedMapGuides(type(loadedProfile.tutorials) == "table" and loadedProfile.tutorials.dismissedMapGuides or nil),
+            sanitized.tutorials.dismissedMapGuides
+        )
 
     if needsSave then
         local savedProfile = profileStorage.save(sanitized)
