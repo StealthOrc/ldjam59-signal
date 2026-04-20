@@ -1554,6 +1554,10 @@ local function appendUniqueControl(controls, seen, controlType)
     end
 end
 
+local function isPassiveMergeControlType(controlType)
+    return controlType == "merge"
+end
+
 local function mapHasLevelDeadline(descriptor)
     local level = descriptor and descriptor.previewLevel or nil
     return level and level.timeLimit ~= nil
@@ -1621,7 +1625,10 @@ getMapControlTypes = function(descriptor)
     local level = descriptor.previewLevel
 
     for _, junction in ipairs(level and level.junctions or {}) do
-        appendUniqueControl(controls, seen, junction.control and junction.control.type or "direct")
+        local controlType = junction.control and junction.control.type or "direct"
+        if not isPassiveMergeControlType(controlType) then
+            appendUniqueControl(controls, seen, controlType)
+        end
     end
 
     return controls
@@ -1656,6 +1663,7 @@ local function buildPreviewTracks(level)
             local point = nil
             local inputEdge = edgeLookup[(junction.inputEdgeIds or {})[1]]
             local outputEdge = edgeLookup[(junction.outputEdgeIds or {})[1]]
+            local controlType = junction.control and junction.control.type or "direct"
 
             if inputEdge and #(inputEdge.points or {}) > 0 then
                 point = inputEdge.points[#inputEdge.points]
@@ -1663,11 +1671,11 @@ local function buildPreviewTracks(level)
                 point = outputEdge.points[1]
             end
 
-            if point then
+            if point and not isPassiveMergeControlType(controlType) then
                 junctions[#junctions + 1] = {
                     x = point.x,
                     y = point.y,
-                    controlType = junction.control and junction.control.type or "direct",
+                    controlType = controlType,
                     outputCount = #(junction.outputEdgeIds or {}),
                 }
             end
@@ -1677,6 +1685,7 @@ local function buildPreviewTracks(level)
     end
 
     for _, junction in ipairs(level.junctions or {}) do
+        local controlType = junction.control and junction.control.type or "direct"
         for _, input in ipairs(junction.inputs or {}) do
             tracks[#tracks + 1] = {
                 points = input.inputPoints or {},
@@ -1701,11 +1710,11 @@ local function buildPreviewTracks(level)
             point = ((junction.outputs or {})[1].outputPoints)[1]
         end
 
-        if point then
+        if point and not isPassiveMergeControlType(controlType) then
             junctions[#junctions + 1] = {
                 x = point.x,
                 y = point.y,
-                controlType = junction.control and junction.control.type or "direct",
+                controlType = controlType,
                 outputCount = #(junction.outputs or {}),
             }
         end

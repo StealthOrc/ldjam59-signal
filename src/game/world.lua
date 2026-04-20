@@ -864,7 +864,9 @@ function world:buildJunction(definition, existing)
         outputs = outputs,
     }
 
-    if junction.control.type == "relay" and #junction.outputs > 0 then
+    if junction.control.type == "merge" and #junction.outputs > 0 then
+        junction.activeOutputIndex = 1
+    elseif junction.control.type == "relay" and #junction.outputs > 0 then
         junction.activeOutputIndex = clamp(junction.activeInputIndex, 1, #junction.outputs)
     elseif junction.control.type == "crossbar" and #junction.outputs > 0 then
         self:syncCrossbarOutput(junction)
@@ -939,6 +941,10 @@ local function getSelectorIconScale(junction)
     return 1 - press * 0.25
 end
 
+local function isPassiveMergeJunction(junction)
+    return junction and junction.control and junction.control.type == "merge"
+end
+
 function world:doesEdgeAcceptGoalColor(inputEdge, outputEdge, goalColor)
     if containsColorId(outputEdge and outputEdge.colors, goalColor) then
         return true
@@ -969,6 +975,11 @@ function world:getReachableOutputEdgesForInput(junction, inputEdgeId)
     end
 
     local controlType = junction.control and junction.control.type or "direct"
+    if controlType == "merge" then
+        local mergeOutput = junction.outputs[1]
+        return mergeOutput and { mergeOutput } or {}
+    end
+
     if controlType == "relay" then
         local relayOutput = junction.outputs[clamp(inputIndex, 1, #junction.outputs)]
         return relayOutput and { relayOutput } or {}
@@ -1355,6 +1366,10 @@ end
 function world:canActivateControl(junction, isPreparationPhase)
     local control = junction.control
 
+    if control.type == "merge" then
+        return false
+    end
+
     if isPreparationPhase and isPlayPhaseOnlyControl(control.type) then
         return false
     end
@@ -1368,6 +1383,10 @@ end
 
 function world:activatePreparationControl(junction)
     if not junction then
+        return false
+    end
+
+    if isPassiveMergeJunction(junction) then
         return false
     end
 
@@ -1385,6 +1404,10 @@ end
 
 function world:activateControl(junction)
     local control = junction.control
+
+    if control.type == "merge" then
+        return false
+    end
 
     if control.type == "direct" then
         return self:cycleInput(junction)
@@ -1454,6 +1477,10 @@ function world:activateControl(junction)
 end
 
 function world:isCrossingHit(junction, x, y)
+    if isPassiveMergeJunction(junction) then
+        return false
+    end
+
     return distanceSquared(x, y, junction.mergePoint.x, junction.mergePoint.y)
         <= junction.crossingRadius * junction.crossingRadius
 end
@@ -1601,6 +1628,10 @@ function world:getDesiredLeadDistance(train)
         return nil
     end
 
+    if isPassiveMergeJunction(junction) then
+        return nil
+    end
+
     local localProgress = self:getHeadLocalProgress(train)
     if localProgress >= currentEdge.path.length then
         return nil
@@ -1627,7 +1658,12 @@ function world:getEdgeSpeedScaleAtDistance(edge, distance)
 end
 
 function world:advanceTrainToNextEdge(train, junction, overflow)
-    local outputEdge = junction.outputs[clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))]
+    local outputEdge = nil
+    if isPassiveMergeJunction(junction) then
+        outputEdge = junction.outputs[1]
+    else
+        outputEdge = junction.outputs[clamp(junction.activeOutputIndex, 1, math.max(1, #junction.outputs))]
+    end
     if not outputEdge then
         self:completeTrain(train)
         return false
@@ -1723,7 +1759,16 @@ function world:updateTrain(train, dt)
         if currentEdge.targetType == "junction" then
             local junction = self.junctions[currentEdge.targetId]
             local activeInput = junction and junction.inputs[junction.activeInputIndex] or nil
-            if not junction or not activeInput or activeInput.id ~= currentEdge.id then
+            if not junction then
+                if overflow > 0 then
+                    train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
+                end
+                local edgePrefix = self:getDistanceOnOccupiedEdges(self:getOccupiedEdges(train)) - currentEdge.path.length
+                train.headDistance = edgePrefix + currentEdge.path.length
+                train.currentSpeed = 0
+                break
+            end
+            if not isPassiveMergeJunction(junction) and (not activeInput or activeInput.id ~= currentEdge.id) then
                 if overflow > 0 then
                     train.actualDistance = math.max(0, (train.actualDistance or 0) - overflow)
                 end
@@ -2196,11 +2241,17 @@ function world:getRenderedTrackWindow(track)
     local trimEndDistance = track.path.length
 
     if track.sourceType == "junction" then
-        trimStartDistance = self.junctionTrackClearance
+        local sourceJunction = self.junctions[track.sourceId]
+        if not isPassiveMergeJunction(sourceJunction) then
+            trimStartDistance = self.junctionTrackClearance
+        end
     end
 
     if track.targetType == "junction" then
-        trimEndDistance = math.max(track.path.length - self.junctionTrackClearance, 0)
+        local targetJunction = self.junctions[track.targetId]
+        if not isPassiveMergeJunction(targetJunction) then
+            trimEndDistance = math.max(track.path.length - self.junctionTrackClearance, 0)
+        end
     end
 
     return trimStartDistance, trimEndDistance

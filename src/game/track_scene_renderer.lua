@@ -42,8 +42,13 @@ local function hasOutputSelector(junction)
     return junction
         and #(junction.outputs or {}) > 1
         and junction.control
+        and junction.control.type ~= "merge"
         and junction.control.type ~= "relay"
         and junction.control.type ~= "crossbar"
+end
+
+local function isPassiveMergeJunction(junction)
+    return junction and junction.control and junction.control.type == "merge"
 end
 
 local function getColorById(colorId)
@@ -72,6 +77,35 @@ local function buildTrackStripeColors(colorIds, isActive)
     end
 
     return colors
+end
+
+local function collectPassiveMergeColorIds(junction)
+    local colorIds = {}
+    local seen = {}
+
+    for _, inputTrack in ipairs(junction and junction.inputs or {}) do
+        if #(inputTrack.colors or {}) > 0 then
+            for _, colorId in ipairs(inputTrack.colors or {}) do
+                if not seen[colorId] then
+                    seen[colorId] = true
+                    colorIds[#colorIds + 1] = colorId
+                end
+            end
+        elseif inputTrack.color then
+            for _, option in ipairs(COLOR_OPTIONS) do
+                if option.color[1] == inputTrack.color[1]
+                    and option.color[2] == inputTrack.color[2]
+                    and option.color[3] == inputTrack.color[3]
+                    and not seen[option.id] then
+                    seen[option.id] = true
+                    colorIds[#colorIds + 1] = option.id
+                    break
+                end
+            end
+        end
+    end
+
+    return colorIds
 end
 
 local function flattenPoints(points)
@@ -780,8 +814,40 @@ function renderer.drawActiveRouteIndicator(scene, junction, activeInput, activeO
     graphics.line(curvePoints)
 end
 
+local function drawPassiveMergeIndicator(scene, junction)
+    local graphics = love.graphics
+    local x = junction.mergePoint.x
+    local y = junction.mergePoint.y
+    local colorIds = collectPassiveMergeColorIds(junction)
+    local dotRadius = 6
+    local dotGap = 6
+    local rowWidth = (#colorIds * dotRadius * 2) + math.max(0, #colorIds - 1) * dotGap
+    local startX = x - rowWidth * 0.5 + dotRadius
+    local dotY = y + 22
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.94)
+    graphics.circle("fill", x, y, 6)
+    graphics.setColor(0.97, 0.98, 1, 0.72)
+    graphics.setLineWidth(2)
+    graphics.circle("line", x, y, 6)
+
+    for colorIndex, colorId in ipairs(colorIds) do
+        local color = getColorById(colorId)
+        local dotX = startX + (colorIndex - 1) * (dotRadius * 2 + dotGap)
+        graphics.setColor(0.05, 0.06, 0.08, 0.98)
+        graphics.circle("fill", dotX, dotY, dotRadius + 3)
+        graphics.setColor(color[1], color[2], color[3], 1)
+        graphics.circle("fill", dotX, dotY, dotRadius)
+    end
+end
+
 function renderer.drawCrossing(scene, junction)
     local graphics = love.graphics
+    if isPassiveMergeJunction(junction) then
+        drawPassiveMergeIndicator(scene, junction)
+        return
+    end
+
     local activeInput = junction.inputs[junction.activeInputIndex]
     local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local activeInputColor = activeInput and activeInput.color or activeOutputColor
@@ -906,8 +972,10 @@ function renderer.drawScene(scene, options)
 
         renderer.drawCrossing(scene, junction)
 
-        for inputIndex = 1, #junction.inputs do
-            renderer.drawTrackSignal(scene, junction, inputIndex)
+        if not isPassiveMergeJunction(junction) then
+            for inputIndex = 1, #junction.inputs do
+                renderer.drawTrackSignal(scene, junction, inputIndex)
+            end
         end
     end
 

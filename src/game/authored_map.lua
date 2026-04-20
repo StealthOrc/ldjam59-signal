@@ -42,6 +42,9 @@ local DEFAULT_CONTROL_CONFIGS = {
     crossbar = {
         label = "Crossbar Dial",
     },
+    merge = {
+        label = "Merged Bend Point",
+    },
 }
 
 local function distanceSquared(ax, ay, bx, by)
@@ -98,6 +101,14 @@ local function copyControlConfig(controlType)
 
     copy.type = controlType or "direct"
     return copy
+end
+
+local function isPassiveMergeControl(control)
+    local controlType = control
+    if type(control) == "table" then
+        controlType = control.type
+    end
+    return controlType == "merge"
 end
 
 local function deepCopy(value)
@@ -1012,16 +1023,27 @@ local function buildCompiledLevel(mapName, editorData)
             trains = trains,
         }, errors, table.concat(errors, " "), diagnostics
     end
-    local hasPlayableJunctions = #playableJunctions > 0
+    local hasPlayableJunctions = false
+    for _, junction in ipairs(playableJunctions) do
+        if not isPassiveMergeControl(junction.control) then
+            hasPlayableJunctions = true
+            break
+        end
+    end
+    local hasPassiveMergePoints = #playableJunctions > 0 and not hasPlayableJunctions
 
     return {
         title = mapName,
         description = "Custom map loaded from the editor.",
         hint = hasPlayableJunctions
             and "Click the junction center to switch inputs. Use the bottom selector to switch outputs."
+            or hasPassiveMergePoints
+            and "Merged bend points funnel multiple lanes into one shared track without a switch."
             or "Shared endpoints are not junctions. Only one train can safely occupy a line end at a time.",
         footer = hasPlayableJunctions
             and "Sequence trains from the editor pane and clear every goal on time."
+            or hasPassiveMergePoints
+            and "Merged lanes stay passive, so train spacing still matters on the shared track."
             or "Shared line ends stay contested even without a junction, so spacing still matters.",
         timeLimit = timeLimit,
         junctions = playableJunctions,

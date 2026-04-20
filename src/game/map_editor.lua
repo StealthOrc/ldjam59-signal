@@ -78,6 +78,7 @@ local CONTROL_LABELS = {
     relay = "R",
     trip = "1X",
     crossbar = "X",
+    merge = "M",
 }
 local CONTROL_NAMES = {
     direct = "Direct Lever",
@@ -87,6 +88,7 @@ local CONTROL_NAMES = {
     relay = "Relay Dial",
     trip = "Trip Switch",
     crossbar = "Crossbar Dial",
+    merge = "Merged Bend Point",
 }
 local CONTROL_FILL_COLORS = {
     direct = { 0.34, 0.84, 0.98 },
@@ -96,6 +98,7 @@ local CONTROL_FILL_COLORS = {
     relay = { 0.56, 0.72, 0.98 },
     trip = { 0.98, 0.6, 0.28 },
     crossbar = { 0.92, 0.38, 0.68 },
+    merge = { 0.86, 0.9, 0.96 },
 }
 local COLOR_OPTIONS = {
     { id = "blue", label = "Blue", color = { 0.33, 0.8, 0.98 } },
@@ -161,6 +164,9 @@ local DEFAULT_CONTROL_CONFIGS = {
     },
     crossbar = {
         label = "Crossbar Dial",
+    },
+    merge = {
+        label = "Merged Bend Point",
     },
 }
 
@@ -1574,6 +1580,9 @@ function mapEditor:refreshValidation(mapName)
         self.editingMapUuid
     )
     self:updatePreviewWorld(previewLevel)
+    for _, intersection in ipairs(self.intersections or {}) do
+        intersection.canMergeToBendPoint = self:isMergeBendPointCandidate(intersection)
+    end
     self:setValidationResults(buildError, buildErrors, buildDiagnostics)
     return level, buildError, self.validationErrors
 end
@@ -1964,8 +1973,6 @@ function mapEditor:openRouteTypePicker(route, segmentIndex, anchorX, anchorY)
 end
 
 function mapEditor:openJunctionPicker(intersection, clickX, clickY)
-    self:prepareIntersectionForDrag(intersection)
-
     local anchorX, anchorY = self:mapToScreen(intersection.x, intersection.y)
     local liveIntersection = self:getIntersectionById(intersection.id) or intersection
     self.colorPicker = {
@@ -2071,7 +2078,47 @@ function mapEditor:getJunctionPickerRootHover(x, y)
     return nil
 end
 
-function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRadius, outerRadius)
+function mapEditor:isMergeBendPointCandidate(intersection)
+    if not intersection then
+        return false
+    end
+
+    local group = self:getSharedPointGroupForIntersection(intersection)
+    if not group or #group.colorIds <= 1 then
+        return false
+    end
+
+    local routeLookup = {}
+    for _, member in ipairs(group.members or {}) do
+        routeLookup[member.route and member.route.id or false] = true
+    end
+
+    for _, routeId in ipairs(intersection.routeIds or {}) do
+        if not routeLookup[routeId] then
+            return false
+        end
+    end
+
+    local previewJunction = self.previewWorld
+        and self.previewWorld.junctions
+        and self.previewWorld.junctions[intersection.id]
+        or nil
+    if previewJunction then
+        return #(previewJunction.inputs or {}) >= 1 and #(previewJunction.outputs or {}) == 1
+    end
+
+    return #(intersection.inputRouteIds or {}) >= 1 and #(intersection.outputEndpointIds or {}) == 1
+end
+
+function mapEditor:canIntersectionUseControlType(intersection, controlType)
+    if controlType ~= "merge" then
+        return true
+    end
+
+    return self:isMergeBendPointCandidate(intersection)
+end
+
+function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRadius, outerRadius, intersection)
     local entries = {}
     local options = {}
 
@@ -2082,6 +2129,12 @@ function mapEditor:buildJunctionPickerEntries(branch, centerX, centerY, innerRad
             options[#options + 1] = {
                 id = controlType,
                 controlType = controlType,
+            }
+        end
+        if self:canIntersectionUseControlType(intersection, "merge") then
+            options[#options + 1] = {
+                id = "merge",
+                controlType = "merge",
             }
         end
     end
@@ -2144,7 +2197,8 @@ function mapEditor:getJunctionPickerLayout()
                 submenuCenterX,
                 submenuCenterY,
                 JUNCTION_MENU_RING_INNER_RADIUS,
-                outerRadius
+                outerRadius,
+                self.colorPicker.mode == "junction" and self:getIntersectionById(self.colorPicker.intersectionId) or nil
             ),
         }
     end
@@ -3541,7 +3595,10 @@ function mapEditor:getIntersectionControlType(intersection, previousMatches)
     end
 
     if bestControlType then
-        return bestControlType
+        if self:canIntersectionUseControlType(intersection, bestControlType) then
+            return bestControlType
+        end
+        return DEFAULT_CONTROL
     end
 
     return DEFAULT_CONTROL
@@ -3866,6 +3923,7 @@ function mapEditor:rebuildIntersections()
                 inputRouteIds = inputRouteIds,
                 outputRouteIds = outputRouteIds,
             }
+            intersection.canMergeToBendPoint = self:isMergeBendPointCandidate(intersection)
             local state = self:getJunctionState(intersection, previousIntersections)
             intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
             intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
@@ -4110,12 +4168,18 @@ function mapEditor:setIntersectionControlType(intersection, controlType)
         self:showStatus("Junctions currently support up to five inputs and five outputs.")
         return false
     end
+    if not self:canIntersectionUseControlType(intersection, controlType) then
+        self:showStatus("Only merged lanes that funnel into one output can become a bend point.")
+        return false
+    end
     if intersection.controlType == controlType then
         return false
     end
 
     intersection.controlType = controlType
-    if intersection.controlType == "relay" then
+    if intersection.controlType == "merge" then
+        intersection.activeOutputIndex = 1
+    elseif intersection.controlType == "relay" then
         self:syncIntersectionOutputToControl(intersection)
     elseif intersection.controlType == "crossbar" then
         self:syncIntersectionOutputToControl(intersection)
