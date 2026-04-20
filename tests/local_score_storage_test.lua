@@ -47,4 +47,25 @@ assertEqual(
     "higher scores keep the record creation timestamp"
 )
 
+local originalOsTime = os.time
+os.time = function()
+    return 123456789
+end
+
+local fallbackTimestampScoreboard, storedFallbackTimestamp = localScoreStorage.updateBestScore({
+    entries_by_map = {},
+}, {
+    mapUuid = "map-2",
+    finalScore = 7,
+})
+
+os.time = originalOsTime
+
+assertEqual(storedFallbackTimestamp, true, "new local bests still save when the run summary has no timestamp")
+assertEqual(
+    fallbackTimestampScoreboard.entries_by_map["map-2"].recorded_at,
+    123456789,
+    "missing local best timestamps fall back to the current save time"
+)
+
 print("local score storage tests passed")

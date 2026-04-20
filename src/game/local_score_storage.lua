@@ -94,7 +94,10 @@ function localScoreStorage.updateBestScore(store, summary)
     end
 
     local score = tonumber(summary and (summary.finalScore or summary.score) or 0) or 0
-    local recordedAt = tonumber(summary and (summary.recorded_at or summary.recordedAt or summary.updated_at or summary.updatedAt) or 0) or os.time() or 0
+    local recordedAt = tonumber(summary and (summary.recorded_at or summary.recordedAt or summary.updated_at or summary.updatedAt))
+    if not recordedAt or recordedAt <= 0 then
+        recordedAt = os.time() or 0
+    end
     local existingEntry = sanitized.entries_by_map[mapUuid]
 
     if existingEntry and score <= (tonumber(existingEntry.score) or 0) then

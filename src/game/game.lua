@@ -385,6 +385,7 @@ function Game.new()
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
     self.profileSetupError = nil
     self.profileModeSelection = getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE
+    self.profileModeHoverId = nil
     self.profileModeSetupError = nil
     self.playOverlayMode = nil
     self.leaderboardState = {
@@ -584,7 +585,7 @@ function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
 end
 
 function Game:buildLocalLeaderboardPayload(mapUuid)
-    local latestUpdatedAt = nil
+    local latestRecordedAt = nil
     local payload = {
         entries = {},
         map_uuid = mapUuid,
@@ -600,7 +601,7 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
 
         local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
         payload.entries[1] = localEntry
-        return payload, tonumber(scoreEntry.updated_at or 0) or 0
+        return payload, tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
     end
 
     local entriesByMap = self.localScoreboard and (self.localScoreboard.entries_by_map or self.localScoreboard.entriesByMap) or {}
@@ -608,9 +609,9 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
         local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
         if localEntry then
             payload.entries[#payload.entries + 1] = localEntry
-            local updatedAt = tonumber(scoreEntry.updated_at or 0) or 0
-            if latestUpdatedAt == nil or updatedAt > latestUpdatedAt then
-                latestUpdatedAt = updatedAt
+            local recordedAt = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
+            if latestRecordedAt == nil or recordedAt > latestRecordedAt then
+                latestRecordedAt = recordedAt
             end
         end
     end
@@ -620,10 +621,10 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
             return a.score > b.score
         end
 
-        local aUpdatedAt = tonumber(a.updated_at or 0) or 0
-        local bUpdatedAt = tonumber(b.updated_at or 0) or 0
-        if aUpdatedAt ~= bUpdatedAt then
-            return aUpdatedAt > bUpdatedAt
+        local aRecordedAt = tonumber(a.recorded_at or a.recordedAt or a.updated_at or a.updatedAt or 0) or 0
+        local bRecordedAt = tonumber(b.recorded_at or b.recordedAt or b.updated_at or b.updatedAt or 0) or 0
+        if aRecordedAt ~= bRecordedAt then
+            return aRecordedAt > bRecordedAt
         end
 
         return tostring(a.map_uuid or "") < tostring(b.map_uuid or "")
@@ -633,7 +634,7 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
         entry.rank = index
     end
 
-    return payload, latestUpdatedAt
+    return payload, latestRecordedAt
 end
 
 function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
@@ -3235,6 +3236,12 @@ function Game:mousemoved(x, y)
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
+        return
+    end
+
+    if self.screen == "profile_mode_setup" then
+        local viewportX, viewportY = self:toViewportPosition(x, y)
+        self.profileModeHoverId = ui.getProfileModeSetupActionAt(self, viewportX, viewportY)
         return
     end
 

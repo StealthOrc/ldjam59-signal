@@ -132,8 +132,14 @@ local PROFILE_MODE_SETUP_LAYOUT = {
     buttonW = 220,
     buttonH = 72,
     buttonGap = 28,
-    buttonY = 230,
-    helperTextY = 322,
+    buttonY = 246,
+}
+local PROFILE_MODE_TOOLTIP_LAYOUT = {
+    maxWidth = 268,
+    paddingX = 14,
+    paddingY = 12,
+    cornerRadius = 12,
+    gap = 10,
 }
 
 local LEADERBOARD_LOADING = {
@@ -289,6 +295,53 @@ local function getWrappedLineCount(font, text, width)
         return math.max(1, #secondValue)
     end
     return 1
+end
+
+local function drawProfileModeTooltip(game, rect, text)
+    if not rect or not text or text == "" then
+        return
+    end
+
+    local graphics = love.graphics
+    local maxTextWidth = PROFILE_MODE_TOOLTIP_LAYOUT.maxWidth - (PROFILE_MODE_TOOLTIP_LAYOUT.paddingX * 2)
+    local lineCount = getWrappedLineCount(game.fonts.small, text, maxTextWidth)
+    local tooltipWidth = PROFILE_MODE_TOOLTIP_LAYOUT.maxWidth
+    local tooltipHeight = (lineCount * game.fonts.small:getHeight()) + (PROFILE_MODE_TOOLTIP_LAYOUT.paddingY * 2)
+    local tooltipX = math.floor(rect.x + (rect.w - tooltipWidth) * 0.5 + 0.5)
+    local tooltipY = math.floor(rect.y - tooltipHeight - PROFILE_MODE_TOOLTIP_LAYOUT.gap + 0.5)
+
+    graphics.setColor(0.08, 0.1, 0.14, 0.98)
+    graphics.rectangle(
+        "fill",
+        tooltipX,
+        tooltipY,
+        tooltipWidth,
+        tooltipHeight,
+        PROFILE_MODE_TOOLTIP_LAYOUT.cornerRadius,
+        PROFILE_MODE_TOOLTIP_LAYOUT.cornerRadius
+    )
+    graphics.setColor(0.28, 0.4, 0.52, 1)
+    graphics.setLineWidth(2)
+    graphics.rectangle(
+        "line",
+        tooltipX,
+        tooltipY,
+        tooltipWidth,
+        tooltipHeight,
+        PROFILE_MODE_TOOLTIP_LAYOUT.cornerRadius,
+        PROFILE_MODE_TOOLTIP_LAYOUT.cornerRadius
+    )
+    graphics.setLineWidth(1)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.58, 0.64, 0.7, 1)
+    graphics.printf(
+        text,
+        tooltipX + PROFILE_MODE_TOOLTIP_LAYOUT.paddingX,
+        tooltipY + PROFILE_MODE_TOOLTIP_LAYOUT.paddingY,
+        tooltipWidth - (PROFILE_MODE_TOOLTIP_LAYOUT.paddingX * 2),
+        "center"
+    )
 end
 
 local function formatScore(value)
@@ -2995,6 +3048,16 @@ function ui.drawProfileModeSetup(game)
     local panel = getProfileModeSetupPanelRect(game)
     local optionRects = getProfileModeSetupOptionRects(game)
     local isOnlineSelected = game.profileModeSelection == "online"
+    local promptText = "Do you want to use online features such as online leaderboards and community maps?"
+    local offlineTooltipText = "We're only storing your username as well as the uploaded maps and leaderboard stats. You can turn this on or off at any time in the main menu."
+    local promptWidth = panel.w - 88
+    local promptLineCount = getWrappedLineCount(game.fonts.body, promptText, promptWidth)
+    local promptHeight = promptLineCount * game.fonts.body:getHeight()
+    local textBlockHeight = promptHeight
+    local textAreaTop = panel.y + 84
+    local textAreaBottom = optionRects.online.y - 34
+    local textBlockY = textAreaTop + math.floor(((textAreaBottom - textAreaTop) - textBlockHeight) * 0.5 + 0.5)
+    local promptX = panel.x + math.floor((panel.w - promptWidth) * 0.5 + 0.5)
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -3002,42 +3065,36 @@ function ui.drawProfileModeSetup(game)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf("Choose Mode", panel.x + 24, panel.y + 34, panel.w - 48, "center")
+    graphics.printf("Enable Online Functionality?", panel.x + 24, panel.y + 34, panel.w - 48, "center")
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
     graphics.printf(
-        "Offline keeps every score local. Online enables scoreboards and community maps.",
-        panel.x + 44,
-        panel.y + 92,
-        panel.w - 88,
+        promptText,
+        promptX,
+        textBlockY,
+        promptWidth,
         "center"
     )
 
     drawButton(
         optionRects.online,
         "Online",
-        isOnlineSelected and { 0.12, 0.17, 0.2, 0.98 } or { 0.08, 0.1, 0.14, 0.98 },
-        isOnlineSelected and { 0.48, 0.92, 0.62, 1 } or { 0.3, 0.42, 0.54, 1 },
+        isOnlineSelected and { 0.1, 0.22, 0.14, 0.98 } or { 0.08, 0.18, 0.11, 0.98 },
+        isOnlineSelected and { 0.54, 0.96, 0.66, 1 } or { 0.42, 0.86, 0.55, 1 },
         game.fonts.body
     )
     drawButton(
         optionRects.offline,
         "Offline",
-        isOnlineSelected and { 0.08, 0.1, 0.14, 0.98 } or { 0.12, 0.17, 0.2, 0.98 },
-        isOnlineSelected and { 0.3, 0.42, 0.54, 1 } or { 0.48, 0.92, 0.62, 1 },
+        { 0.08, 0.1, 0.14, 0.98 },
+        { 0.3, 0.42, 0.54, 1 },
         game.fonts.body
     )
 
-    love.graphics.setFont(game.fonts.small)
-    graphics.setColor(0.72, 0.78, 0.84, 1)
-    graphics.printf(
-        "Use Left or Right and press Enter, or click a mode.",
-        panel.x + 40,
-        panel.y + PROFILE_MODE_SETUP_LAYOUT.helperTextY,
-        panel.w - 80,
-        "center"
-    )
+    if game.profileModeHoverId == "offline" then
+        drawProfileModeTooltip(game, optionRects.offline, offlineTooltipText)
+    end
 
     if game.profileModeSetupError then
         graphics.setColor(0.99, 0.78, 0.32, 1)
