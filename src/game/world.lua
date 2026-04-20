@@ -2237,6 +2237,8 @@ function world:drawInputTrack(track, isActive)
     else
         self:drawTrackLine(points, self.trackWidth, trackColor, trackAlpha)
     end
+
+    self:drawTrackRoadTypeMarkers(track, isActive)
 end
 
 function world:drawStandaloneTrack(track, isActive)
