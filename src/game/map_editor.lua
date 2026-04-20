@@ -4176,6 +4176,18 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
         return false
     end
 
+    local matchingRoutes = {}
+    for _, candidateRoute in ipairs(self.routes) do
+        if candidateRoute.endEndpointId == endpoint.id and candidateRoute.colorId == colorId then
+            matchingRoutes[#matchingRoutes + 1] = candidateRoute
+        end
+    end
+
+    if #matchingRoutes == 0 then
+        self:showStatus("That color is not present on this end.")
+        return false
+    end
+
     endpoint.colors[colorId] = nil
     local newEndpoint = self:createEndpoint(
         endpoint.kind,
@@ -4184,17 +4196,21 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
         { colorId }
     )
 
-    if magnetKind == "start" then
-        route.startEndpointId = newEndpoint.id
-    else
-        route.endEndpointId = newEndpoint.id
+    for _, matchingRoute in ipairs(matchingRoutes) do
+        if magnetKind == "start" then
+            matchingRoute.startEndpointId = newEndpoint.id
+        else
+            matchingRoute.endEndpointId = newEndpoint.id
+        end
+        self:updateRouteEndpointPoint(matchingRoute, magnetKind)
     end
-    self:updateRouteEndpointPoint(route, magnetKind)
-    self.selectedRouteId = route.id
-    self.selectedPointIndex = magnetKind == "start" and 1 or #route.points
+
+    local activeRoute = route.colorId == colorId and route or matchingRoutes[1]
+    self.selectedRouteId = activeRoute.id
+    self.selectedPointIndex = magnetKind == "start" and 1 or #activeRoute.points
     self.drag = {
         kind = "point",
-        routeId = route.id,
+        routeId = activeRoute.id,
         pointIndex = self.selectedPointIndex,
         startMouseX = startMouseX or newEndpoint.x,
         startMouseY = startMouseY or newEndpoint.y,
@@ -5406,12 +5422,17 @@ function mapEditor:drawMagnet(route, point, magnetKind, selected)
     local graphics = love.graphics
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     local selectedColors = magnetKind == "end" and getEndpointColorIds(endpoint) or {}
+    local endpointColorOption = (#selectedColors == 1) and getColorOptionById(selectedColors[1]) or nil
     local width = magnetKind == "start" and 58 or 46
     local height = 24
 
     graphics.setColor(0.08, 0.1, 0.14, 1)
     graphics.rectangle("fill", point.x - width * 0.5 - 3, point.y - height * 0.5 - 3, width + 6, height + 6, 9, 9)
-    graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+    if magnetKind == "end" and endpointColorOption then
+        graphics.setColor(endpointColorOption.color[1], endpointColorOption.color[2], endpointColorOption.color[3], 1)
+    else
+        graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
+    end
     graphics.rectangle("fill", point.x - width * 0.5, point.y - height * 0.5, width, height, 9, 9)
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
@@ -5423,15 +5444,17 @@ function mapEditor:drawMagnet(route, point, magnetKind, selected)
         "center"
     )
 
-    for index, colorId in ipairs(selectedColors) do
-        local option = getColorOptionById(colorId)
-        if option then
-            local dotX = point.x - (#selectedColors - 1) * 6 + (index - 1) * 12
-            local dotY = point.y + height * 0.5 + 9
-            graphics.setColor(0.08, 0.1, 0.14, 1)
-            graphics.circle("fill", dotX, dotY, 5)
-            graphics.setColor(option.color[1], option.color[2], option.color[3], 1)
-            graphics.circle("fill", dotX, dotY, 3.5)
+    if magnetKind == "end" and #selectedColors > 1 then
+        for index, colorId in ipairs(selectedColors) do
+            local option = getColorOptionById(colorId)
+            if option then
+                local dotX = point.x - (#selectedColors - 1) * 6 + (index - 1) * 12
+                local dotY = point.y + height * 0.5 + 9
+                graphics.setColor(0.08, 0.1, 0.14, 1)
+                graphics.circle("fill", dotX, dotY, 5)
+                graphics.setColor(option.color[1], option.color[2], option.color[3], 1)
+                graphics.circle("fill", dotX, dotY, 3.5)
+            end
         end
     end
 
