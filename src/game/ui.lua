@@ -1,6 +1,7 @@
 local ui = {}
 local uiControls = require("src.game.ui_controls")
 local roadTypes = require("src.game.road_types")
+local trackSceneRenderer = require("src.game.track_scene_renderer")
 
 local LEVEL_SELECT = {
     titleBarY = 28,
@@ -179,6 +180,20 @@ local PLAY_TOOLTIP_LAYOUT = {
     paddingY = 14,
     cornerRadius = 14,
     dividerGap = 8,
+}
+local PLAY_GUIDE_LAYOUT = {
+    width = 430,
+    margin = 24,
+    minTop = 88,
+    focusPadding = 12,
+    focusRadius = 22,
+    gap = 22,
+    paddingX = 18,
+    paddingY = 18,
+    buttonGap = 14,
+    buttonH = 38,
+    buttonSkipW = 118,
+    buttonNextW = 132,
 }
 
 local MENU_LAYOUT = {
@@ -3207,6 +3222,308 @@ local function getOutputBadgeRect(game, edge, badge)
     return getAnchoredPanelRect(game, anchorX, anchorY, dirX, dirY, width, 44, 12)
 end
 
+local function getActivePlayGuideStep(game)
+    if not game or not game.playGuide then
+        return nil
+    end
+
+    local steps = game.playGuide.steps or {}
+    if #steps == 0 then
+        return nil
+    end
+
+    local stepIndex = clamp(game.playGuide.stepIndex or 1, 1, #steps)
+    return steps[stepIndex], stepIndex, #steps
+end
+
+local function createGuideRectShape(rect, padding, cornerRadius)
+    local extraPadding = padding or PLAY_GUIDE_LAYOUT.focusPadding
+    return {
+        kind = "rect",
+        x = rect.x - extraPadding,
+        y = rect.y - extraPadding,
+        w = rect.w + extraPadding * 2,
+        h = rect.h + extraPadding * 2,
+        radius = cornerRadius or PLAY_GUIDE_LAYOUT.focusRadius,
+    }
+end
+
+local function flattenGuidePoints(points)
+    local flattened = {}
+
+    for _, point in ipairs(points or {}) do
+        flattened[#flattened + 1] = point.x
+        flattened[#flattened + 1] = point.y
+    end
+
+    return flattened
+end
+
+local function createGuidePolylineShape(track, width)
+    if not track or not track.path or #((track.path and track.path.points) or {}) < 2 then
+        return nil
+    end
+
+    local flattenedPoints = flattenGuidePoints(track.path.points)
+    if #flattenedPoints < 4 then
+        return nil
+    end
+
+    return {
+        kind = "polyline",
+        points = flattenedPoints,
+        width = width or 42,
+    }
+end
+
+local function appendTrackGuideFocusShape(shapes, track, width)
+    if not shapes then
+        return
+    end
+
+    local polylineShape = createGuidePolylineShape(track, width)
+    if not polylineShape then
+        return
+    end
+
+    shapes[#shapes + 1] = polylineShape
+end
+
+local function getPlayGuideFocusShapes(game, step)
+    if not game or not game.world or not step then
+        return {}
+    end
+
+    if step.target == "junction" or step.target == "junction_with_selector" then
+        local junction = game.world.junctionOrder and game.world.junctionOrder[1] or nil
+        if not junction then
+            return {}
+        end
+
+        local shapes = {
+            {
+                kind = "circle",
+                x = junction.mergePoint.x,
+                y = junction.mergePoint.y,
+                radius = (junction.crossingRadius or 20) + 16,
+            },
+        }
+
+        if step.target == "junction_with_selector" then
+            local selectorX, selectorY, selectorRadius = trackSceneRenderer.getOutputSelectorLayout(junction)
+            if selectorX and selectorY and selectorRadius then
+                shapes[#shapes + 1] = {
+                    kind = "circle",
+                    x = selectorX,
+                    y = selectorY,
+                    radius = selectorRadius + 12,
+                }
+            end
+
+            if step.focusIncomingTracks == true then
+                for _, inputTrack in ipairs(junction.inputs or {}) do
+                    appendTrackGuideFocusShape(shapes, inputTrack, 42)
+                end
+            end
+        end
+
+        return shapes
+    end
+
+    if step.target == "first_input_card" then
+        local inputGroups = game.world:getInputEdgeGroups()
+        local group = inputGroups[1]
+        if not group then
+            return {}
+        end
+        return {
+            createGuideRectShape(getInputPrepCardRect(game, group.edge, #(group.trains or {}), inputGroups), 10, 22),
+        }
+    end
+
+    if step.target == "first_output_badge" then
+        local outputGroups = game.world:getOutputBadgeGroups()
+        local badge = outputGroups[1]
+        if not badge then
+            return {}
+        end
+        return {
+            createGuideRectShape(getOutputBadgeRect(game, badge.edge, badge), 10, 22),
+        }
+    end
+
+    if step.target == "start_run_button" then
+        return {
+            createGuideRectShape(getPlayStartRect(), 10, 22),
+        }
+    end
+
+    return {}
+end
+
+local function getGuideBounds(shapes, viewport)
+    local minX = math.huge
+    local minY = math.huge
+    local maxX = -math.huge
+    local maxY = -math.huge
+
+    for _, shape in ipairs(shapes or {}) do
+        if shape.kind == "circle" then
+            minX = math.min(minX, shape.x - shape.radius)
+            minY = math.min(minY, shape.y - shape.radius)
+            maxX = math.max(maxX, shape.x + shape.radius)
+            maxY = math.max(maxY, shape.y + shape.radius)
+        elseif shape.kind == "polyline" then
+            local halfWidth = (shape.width or 0) * 0.5
+            for pointIndex = 1, #(shape.points or {}), 2 do
+                local pointX = shape.points[pointIndex]
+                local pointY = shape.points[pointIndex + 1]
+                minX = math.min(minX, pointX - halfWidth)
+                minY = math.min(minY, pointY - halfWidth)
+                maxX = math.max(maxX, pointX + halfWidth)
+                maxY = math.max(maxY, pointY + halfWidth)
+            end
+        else
+            minX = math.min(minX, shape.x)
+            minY = math.min(minY, shape.y)
+            maxX = math.max(maxX, shape.x + shape.w)
+            maxY = math.max(maxY, shape.y + shape.h)
+        end
+    end
+
+    if minX == math.huge then
+        local viewportWidth = viewport and viewport.w or 1280
+        local viewportHeight = viewport and viewport.h or 720
+        local centerX = viewportWidth * 0.5
+        local centerY = viewportHeight * 0.5
+        return {
+            minX = centerX - 10,
+            minY = centerY - 10,
+            maxX = centerX + 10,
+            maxY = centerY + 10,
+            centerX = centerX,
+            centerY = centerY,
+        }
+    end
+
+    return {
+        minX = minX,
+        minY = minY,
+        maxX = maxX,
+        maxY = maxY,
+        centerX = (minX + maxX) * 0.5,
+        centerY = (minY + maxY) * 0.5,
+    }
+end
+
+local function getPlayGuideLayout(game)
+    local step, stepIndex, stepCount = getActivePlayGuideStep(game)
+    if not step then
+        return nil
+    end
+
+    local width = PLAY_GUIDE_LAYOUT.width
+    local textWidth = width - PLAY_GUIDE_LAYOUT.paddingX * 2
+    love.graphics.setFont(game.fonts.small)
+    local textLineCount = getWrappedLineCount(game.fonts.small, step.text or "", textWidth)
+    local textHeight = textLineCount * game.fonts.small:getHeight()
+    local height = PLAY_GUIDE_LAYOUT.paddingY * 2
+        + textHeight
+        + PLAY_GUIDE_LAYOUT.buttonGap
+        + PLAY_GUIDE_LAYOUT.buttonH
+
+    local focusShapes = getPlayGuideFocusShapes(game, step)
+    local bounds = getGuideBounds(focusShapes, game.viewport)
+    local tooltipX = bounds.centerX - width * 0.5
+    local tooltipY = bounds.minY - height - PLAY_GUIDE_LAYOUT.gap
+
+    if step.placement == "right" then
+        tooltipX = bounds.maxX + PLAY_GUIDE_LAYOUT.gap
+        tooltipY = bounds.centerY - height * 0.5
+    elseif step.placement == "below" then
+        tooltipY = bounds.maxY + PLAY_GUIDE_LAYOUT.gap
+    end
+
+    tooltipX = clamp(tooltipX, PLAY_GUIDE_LAYOUT.margin, game.viewport.w - width - PLAY_GUIDE_LAYOUT.margin)
+    tooltipY = clamp(
+        tooltipY,
+        PLAY_GUIDE_LAYOUT.minTop,
+        game.viewport.h - height - PLAY_GUIDE_LAYOUT.margin
+    )
+
+    local totalButtonWidth = PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap + PLAY_GUIDE_LAYOUT.buttonNextW
+    local buttonsX = tooltipX + math.floor((width - totalButtonWidth) * 0.5 + 0.5)
+    local buttonsY = tooltipY + height - PLAY_GUIDE_LAYOUT.paddingY - PLAY_GUIDE_LAYOUT.buttonH
+
+    return {
+        step = step,
+        stepIndex = stepIndex,
+        stepCount = stepCount,
+        focusShapes = focusShapes,
+        tooltipRect = {
+            x = tooltipX,
+            y = tooltipY,
+            w = width,
+            h = height,
+        },
+        skipRect = {
+            x = buttonsX,
+            y = buttonsY,
+            w = PLAY_GUIDE_LAYOUT.buttonSkipW,
+            h = PLAY_GUIDE_LAYOUT.buttonH,
+        },
+        nextRect = {
+            x = buttonsX + PLAY_GUIDE_LAYOUT.buttonSkipW + PLAY_GUIDE_LAYOUT.buttonGap,
+            y = buttonsY,
+            w = PLAY_GUIDE_LAYOUT.buttonNextW,
+            h = PLAY_GUIDE_LAYOUT.buttonH,
+        },
+        nextLabel = stepIndex >= stepCount and "I'm Ready" or "Next",
+    }
+end
+
+local function drawGuideFocusShape(shape)
+    local graphics = love.graphics
+    if shape.kind == "circle" then
+        graphics.circle("fill", shape.x, shape.y, shape.radius)
+    elseif shape.kind == "polyline" then
+        graphics.setLineWidth(shape.width or 42)
+        graphics.setLineJoin("bevel")
+        graphics.setLineStyle("rough")
+        graphics.line(shape.points)
+    else
+        graphics.rectangle("fill", shape.x, shape.y, shape.w, shape.h, shape.radius, shape.radius)
+    end
+end
+
+local function drawGuideFocusOutline(shape)
+    local graphics = love.graphics
+    if shape.kind == "circle" then
+        graphics.circle("line", shape.x, shape.y, shape.radius)
+    elseif shape.kind == "polyline" then
+        return
+    else
+        graphics.rectangle("line", shape.x, shape.y, shape.w, shape.h, shape.radius, shape.radius)
+    end
+end
+
+function ui.getPlayGuideActionAt(game, x, y)
+    local layout = getPlayGuideLayout(game)
+    if not layout then
+        return nil
+    end
+
+    if pointInRect(x, y, layout.nextRect) then
+        return "next"
+    end
+
+    if pointInRect(x, y, layout.skipRect) then
+        return "skip"
+    end
+
+    return nil
+end
+
 local function formatSecondsLabel(value)
     return string.format("%ss", formatTimeValue(value))
 end
@@ -3670,6 +3987,72 @@ function ui.getResultsHit(game, x, y)
         return "editor"
     end
     return nil
+end
+
+local function drawPlayGuideOverlay(game)
+    local layout = getPlayGuideLayout(game)
+    if not layout then
+        return
+    end
+
+    local graphics = love.graphics
+    local tooltip = layout.tooltipRect
+
+    graphics.stencil(function()
+        for _, shape in ipairs(layout.focusShapes or {}) do
+            drawGuideFocusShape(shape)
+        end
+    end, "replace", 1)
+    graphics.setStencilTest("equal", 0)
+    graphics.setColor(0.01, 0.02, 0.03, 0.74)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+    graphics.setStencilTest()
+
+    for _, shape in ipairs(layout.focusShapes or {}) do
+        graphics.setColor(0.48, 0.92, 0.98, 0.14)
+        graphics.setLineWidth(10)
+        drawGuideFocusOutline(shape)
+        graphics.setColor(0.72, 0.97, 1, 0.98)
+        graphics.setLineWidth(3)
+        drawGuideFocusOutline(shape)
+    end
+    graphics.setLineWidth(1)
+
+    graphics.setColor(0.16, 0.44, 0.54, 0.2)
+    graphics.rectangle("fill", tooltip.x - 8, tooltip.y - 8, tooltip.w + 16, tooltip.h + 16, 24, 24)
+    graphics.setColor(0.06, 0.08, 0.11, 0.99)
+    graphics.rectangle("fill", tooltip.x, tooltip.y, tooltip.w, tooltip.h, 20, 20)
+    graphics.setColor(0.68, 0.94, 1, 1)
+    graphics.setLineWidth(3)
+    graphics.rectangle("line", tooltip.x, tooltip.y, tooltip.w, tooltip.h, 20, 20)
+    graphics.setColor(0.32, 0.52, 0.64, 0.7)
+    graphics.setLineWidth(1)
+    graphics.rectangle("line", tooltip.x + 4, tooltip.y + 4, tooltip.w - 8, tooltip.h - 8, 17, 17)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf(
+        layout.step.text,
+        tooltip.x + PLAY_GUIDE_LAYOUT.paddingX,
+        tooltip.y + PLAY_GUIDE_LAYOUT.paddingY,
+        tooltip.w - PLAY_GUIDE_LAYOUT.paddingX * 2,
+        "left"
+    )
+
+    drawButton(
+        layout.skipRect,
+        "Skip",
+        { 0.11, 0.14, 0.18, 0.98 },
+        { 0.34, 0.4, 0.48, 1 },
+        game.fonts.small
+    )
+    drawButton(
+        layout.nextRect,
+        layout.nextLabel,
+        { 0.12, 0.17, 0.2, 0.98 },
+        { 0.48, 0.92, 0.62, 1 },
+        game.fonts.small
+    )
 end
 
 function ui.drawMenu(game)
@@ -4186,6 +4569,8 @@ function ui.drawPlay(game)
     local graphics = love.graphics
     local inputGroups = game.world:getInputEdgeGroups()
     local outputGroups = game.world:getOutputBadgeGroups()
+    local activeGuideStep = getActivePlayGuideStep(game)
+    local allowHoverTooltip = not activeGuideStep or activeGuideStep.allowHoverTooltip == true
 
     for _, badge in ipairs(outputGroups) do
         drawOutputBadge(game, badge)
@@ -4212,12 +4597,14 @@ function ui.drawPlay(game)
         graphics.setColor(0.84, 0.88, 0.92, 1)
         graphics.printf("Preparation Phase: set your routes, then start the clock.", 0, 34, game.viewport.w, "center")
 
-        local blinkAlpha = 0.3
-        if love and love.timer and love.timer.getTime then
-            blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+        if not activeGuideStep then
+            local blinkAlpha = 0.3
+            if love and love.timer and love.timer.getTime then
+                blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+            end
+            graphics.setColor(1, 1, 1, blinkAlpha)
+            graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
         end
-        graphics.setColor(1, 1, 1, blinkAlpha)
-        graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
     end
 
     graphics.setColor(0, 0, 0, 0.3)
@@ -4234,7 +4621,10 @@ function ui.drawPlay(game)
     )
 
     drawPlayInfoOverlay(game)
-    if game.playPhase == "prepare" and not game.playOverlayMode and game.playHoverInfo then
+    if activeGuideStep then
+        drawPlayGuideOverlay(game)
+    end
+    if game.playPhase == "prepare" and not game.playOverlayMode and game.playHoverInfo and allowHoverTooltip then
         drawPlayTooltip(game, game.playHoverInfo)
     end
 end

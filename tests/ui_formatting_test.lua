@@ -139,6 +139,7 @@ assertEqual(
 )
 
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
+assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 
@@ -153,6 +154,17 @@ local function makeFont(widthPerCharacter, height)
         end,
         getHeight = function()
             return height
+        end,
+        getWrap = function(_, text, width)
+            local safeWidth = math.max(widthPerCharacter, width or widthPerCharacter)
+            local maxCharactersPerLine = math.max(1, math.floor(safeWidth / widthPerCharacter))
+            local textLength = #tostring(text or "")
+            local lineCount = math.max(1, math.ceil(textLength / maxCharactersPerLine))
+            local wrapped = {}
+            for index = 1, lineCount do
+                wrapped[index] = ""
+            end
+            return safeWidth, wrapped
         end,
     }
 end
@@ -319,6 +331,34 @@ assertEqual(speedHover.title, "Fast Section", "play hover identifies speed-modif
 
 hoverGame.playPhase = "play"
 assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
+hoverGame.playPhase = "prepare"
+hoverGame.playGuide = {
+    stepIndex = 1,
+    steps = {
+        {
+            target = "junction",
+            placement = "right",
+            text = "Guide test copy.",
+        },
+    },
+}
+
+local foundGuideNext = false
+local foundGuideSkip = false
+for y = 80, hoverGame.viewport.h - 20, 4 do
+    for x = 20, hoverGame.viewport.w - 20, 4 do
+        local action = ui.getPlayGuideActionAt(hoverGame, x, y)
+        if action == "next" then
+            foundGuideNext = true
+        elseif action == "skip" then
+            foundGuideSkip = true
+        end
+    end
+end
+
+assert(foundGuideNext, "play guide next button should be detectable")
+assert(foundGuideSkip, "play guide skip button should be detectable")
+hoverGame.playGuide = nil
 
 local levelSelectDescriptor = {
     previewLevel = {

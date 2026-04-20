@@ -81,6 +81,49 @@ local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
 local MAP_CATEGORY_ONLINE = PLAY_MODE_ONLINE
 local PROFILE_NAME_MAX_LENGTH = 24
+local SIMPLE_BEGINNING_GUIDE_MAP_UUID = "3206710d-793f-474e-957a-fdb721926f52"
+local SIMPLE_BEGINNING_GUIDE_STEPS = {
+    {
+        target = "junction",
+        placement = "right",
+        text = "Hey, seems like it's your first time around here. I'll show you around.",
+    },
+    {
+        target = "junction",
+        placement = "right",
+        text = "Alright, we have a lot of business here and a lot of trains coming in. It's your first workday, so I'll show you right away how to route our trains correctly. Are you ready?",
+    },
+    {
+        target = "junction_with_selector",
+        placement = "right",
+        text = "You see this little switchy thing right next to me?",
+    },
+    {
+        target = "junction_with_selector",
+        placement = "below",
+        allowHoverTooltip = true,
+        allowJunctionClick = true,
+        focusIncomingTracks = true,
+        text = "This is a junction. In this case, a direct junction. If you want to know what a direct junction is, you can just hover over it. You can also click it to switch it. Maybe you should try that right now.",
+    },
+    {
+        target = "first_input_card",
+        placement = "below",
+        allowHoverTooltip = true,
+        text = "Now that we know how to route our trains, we need to know where trains come from and where they need to go, right? Here, look. This is the train table for this line. It shows the start time, where this train needs to go, and how many wagons it has. You can figure the details out by hovering over it.",
+    },
+    {
+        target = "first_output_badge",
+        placement = "above",
+        allowHoverTooltip = true,
+        text = "Here you can see how many trains we expect here. In this case, we're expecting blue and yellow trains for this exit, so don't mind the colors too much.",
+    },
+    {
+        target = "start_run_button",
+        placement = "below",
+        text = "I think you're ready. If you want to inspect a few things, feel free to do so. Otherthan that you're ready to do the job alone now! Click the Start Run Button or press Spacebar.",
+    },
+}
 local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
 local LEADERBOARD_MESSAGE_NO_LOCAL_SCORES = "No local personal scores yet."
 local LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST = "No local personal best yet."
@@ -402,6 +445,7 @@ function Game.new()
     self.profileModeHoverId = nil
     self.profileModeSetupError = nil
     self.playOverlayMode = nil
+    self.playGuide = nil
     self.leaderboardState = {
         status = LEADERBOARD_STATUS_IDLE,
         message = nil,
@@ -1768,6 +1812,79 @@ function Game:saveProfile()
     return false, saveError
 end
 
+function Game:hasDismissedMapGuide(mapUuid)
+    return self.profile
+        and self.profile.tutorials
+        and self.profile.tutorials.dismissedMapGuides
+        and self.profile.tutorials.dismissedMapGuides[mapUuid] == true
+        or false
+end
+
+function Game:buildPlayGuideState(level)
+    local mapUuid = type(level) == "table" and tostring(level.mapUuid or "") or ""
+    if mapUuid ~= SIMPLE_BEGINNING_GUIDE_MAP_UUID or self:hasDismissedMapGuide(mapUuid) then
+        return nil
+    end
+
+    return {
+        mapUuid = mapUuid,
+        stepIndex = 1,
+        steps = SIMPLE_BEGINNING_GUIDE_STEPS,
+    }
+end
+
+function Game:dismissPlayGuide()
+    if not self.playGuide or not self.playGuide.mapUuid then
+        self.playGuide = nil
+        return false
+    end
+
+    self.profile.tutorials = self.profile.tutorials or {}
+    self.profile.tutorials.dismissedMapGuides = self.profile.tutorials.dismissedMapGuides or {}
+    self.profile.tutorials.dismissedMapGuides[self.playGuide.mapUuid] = true
+    self:saveProfile()
+    self.playGuide = nil
+    self.playHoverInfo = nil
+    return true
+end
+
+function Game:skipPlayGuide()
+    return self:dismissPlayGuide()
+end
+
+function Game:advancePlayGuide()
+    if not self.playGuide then
+        return false
+    end
+
+    if self.playGuide.stepIndex >= #(self.playGuide.steps or {}) then
+        return self:dismissPlayGuide()
+    end
+
+    self.playGuide.stepIndex = self.playGuide.stepIndex + 1
+    self.playHoverInfo = nil
+    return true
+end
+
+function Game:canInteractWithJunctionDuringGuide(x, y)
+    if not self.playGuide or not self.world then
+        return false
+    end
+
+    local step = self.playGuide.steps and self.playGuide.steps[self.playGuide.stepIndex] or nil
+    if not step or step.allowJunctionClick ~= true then
+        return false
+    end
+
+    for _, junction in ipairs(self.world.junctionOrder or {}) do
+        if self.world:isCrossingHit(junction, x, y) then
+            return true
+        end
+    end
+
+    return false
+end
+
 function Game:toggleDebugMode()
     self.profile.debugMode = not self:isDebugModeEnabled()
     local ok = self:saveProfile()
@@ -2930,6 +3047,7 @@ function Game:startMap(mapDescriptor, options)
     self.playPhase = "prepare"
     self.playHoverInfo = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
+    self.playGuide = self:buildPlayGuideState(mapData.level)
     self.screen = "play"
     return true
 end
@@ -2983,7 +3101,7 @@ function Game:isPreparingRun()
 end
 
 function Game:startPlayPhase()
-    if not self.world or self.playPhase ~= "prepare" then
+    if not self.world or self.playPhase ~= "prepare" or self.playGuide then
         return false
     end
 
@@ -3301,6 +3419,17 @@ function Game:keypressed(key)
         return
     end
 
+    if self.playGuide then
+        if key == "return" or key == "space" then
+            self:advancePlayGuide()
+            return
+        end
+        if key == "s" then
+            self:skipPlayGuide()
+            return
+        end
+    end
+
     if self.playPhase == "prepare" and key == "space" then
         self:startPlayPhase()
         return
@@ -3465,6 +3594,22 @@ function Game:mousepressed(x, y, button)
     end
 
     if button ~= 1 and button ~= 2 then
+        return
+    end
+
+    if self.playGuide then
+        if button == 1 then
+            local guideAction = ui.getPlayGuideActionAt(self, viewportX, viewportY)
+            if guideAction == "next" then
+                self:advancePlayGuide()
+            elseif guideAction == "skip" then
+                self:skipPlayGuide()
+            elseif self:canInteractWithJunctionDuringGuide(viewportX, viewportY) then
+                self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+            end
+        elseif self:canInteractWithJunctionDuringGuide(viewportX, viewportY) then
+            self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+        end
         return
     end
 

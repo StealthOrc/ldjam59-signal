@@ -12,6 +12,41 @@ local MAX_EDITOR_GRID_STEP = 256
 local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
 
+local function normalizeDismissedMapGuides(value)
+    local normalized = {}
+
+    if type(value) ~= "table" then
+        return normalized
+    end
+
+    for key, entry in pairs(value) do
+        if type(key) == "string" and entry == true then
+            normalized[key] = true
+        end
+    end
+
+    return normalized
+end
+
+local function sameBooleanKeySet(firstValue, secondValue)
+    local seen = {}
+
+    for key, entry in pairs(firstValue or {}) do
+        seen[key] = true
+        if secondValue[key] ~= entry then
+            return false
+        end
+    end
+
+    for key, entry in pairs(secondValue or {}) do
+        if not seen[key] and firstValue[key] ~= entry then
+            return false
+        end
+    end
+
+    return true
+end
+
 local function normalizePlayMode(value)
     if value == PLAY_MODE_ONLINE or value == PLAY_MODE_OFFLINE then
         return value
@@ -53,6 +88,11 @@ local function sanitizeProfile(profile)
                 )
             ),
         },
+        tutorials = {
+            dismissedMapGuides = normalizeDismissedMapGuides(
+                type(source.tutorials) == "table" and source.tutorials.dismissedMapGuides or nil
+            ),
+        },
     }
 
     if sanitized.player_uuid == "" then
@@ -89,8 +129,24 @@ end
 function profileStorage.load()
     local loadedProfile = readProfileFile()
     local sanitized = sanitizeProfile(loadedProfile)
+    local loadedEditor = type(loadedProfile) == "table" and type(loadedProfile.editor) == "table" and loadedProfile.editor or nil
+    local loadedTutorials = type(loadedProfile) == "table" and type(loadedProfile.tutorials) == "table" and loadedProfile.tutorials or nil
 
-    if loadedProfile == nil then
+    local needsSave = loadedProfile == nil
+        or loadedProfile.player_uuid ~= sanitized.player_uuid
+        or loadedProfile.playerDisplayName ~= sanitized.playerDisplayName
+        or loadedProfile.playMode ~= sanitized.playMode
+        or loadedProfile.debugMode ~= sanitized.debugMode
+        or loadedEditor == nil
+        or loadedEditor.gridVisible ~= sanitized.editor.gridVisible
+        or loadedEditor.gridStep ~= sanitized.editor.gridStep
+        or loadedTutorials == nil
+        or not sameBooleanKeySet(
+            normalizeDismissedMapGuides(loadedTutorials and loadedTutorials.dismissedMapGuides or nil),
+            sanitized.tutorials.dismissedMapGuides
+        )
+
+    if needsSave then
         local savedProfile = profileStorage.save(sanitized)
         if savedProfile then
             sanitized = savedProfile
