@@ -91,12 +91,12 @@ local SIMPLE_BEGINNING_GUIDE_STEPS = {
     {
         target = "junction",
         placement = "right",
-        text = "All right, we have a lot of business here and a lot of trains coming in. It's your first workday, so I'll show you right away how to route our trains correctly. Are you ready?",
+        text = "Alright, we have a lot of business here and a lot of trains coming in. It's your first workday, so I'll show you right away how to route our trains correctly. Are you ready?",
     },
     {
         target = "junction_with_selector",
         placement = "right",
-        text = "All right, you see this little switchy thing right next to me?",
+        text = "You see this little switchy thing right next to me?",
     },
     {
         target = "junction_with_selector",
@@ -104,13 +104,13 @@ local SIMPLE_BEGINNING_GUIDE_STEPS = {
         allowHoverTooltip = true,
         allowJunctionClick = true,
         focusIncomingTracks = true,
-        text = "This is a junction. In this case, a direct junction. If you want to know what a direct junction is, you can just hover over it. You can also click it to switch it. I don't need to tell you that. Maybe you should try that right now.",
+        text = "This is a junction. In this case, a direct junction. If you want to know what a direct junction is, you can just hover over it. You can also click it to switch it. Maybe you should try that right now.",
     },
     {
         target = "first_input_card",
         placement = "below",
         allowHoverTooltip = true,
-        text = "All right, now that we know how to route our trains, we need to know where trains come from and where they need to go, right? Here, look. This is the train table for this line. It shows the start time, where this train needs to go, and how many wagons it has. You can figure the details out by hovering over it.",
+        text = "Now that we know how to route our trains, we need to know where trains come from and where they need to go, right? Here, look. This is the train table for this line. It shows the start time, where this train needs to go, and how many wagons it has. You can figure the details out by hovering over it.",
     },
     {
         target = "first_output_badge",
@@ -121,7 +121,7 @@ local SIMPLE_BEGINNING_GUIDE_STEPS = {
     {
         target = "first_output_badge",
         placement = "above",
-        text = "I think you're ready. If you want to inspect a few things, go ahead. Otherwise, you can start the run with Start Run or by pressing Spacebar.",
+        text = "I think you're ready. If you want to inspect a few things, feel free to do so. Otherwise, you can start the run with Start Run Button or by pressing Spacebar.",
     },
 }
 local LEADERBOARD_REFRESH_LABEL_LOCAL_ONLY = "Local Only"
