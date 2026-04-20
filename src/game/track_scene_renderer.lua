@@ -46,15 +46,6 @@ local function hasOutputSelector(junction)
         and junction.control.type ~= "crossbar"
 end
 
-local function getContrastTextColor(color)
-    local luminance = color[1] * 0.299 + color[2] * 0.587 + color[3] * 0.114
-    if luminance >= 0.7 then
-        return { 0.05, 0.06, 0.08, 1 }
-    end
-
-    return { 0.97, 0.98, 1, 1 }
-end
-
 local function getColorById(colorId)
     for _, option in ipairs(COLOR_OPTIONS) do
         if option.id == colorId then
@@ -813,21 +804,12 @@ function renderer.drawCrossing(scene, junction)
     local selectorX, selectorY, selectorRadius = renderer.getOutputSelectorLayout(junction)
     if selectorX then
         local selectorScale = getSelectorIconScale(junction)
-        local labelColor = getContrastTextColor(activeOutputColor)
         withIconScale(graphics, selectorX, selectorY, selectorScale, function()
             graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
             graphics.circle("fill", selectorX, selectorY, selectorRadius)
             graphics.setLineWidth(3)
             graphics.setColor(0.05, 0.06, 0.08, 1)
             graphics.circle("line", selectorX, selectorY, selectorRadius)
-            graphics.setColor(labelColor[1], labelColor[2], labelColor[3], labelColor[4])
-            graphics.printf(
-                tostring(junction.activeOutputIndex),
-                selectorX - selectorRadius,
-                selectorY - 7,
-                selectorRadius * 2,
-                "center"
-            )
         end)
     end
 end
