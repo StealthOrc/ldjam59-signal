@@ -1,4 +1,5 @@
 local json = require("src.game.json")
+local storagePaths = require("src.game.storage_paths")
 
 local REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
@@ -20,7 +21,7 @@ local MAP_CATEGORY_ONLINE = "online"
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
-local POWERSHELL_POST_SCRIPT_FILE = "leaderboard_thread_post_request.ps1"
+local POWERSHELL_POST_SCRIPT_FILE = storagePaths.getTempFilePath("leaderboard_thread_post_request.ps1")
 local DIRECTORY_SEPARATOR = package.config:sub(1, 1)
 
 local POWERSHELL_POST_SCRIPT = [[
@@ -125,6 +126,7 @@ local function normalizeBaseUrl(baseUrl)
 end
 
 local function ensurePowerShellPostScript()
+    storagePaths.ensureTempDirectory()
     local existingScript = nil
     if love.filesystem.getInfo(POWERSHELL_POST_SCRIPT_FILE, "file") then
         existingScript = love.filesystem.read(POWERSHELL_POST_SCRIPT_FILE)
@@ -249,7 +251,10 @@ local function runJsonPost(config, endpointPath, payload, requestId)
     end
 
     local bodyText = json.encode(payload)
-    local requestFile = string.format("leaderboard_thread_request_%s_%s.json", tostring(requestId or "0"), tostring(config.mode or "post"))
+    storagePaths.ensureTempDirectory()
+    local requestFile = storagePaths.getTempFilePath(
+        string.format("leaderboard_thread_request_%s_%s.json", tostring(requestId or "0"), tostring(config.mode or "post"))
+    )
     local ok, writeError = love.filesystem.write(requestFile, bodyText)
     if not ok then
         return nil, writeError or "The online request payload could not be written."
@@ -305,7 +310,7 @@ local function extractPlayerPreviewEntry(aroundPayload, playerUuid)
 
     local resolvedPlayerUuid = tostring(playerUuid or "")
     for _, entry in ipairs(entries) do
-        if tostring(entry.player_uuid or entry.playerUuid or "") == resolvedPlayerUuid then
+        if tostring(entry.player_uuid or "") == resolvedPlayerUuid then
             return entry
         end
     end
@@ -339,7 +344,7 @@ local function fetchLeaderboardPreview(config)
         target_rank = nil,
     }
 
-    local playerUuid = tostring(config.player_uuid or config.playerUuid or "")
+    local playerUuid = tostring(config.player_uuid or "")
     if playerUuid == "" then
         return previewPayload
     end
@@ -370,9 +375,9 @@ local function fetchMarketplaceEntries(config)
     local uri
 
     if mode == MARKETPLACE_MODE_SEARCH then
-        uri = buildMarketplaceSearchUri(config.apiBaseUrl, config.query, config.limit, config.player_uuid or config.playerUuid)
+        uri = buildMarketplaceSearchUri(config.apiBaseUrl, config.query, config.limit, config.player_uuid)
     else
-        uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit, config.player_uuid or config.playerUuid)
+        uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit, config.player_uuid)
     end
 
     return fetchJson(uri, config.apiKey)
@@ -384,7 +389,7 @@ local function favoriteMarketplaceMap(config, requestId)
         return nil, "The selected online map is missing its map UUID."
     end
 
-    local playerUuid = tostring(config.player_uuid or config.playerUuid or "")
+    local playerUuid = tostring(config.player_uuid or "")
     if playerUuid == "" then
         return nil, "The current player UUID is missing."
     end
@@ -402,7 +407,7 @@ local function submitScore(config, requestId)
     end
 
     return runJsonPost(config, string.format("/api/maps/%s/score", mapUuid), {
-        player_uuid = tostring(config.player_uuid or config.playerUuid or ""),
+        player_uuid = tostring(config.player_uuid or ""),
         display_name = tostring(config.playerDisplayName or ""),
         score = tonumber(config.score or 0) or 0,
     }, requestId)

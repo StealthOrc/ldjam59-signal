@@ -1,10 +1,11 @@
 local envLoader = require("src.game.env_loader")
 local json = require("src.game.json")
+local storagePaths = require("src.game.storage_paths")
 
 local leaderboardClient = {}
 
-local SCRIPT_FILE = "leaderboard_request.ps1"
-local REQUEST_FILE = "leaderboard_request.json"
+local SCRIPT_FILE = storagePaths.getTempFilePath("leaderboard_request.ps1")
+local REQUEST_FILE = storagePaths.getTempFilePath("leaderboard_request.json")
 local REQUEST_MODE_SUBMIT = "submit"
 local REQUEST_MODE_UPLOAD_MAP = "upload_map"
 local REQUEST_MODE_FAVORITE_MAP = "favorite_map"
@@ -99,6 +100,7 @@ local function quoteArgument(value)
 end
 
 local function ensurePowerShellScript()
+    storagePaths.ensureTempDirectory()
     local existingScript = nil
     if love.filesystem.getInfo(SCRIPT_FILE, "file") then
         existingScript = love.filesystem.read(SCRIPT_FILE)
@@ -149,6 +151,7 @@ local function runPowerShell(mode, config, endpointPath, payload)
         return nil, scriptError
     end
 
+    storagePaths.ensureTempDirectory()
     local requestBody = json.encode(payload)
     local ok, writeError = love.filesystem.write(REQUEST_FILE, requestBody)
     if not ok then
@@ -173,6 +176,9 @@ local function runPowerShell(mode, config, endpointPath, payload)
     }, " ")
 
     local output, runError = runCommand(command)
+    if love.filesystem.remove then
+        love.filesystem.remove(REQUEST_FILE)
+    end
     if not output then
         return nil, runError
     end
@@ -214,7 +220,7 @@ function leaderboardClient.submitScore(submission, config)
 
     local endpointPath = string.format("/api/maps/%s/score", mapUuid)
     local payload = {
-        player_uuid = tostring(submission.player_uuid or submission.playerUuid or ""),
+        player_uuid = tostring(submission.player_uuid or ""),
         display_name = tostring(submission.playerDisplayName or ""),
         score = tonumber(submission.score or 0) or 0,
     }
@@ -233,7 +239,7 @@ function leaderboardClient.uploadMap(submission, config)
         return nil, "The map could not be uploaded because the map UUID is missing."
     end
 
-    local creatorUuid = tostring(submission.creator_uuid or submission.creatorUuid or "")
+    local creatorUuid = tostring(submission.creator_uuid or "")
     if creatorUuid == "" then
         return nil, "The map could not be uploaded because the creator UUID is missing."
     end
@@ -269,7 +275,7 @@ function leaderboardClient.favoriteMap(submission, config)
         return nil, "The map could not be liked because the map UUID is missing."
     end
 
-    local playerUuid = tostring(submission.player_uuid or submission.playerUuid or "")
+    local playerUuid = tostring(submission.player_uuid or "")
     if playerUuid == "" then
         return nil, "The map could not be liked because the player UUID is missing."
     end

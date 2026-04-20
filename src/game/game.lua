@@ -189,7 +189,7 @@ local function getProfilePlayerUuid(profile)
         return ""
     end
 
-    return tostring(profile.player_uuid or profile.playerId or profile.playerUuid or "")
+    return tostring(profile.player_uuid or "")
 end
 
 local function getProfilePlayMode(profile)
@@ -219,14 +219,14 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
     end
 
     return {
-        playerDisplayName = entry.display_name or entry.playerDisplayName or "Unknown",
-        playerUuid = entry.player_uuid or entry.playerUuid or "",
+        playerDisplayName = entry.display_name or "Unknown",
+        playerUuid = entry.player_uuid or "",
         mapCount = tonumber(entry.map_count) or 0,
         score = tonumber(entry.score or 0) or 0,
         rank = tonumber(entry.rank) or fallbackRank or 0,
         mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
-        recordedAt = entry.recorded_at or entry.recordedAt or entry.updated_at or entry.updatedAt,
-        updatedAt = entry.updated_at or entry.updatedAt,
+        recordedAt = entry.recorded_at or entry.updated_at,
+        updatedAt = entry.updated_at,
     }
 end
 
@@ -348,6 +348,7 @@ function Game.new()
     self.levelSelectSelectedMapUuid = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectVisualIndex = nil
     self.levelSelectTargetVisualIndex = nil
     self.levelSelectScroll = 0
@@ -575,19 +576,8 @@ function Game:getLocalScoreEntry(mapUuid)
     end
 
     local scoreboard = self.localScoreboard or {}
-    local entriesByMap = scoreboard.entries_by_map or scoreboard.entriesByMap or {}
+    local entriesByMap = scoreboard.entries_by_map or {}
     local entry = entriesByMap[resolvedMapUuid]
-    if type(entry) ~= "table" then
-        for _, candidateEntry in pairs(entriesByMap) do
-            local candidateMapUuid = type(candidateEntry) == "table"
-                and tostring(candidateEntry.map_uuid or candidateEntry.mapUuid or candidateEntry.id or "")
-                or ""
-            if candidateMapUuid == resolvedMapUuid then
-                entry = candidateEntry
-                break
-            end
-        end
-    end
 
     if type(entry) ~= "table" then
         return nil
@@ -607,7 +597,7 @@ function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
         score = tonumber(scoreEntry.score or 0) or 0,
         rank = rank or 1,
         map_uuid = mapUuid,
-        recorded_at = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0,
+        recorded_at = tonumber(scoreEntry.recorded_at or 0) or 0,
     }
 end
 
@@ -628,15 +618,15 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
 
         local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
         payload.entries[1] = localEntry
-        return payload, tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
+        return payload, tonumber(scoreEntry.recorded_at or 0) or 0
     end
 
-    local entriesByMap = self.localScoreboard and (self.localScoreboard.entries_by_map or self.localScoreboard.entriesByMap) or {}
+    local entriesByMap = self.localScoreboard and self.localScoreboard.entries_by_map or {}
     for entryMapUuid, scoreEntry in pairs(entriesByMap or {}) do
         local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
         if localEntry then
             payload.entries[#payload.entries + 1] = localEntry
-            local recordedAt = tonumber(scoreEntry.recorded_at or scoreEntry.recordedAt or scoreEntry.updated_at or scoreEntry.updatedAt or 0) or 0
+            local recordedAt = tonumber(scoreEntry.recorded_at or 0) or 0
             if latestRecordedAt == nil or recordedAt > latestRecordedAt then
                 latestRecordedAt = recordedAt
             end
@@ -648,8 +638,8 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
             return a.score > b.score
         end
 
-        local aRecordedAt = tonumber(a.recorded_at or a.recordedAt or a.updated_at or a.updatedAt or 0) or 0
-        local bRecordedAt = tonumber(b.recorded_at or b.recordedAt or b.updated_at or b.updatedAt or 0) or 0
+        local aRecordedAt = tonumber(a.recorded_at or 0) or 0
+        local bRecordedAt = tonumber(b.recorded_at or 0) or 0
         if aRecordedAt ~= bRecordedAt then
             return aRecordedAt > bRecordedAt
         end
@@ -1080,7 +1070,7 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
 
     local topEntries = {}
     for _, entry in ipairs(cacheEntry.top_entries or {}) do
-        if type(entry) == "table" and tostring(entry.player_uuid or entry.playerUuid or "") ~= submittedEntry.player_uuid then
+        if type(entry) == "table" and tostring(entry.player_uuid or "") ~= submittedEntry.player_uuid then
             topEntries[#topEntries + 1] = entry
         end
     end
@@ -2607,7 +2597,7 @@ function Game:setLevelSelectMode(mode)
     local resolvedMode = mode == LEVEL_SELECT_MODE_MARKETPLACE
         and LEVEL_SELECT_MODE_MARKETPLACE
         or LEVEL_SELECT_MODE_LIBRARY
-    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMapsAvailable() then
+    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMode() then
         self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
         self:clearLevelSelectLeaderboardFlip()
         return
@@ -2619,6 +2609,7 @@ function Game:setLevelSelectMode(mode)
 
     self.levelSelectMode = resolvedMode
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectIssue = nil
     self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
@@ -2645,6 +2636,7 @@ function Game:setLevelSelectMarketplaceTab(tabId)
         if tabId == allowedTabId then
             self.levelSelectMarketplaceTab = tabId
             self.levelSelectHoverId = nil
+            self.levelSelectHoverInfo = nil
             self:clearLevelSelectActionState()
             self:getSelectedLevelMap()
             self:resetLevelSelectVisualIndex()
@@ -2836,6 +2828,7 @@ function Game:openMenu()
     self.screen = "menu"
     self.levelSelectIssue = nil
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self:clearLevelSelectActionState()
     self.resultsSummary = nil
     self.playOverlayMode = nil
@@ -2848,6 +2841,7 @@ function Game:openLevelSelect()
     self.levelSelectIssue = nil
     self.levelSelectFilter = "all"
     self.levelSelectHoverId = nil
+    self.levelSelectHoverInfo = nil
     self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
     self.levelSelectMarketplaceTab = LEVEL_SELECT_MARKETPLACE_TAB_TOP
     self.levelSelectMarketplaceSearchQuery = ""
@@ -3393,8 +3387,8 @@ function Game:mousepressed(x, y, button)
 
         if hit.kind == "back" then
             self:openMenu()
-        elseif hit.kind == "toggle_mode" then
-            self:toggleLevelSelectMode()
+        elseif hit.kind == "set_mode" then
+            self:setLevelSelectMode(hit.mode)
         elseif hit.kind == "set_marketplace_tab" then
             self:setLevelSelectMarketplaceTab(hit.tab)
         elseif hit.kind == "set_filter" then
@@ -3489,6 +3483,7 @@ end
 
 function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
+    self.levelSelectHoverInfo = nil
     if self.screen == "leaderboard" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
@@ -3504,6 +3499,7 @@ function Game:mousemoved(x, y, dx, dy)
     if self.screen == "level_select" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
+        self.levelSelectHoverInfo = ui.getLevelSelectHoverInfoAt(self, viewportX, viewportY)
         return
     end
 

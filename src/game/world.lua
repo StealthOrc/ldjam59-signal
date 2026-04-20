@@ -1316,6 +1316,23 @@ function world:canActivateControl(junction, isPreparationPhase)
     return true
 end
 
+function world:activatePreparationControl(junction)
+    if not junction then
+        return false
+    end
+
+    local changed = self:cycleInput(junction)
+    local controlType = junction.control and junction.control.type or "direct"
+
+    if controlType == "relay" then
+        self:syncRelayOutput(junction)
+    elseif controlType == "crossbar" then
+        self:syncCrossbarOutput(junction)
+    end
+
+    return changed
+end
+
 function world:activateControl(junction)
     local control = junction.control
 
@@ -1410,16 +1427,27 @@ function world:handleClick(x, y, button, isPreparationPhase)
                 changed = self:cycleOutput(junction, 1)
             end
             if changed then
-                self:pressOutputSelector(junction, 1)
-                self:registerInteraction()
+                if not isPreparationPhase then
+                    self:pressOutputSelector(junction, 1)
+                    self:registerInteraction()
+                end
             end
             return true
         end
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
-            if self:canActivateControl(junction, isPreparationPhase) and self:activateControl(junction) then
-                self:pressJunctionIcon(junction, 1)
-                self:registerInteraction()
+            local changed = false
+            if isPreparationPhase then
+                changed = self:activatePreparationControl(junction)
+            elseif self:canActivateControl(junction, false) then
+                changed = self:activateControl(junction)
+            end
+
+            if changed then
+                if not isPreparationPhase then
+                    self:pressJunctionIcon(junction, 1)
+                    self:registerInteraction()
+                end
             end
             return true
         end

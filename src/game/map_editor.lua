@@ -4055,6 +4055,16 @@ function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
         <= INTERSECTION_SELECTOR_CLICK_RADIUS * INTERSECTION_SELECTOR_CLICK_RADIUS
 end
 
+function mapEditor:findIntersectionOutputSelectorHit(x, y)
+    for _, intersection in ipairs(self.intersections) do
+        if self:isIntersectionOutputSelectorHit(intersection, x, y) then
+            return intersection
+        end
+    end
+
+    return nil
+end
+
 function mapEditor:setIntersectionControlType(intersection, controlType)
     if not intersection or not controlType then
         return false
@@ -4069,15 +4079,9 @@ function mapEditor:setIntersectionControlType(intersection, controlType)
 
     intersection.controlType = controlType
     if intersection.controlType == "relay" then
-        local outputCount = #(intersection.outputEndpointIds or {})
-        if outputCount > 0 then
-            intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
-        end
+        self:syncIntersectionOutputToControl(intersection)
     elseif intersection.controlType == "crossbar" then
-        local outputCount = #(intersection.outputEndpointIds or {})
-        if outputCount > 0 then
-            intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
-        end
+        self:syncIntersectionOutputToControl(intersection)
     end
 
     self:refreshValidation(self.currentMapName)
@@ -4102,6 +4106,53 @@ function mapEditor:cycleIntersection(intersection)
     self:setIntersectionControlType(intersection, CONTROL_ORDER[nextIndex])
 end
 
+function mapEditor:syncIntersectionOutputToControl(intersection)
+    if not intersection then
+        return
+    end
+
+    local outputCount = #(intersection.outputEndpointIds or {})
+    if outputCount <= 0 then
+        intersection.activeOutputIndex = 1
+        return
+    end
+
+    if intersection.controlType == "relay" then
+        intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
+    elseif intersection.controlType == "crossbar" then
+        intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
+    else
+        intersection.activeOutputIndex = clamp(intersection.activeOutputIndex or 1, 1, outputCount)
+    end
+end
+
+function mapEditor:cycleIntersectionInput(intersection)
+    if not intersection then
+        return false
+    end
+    if intersection.unsupported then
+        self:showStatus("Junctions currently support up to five inputs and five outputs.")
+        return false
+    end
+
+    local inputCount = #(intersection.inputRouteIds or {})
+    if inputCount <= 1 then
+        intersection.activeInputIndex = 1
+        self:syncIntersectionOutputToControl(intersection)
+        return false
+    end
+
+    intersection.activeInputIndex = (intersection.activeInputIndex or 1) + 1
+    if intersection.activeInputIndex > inputCount then
+        intersection.activeInputIndex = 1
+    end
+
+    self:syncIntersectionOutputToControl(intersection)
+    self:refreshValidation(self.currentMapName)
+    self:showStatus("Junction start switched to " .. intersection.activeInputIndex .. ".")
+    return true
+end
+
 function mapEditor:cycleIntersectionOutput(intersection, direction)
     if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
         self:showStatus("This dial couples start and end together.")
@@ -4120,6 +4171,7 @@ function mapEditor:cycleIntersectionOutput(intersection, direction)
         intersection.activeOutputIndex = 1
     end
 
+    self:refreshValidation(self.currentMapName)
     self:showStatus("Junction end switched to " .. intersection.activeOutputIndex .. ".")
 end
 
@@ -5043,11 +5095,13 @@ function mapEditor:mousepressed(screenX, screenY, button)
             return true
         end
 
-        local hitIntersection = self:findIntersectionHit(x, y)
-        if self:isIntersectionOutputSelectorHit(hitIntersection, x, y) then
-            self:cycleIntersectionOutput(hitIntersection, -1)
+        local outputSelectorIntersection = self:findIntersectionOutputSelectorHit(x, y)
+        if outputSelectorIntersection then
+            self:cycleIntersectionOutput(outputSelectorIntersection, -1)
             return true
         end
+
+        local hitIntersection = self:findIntersectionHit(x, y)
         if hitIntersection then
             self:openJunctionPicker(hitIntersection, screenX, screenY)
             self:updateJunctionPickerHover(screenX, screenY)
@@ -5083,32 +5137,34 @@ function mapEditor:mousepressed(screenX, screenY, button)
         return true
     end
 
+    local outputSelectorIntersection = self:findIntersectionOutputSelectorHit(x, y)
+    if outputSelectorIntersection then
+        self:cycleIntersectionOutput(outputSelectorIntersection, 1)
+        return true
+    end
+
     local hitIntersection = self:findIntersectionHit(x, y)
     if hitIntersection then
-        if self:isIntersectionOutputSelectorHit(hitIntersection, x, y) then
-            self:cycleIntersectionOutput(hitIntersection, 1)
-        else
-            self.drag = {
-                kind = "intersection",
-                intersectionId = hitIntersection.id,
-                intersectionSnapshot = {
-                    id = hitIntersection.id,
-                    x = hitIntersection.x,
-                    y = hitIntersection.y,
-                    routeIds = copyArray(hitIntersection.routeIds),
-                },
-                sharedPointId = nil,
-                routeId = nil,
-                pointIndex = nil,
-                startMouseX = x,
-                startMouseY = y,
-                moved = false,
-                isMagnet = false,
-                magnetKind = nil,
-            }
-            self:closeColorPicker()
-            self:closeRouteTypePicker()
-        end
+        self.drag = {
+            kind = "intersection",
+            intersectionId = hitIntersection.id,
+            intersectionSnapshot = {
+                id = hitIntersection.id,
+                x = hitIntersection.x,
+                y = hitIntersection.y,
+                routeIds = copyArray(hitIntersection.routeIds),
+            },
+            sharedPointId = nil,
+            routeId = nil,
+            pointIndex = nil,
+            startMouseX = x,
+            startMouseY = y,
+            moved = false,
+            isMagnet = false,
+            magnetKind = nil,
+        }
+        self:closeColorPicker()
+        self:closeRouteTypePicker()
         return true
     end
 
@@ -5307,8 +5363,19 @@ function mapEditor:mousereleased(screenX, screenY, button)
         end
     end
 
-    if self.drag.kind == "intersection" and self.drag.moved then
-        self:showStatus("Junction moved.")
+    if self.drag.kind == "intersection" then
+        local activeIntersection = self:getIntersectionById(self.drag.intersectionId)
+        local wasMoved = self.drag.moved
+        self.drag = nil
+
+        if wasMoved then
+            self:showStatus("Junction moved.")
+            self:rebuildIntersections()
+            return true
+        end
+
+        self:cycleIntersectionInput(activeIntersection)
+        return true
     end
 
     self.drag = nil
