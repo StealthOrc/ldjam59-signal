@@ -140,8 +140,20 @@ assertEqual(
 
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
 assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
+assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
+
+local prepareHintLines = ui.getPlayHeaderHintLines({ playPhase = "prepare", currentRunOrigin = "level_select" })
+assertEqual(#prepareHintLines, 5, "play hint lines include five prepare-phase controls")
+assertEqual(prepareHintLines[1], "F2 Help", "play hint lines keep the help shortcut first")
+assertEqual(prepareHintLines[3], "M Level Select", "play hint lines include the back target label")
+assertEqual(prepareHintLines[5], "R Reset Prep", "play hint lines include the prepare reset shortcut")
+
+local liveHintLines = ui.getPlayHeaderHintLines({ playPhase = "play", currentRunOrigin = "editor" })
+assertEqual(#liveHintLines, 5, "play hint lines include five live-run controls")
+assertEqual(liveHintLines[3], "M Back to Editor", "play hint lines adapt the back target for editor runs")
+assertEqual(liveHintLines[5], "R Restart", "play hint lines include restart outside preparation")
 
 love.graphics = love.graphics or {}
 love.graphics.setFont = function()
@@ -413,6 +425,7 @@ local levelSelectGame = {
     levelSelectVisualIndex = 1,
     levelSelectTargetVisualIndex = 1,
     levelSelectIssue = nil,
+    levelSelectUploadDialog = nil,
     availableMaps = {
         {
             id = "builtin:badge_test.lua",
@@ -475,7 +488,7 @@ assert(
 )
 
 local delayBadgeHover = nil
-for y = 360, 390 do
+for y = 360, 430 do
     for x = 500, 780 do
         local hoverInfo = ui.getLevelSelectHoverInfoAt(levelSelectGame, x, y)
         if hoverInfo and hoverInfo.title == "Delay Junction" then
@@ -494,5 +507,56 @@ assertEqual(
     "This map contains a delay junction.",
     "level select hover uses the badge tooltip copy"
 )
+
+assert(type(ui.getLevelSelectUploadDialogRects) == "function", "ui.getLevelSelectUploadDialogRects should exist")
+assert(type(ui.getLevelSelectStatusCardLayout) == "function", "ui.getLevelSelectStatusCardLayout should exist")
+
+local statusCardGame = {
+    viewport = { w = 1280, h = 720 },
+    fonts = {
+        small = makeFont(7, 14),
+    },
+    levelSelectActionState = {
+        status = "success",
+        title = "Map downloaded",
+        message = "Saved locally.",
+    },
+}
+
+local statusCardLayout = ui.getLevelSelectStatusCardLayout(statusCardGame)
+assert(statusCardLayout ~= nil, "status card layout should be created when a message exists")
+assert(statusCardLayout.panel.w < 300, "short status messages should use a compact panel width")
+assertEqual(
+    statusCardLayout.panel.x + math.floor(statusCardLayout.panel.w * 0.5 + 0.5),
+    640,
+    "status card stays horizontally centered"
+)
+
+local uploadDialogGame = {
+    viewport = { w = 1280, h = 720 },
+    levelSelectUploadDialog = {
+        mapName = "Uploaded Test Map",
+        mapId = "AB12CD",
+        internalIdentifier = "AB12CD",
+        mapUuid = "upload-test-uuid",
+    },
+    levelSelectIssue = nil,
+}
+
+local uploadDialogRects = ui.getLevelSelectUploadDialogRects(uploadDialogGame)
+local copyHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.copy.x + 4, uploadDialogRects.copy.y + 4, 1)
+assertEqual(copyHit.kind, "upload_dialog_copy", "upload dialog copy button is clickable")
+
+local valueHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.value.x + 10, uploadDialogRects.value.y + 10, 1)
+assertEqual(valueHit.kind, "upload_dialog_copy", "upload dialog id field also copies the map id")
+
+local closeHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.close.x + 4, uploadDialogRects.close.y + 4, 1)
+assertEqual(closeHit.kind, "upload_dialog_close", "upload dialog close button is clickable")
+
+local blockedHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.panel.x + 20, uploadDialogRects.panel.y + 20, 1)
+assertEqual(blockedHit.kind, "upload_dialog_blocked", "upload dialog blocks clicks inside the panel background")
+
+local outsideHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.panel.x - 8, uploadDialogRects.panel.y - 8, 1)
+assertEqual(outsideHit.kind, "upload_dialog_close", "upload dialog closes when clicking outside the panel")
 
 print("ui formatting tests passed")

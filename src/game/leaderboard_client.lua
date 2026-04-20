@@ -73,6 +73,12 @@ function leaderboardClient.uploadMap(submission, config)
         mapName = "Untitled Map"
     end
 
+    local display_name = tostring(submission.playerDisplayName or "")
+    if display_name == "" then
+        return nil, "The map could not be uploaded because the player display name is missing."
+    end
+
+
     if type(submission.map) ~= "table" then
         return nil, "The map could not be uploaded because its level data is missing."
     end
@@ -82,6 +88,7 @@ function leaderboardClient.uploadMap(submission, config)
         map_name = mapName,
         map_category = tostring(submission.mapCategory or MAP_CATEGORY_ONLINE),
         creator_uuid = creatorUuid,
+        display_name = display_name,
         map = submission.map,
     }
 
