@@ -885,6 +885,21 @@ local function getJunctionTooltipText(junction)
     return "Switches to the next input as soon as you click it."
 end
 
+local function getOutputSelectorTooltipInfo(junction)
+    local activeOutput = junction and junction.outputs and junction.outputs[junction.activeOutputIndex] or nil
+    local outputLabel = activeOutput and activeOutput.label or ("Output " .. tostring(junction and junction.activeOutputIndex or 1))
+
+    return {
+        x = junction.mergePoint.x,
+        y = junction.mergePoint.y + junction.crossingRadius,
+        title = "Output Selector",
+        text = string.format(
+            "Controls which outgoing line is active. Left click to cycle forward, right click to cycle backward. Current route: %s.",
+            outputLabel
+        ),
+    }
+end
+
 local function getSpeedTooltipInfo(roadTypeId, x, y)
     local config = roadTypes.getConfig(roadTypeId)
     if not config or config.id == roadTypes.DEFAULT_ID then
@@ -3312,13 +3327,23 @@ end
 
 local function getJunctionHoverInfo(game, x, y)
     for _, junction in ipairs(game.world.junctionOrder or {}) do
-        if game.world:isCrossingHit(junction, x, y) or game.world:isOutputSelectorHit(junction, x, y) then
+        if game.world:isCrossingHit(junction, x, y) then
             return {
                 x = junction.mergePoint.x,
                 y = junction.mergePoint.y - junction.crossingRadius,
                 title = getJunctionTooltipTitle(junction),
                 text = getJunctionTooltipText(junction),
             }
+        end
+    end
+
+    return nil
+end
+
+local function getOutputSelectorHoverInfo(game, x, y)
+    for _, junction in ipairs(game.world.junctionOrder or {}) do
+        if game.world:isOutputSelectorHit(junction, x, y) then
+            return getOutputSelectorTooltipInfo(junction)
         end
     end
 
@@ -3376,6 +3401,7 @@ function ui.getPlayHoverInfoAt(game, x, y)
 
     return getPrepTrainHoverInfo(game, x, y)
         or getOutputBadgeHoverInfo(game, x, y)
+        or getOutputSelectorHoverInfo(game, x, y)
         or getJunctionHoverInfo(game, x, y)
         or getTrackSectionHoverInfo(game, x, y)
 end
