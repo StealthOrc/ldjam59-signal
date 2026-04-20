@@ -5022,15 +5022,15 @@ function mapEditor:mousepressed(screenX, screenY, button)
     end
 
     if pointInRect(screenX, screenY, self.sidePanel) then
+        if self.sidePanelMode == "sequencer" then
+            return self:handleSequencerClick(screenX, screenY, button)
+        end
+
         if self:handleEditorDrawerClick(screenX, screenY) then
             return true
         end
 
-        if self.sidePanelMode == "sequencer" and self:handleSequencerClick(screenX, screenY, button) then
-            return true
-        end
-
-        if self.sidePanelMode == "default" and self:handleValidationListClick(screenX, screenY) then
+        if self:handleValidationListClick(screenX, screenY) then
             return true
         end
 
