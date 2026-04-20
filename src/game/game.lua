@@ -81,6 +81,9 @@ local PLAY_MODE_ONLINE = "online"
 local PLAY_MODE_OFFLINE = "offline"
 local MAP_CATEGORY_ONLINE = PLAY_MODE_ONLINE
 local PROFILE_NAME_MAX_LENGTH = 24
+local PLAY_GUIDE_SHRINK_DURATION = 0.12
+local PLAY_GUIDE_MOVE_DURATION = 0.2
+local PLAY_GUIDE_GROW_DURATION = 0.16
 local SIMPLE_BEGINNING_GUIDE_MAP_UUID = "3206710d-793f-474e-957a-fdb721926f52"
 local SIMPLE_BEGINNING_GUIDE_STEPS = {
     {
@@ -446,6 +449,7 @@ function Game.new()
     self.profileModeSetupError = nil
     self.playOverlayMode = nil
     self.playGuide = nil
+    self.playGuideTransition = nil
     self.leaderboardState = {
         status = LEADERBOARD_STATUS_IDLE,
         message = nil,
@@ -1833,9 +1837,10 @@ function Game:buildPlayGuideState(level)
     }
 end
 
-function Game:dismissPlayGuide()
+function Game:finalizeDismissPlayGuide()
     if not self.playGuide or not self.playGuide.mapUuid then
         self.playGuide = nil
+        self.playGuideTransition = nil
         return false
     end
 
@@ -1844,8 +1849,33 @@ function Game:dismissPlayGuide()
     self.profile.tutorials.dismissedMapGuides[self.playGuide.mapUuid] = true
     self:saveProfile()
     self.playGuide = nil
+    self.playGuideTransition = nil
     self.playHoverInfo = nil
     return true
+end
+
+function Game:isPlayGuideAnimating()
+    return self.playGuideTransition ~= nil
+end
+
+function Game:beginPlayGuideTransition(kind, toStepIndex)
+    if not self.playGuide or self:isPlayGuideAnimating() then
+        return false
+    end
+
+    self.playGuideTransition = {
+        kind = kind,
+        phase = "shrink",
+        phaseProgress = 0,
+        fromStepIndex = self.playGuide.stepIndex or 1,
+        toStepIndex = toStepIndex,
+    }
+    self.playHoverInfo = nil
+    return true
+end
+
+function Game:dismissPlayGuide()
+    return self:beginPlayGuideTransition("dismiss", nil)
 end
 
 function Game:skipPlayGuide()
@@ -1853,7 +1883,7 @@ function Game:skipPlayGuide()
 end
 
 function Game:advancePlayGuide()
-    if not self.playGuide then
+    if not self.playGuide or self:isPlayGuideAnimating() then
         return false
     end
 
@@ -1861,13 +1891,53 @@ function Game:advancePlayGuide()
         return self:dismissPlayGuide()
     end
 
-    self.playGuide.stepIndex = self.playGuide.stepIndex + 1
-    self.playHoverInfo = nil
-    return true
+    return self:beginPlayGuideTransition("advance", self.playGuide.stepIndex + 1)
+end
+
+function Game:updatePlayGuideTransition(dt)
+    if not self.playGuideTransition then
+        return
+    end
+
+    local transition = self.playGuideTransition
+    local duration = PLAY_GUIDE_SHRINK_DURATION
+
+    if transition.phase == "move" then
+        duration = PLAY_GUIDE_MOVE_DURATION
+    elseif transition.phase == "grow" then
+        duration = PLAY_GUIDE_GROW_DURATION
+    end
+
+    transition.phaseProgress = math.min(1, (transition.phaseProgress or 0) + dt / duration)
+    if transition.phaseProgress < 1 then
+        return
+    end
+
+    if transition.kind == "dismiss" then
+        self:finalizeDismissPlayGuide()
+        return
+    end
+
+    if transition.phase == "shrink" then
+        transition.phase = "move"
+        transition.phaseProgress = 0
+        return
+    end
+
+    if transition.phase == "move" then
+        transition.phase = "grow"
+        transition.phaseProgress = 0
+        return
+    end
+
+    if self.playGuide then
+        self.playGuide.stepIndex = transition.toStepIndex or self.playGuide.stepIndex
+    end
+    self.playGuideTransition = nil
 end
 
 function Game:canInteractWithJunctionDuringGuide(x, y)
-    if not self.playGuide or not self.world then
+    if not self.playGuide or not self.world or self:isPlayGuideAnimating() then
         return false
     end
 
@@ -3048,6 +3118,7 @@ function Game:startMap(mapDescriptor, options)
     self.playHoverInfo = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.playGuide = self:buildPlayGuideState(mapData.level)
+    self.playGuideTransition = nil
     self.screen = "play"
     return true
 end
@@ -3124,6 +3195,7 @@ end
 
 function Game:update(dt)
     self:updateLeaderboardFetchState()
+    self:updatePlayGuideTransition(dt)
 
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
