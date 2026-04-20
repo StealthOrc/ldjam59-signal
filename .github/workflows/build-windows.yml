@@ -104,5 +104,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: packages-windows-${{ steps.resolve_version.outputs.build_version }}
-          path: ${{ env.OUTPUT_ROOT }}
+          path: ${{ env.OUTPUT_ROOT }}\*_windows.zip
           if-no-files-found: error
