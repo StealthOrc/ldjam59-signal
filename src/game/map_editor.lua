@@ -1,5 +1,6 @@
 local mapStorage = require("src.game.map_storage")
 local authoredMap = require("src.game.authored_map")
+local json = require("src.game.json")
 local roadTypes = require("src.game.road_types")
 local uuid = require("src.game.uuid")
 local world = require("src.game.world")
@@ -48,6 +49,23 @@ local PANEL_BUTTON_GAP = 12
 local PANEL_BUTTON_BOTTOM_MARGIN = 22
 local STATUS_TOAST_MARGIN = 18
 local STATUS_TOAST_FADE_TIME = 0.35
+local POINT_HIT_RADIUS = 12
+local INTERSECTION_HIT_RADIUS = 22
+local INTERSECTION_UNSUPPORTED_HIT_RADIUS = 18
+local SEGMENT_HIT_RADIUS = 16
+local SEGMENT_HIT_MIN_T = 0.08
+local SEGMENT_HIT_MAX_T = 0.92
+local HITBOX_OVERLAY_FILL_ALPHA = 0.18
+local HITBOX_OVERLAY_OUTLINE_ALPHA = 0.94
+local HITBOX_OVERLAY_LABEL_BACKGROUND_ALPHA = 0.92
+local HITBOX_OVERLAY_LABEL_TEXT_ALPHA = 0.98
+local HITBOX_OVERLAY_LABEL_OFFSET_Y = 22
+local HITBOX_OVERLAY_LABEL_PADDING_X = 6
+local HITBOX_OVERLAY_LABEL_PADDING_Y = 4
+local HITBOX_OVERLAY_LABEL_CORNER_RADIUS = 6
+local HITBOX_OVERLAY_RECT_CORNER_RADIUS = 6
+local HITBOX_OVERLAY_STROKE_WIDTH = 2
+local HITBOX_OVERLAY_EPSILON = 0.0001
 local DRAG_START_DISTANCE_SQUARED = 25
 local INTERSECTION_SELECTOR_OFFSET_Y = 36
 local INTERSECTION_SELECTOR_CLICK_RADIUS = 16
@@ -77,6 +95,7 @@ local JUNCTION_MENU_TYPE_ICON_SIZE = 18 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_SWATCH_RADIUS = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_EDGE_MARGIN = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local EMPTY_MAP_VALIDATION_TEXT = "Draw at least one route before starting this map."
+local UPLOAD_UNAVAILABLE_MESSAGE = "Uploading is currently not possible."
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -233,6 +252,10 @@ local function distanceSquared(ax, ay, bx, by)
     return dx * dx + dy * dy
 end
 
+local function lerp(a, b, t)
+    return a + (b - a) * t
+end
+
 local function copyPoint(point)
     return {
         x = point.x,
@@ -273,6 +296,27 @@ local function buildRouteKey(routeIds)
 
     table.sort(sortedIds)
     return table.concat(sortedIds, "|"), sortedIds
+end
+
+local function buildBlankEditorData()
+    return {
+        mapSize = {
+            w = DEFAULT_NEW_MAP_WIDTH,
+            h = DEFAULT_NEW_MAP_HEIGHT,
+        },
+        timeLimit = nil,
+        endpoints = {},
+        routes = {},
+        junctions = {},
+        trains = {},
+    }
+end
+
+local function isLocalSavedMapDescriptor(descriptor)
+    return descriptor ~= nil
+        and descriptor.source == "user"
+        and descriptor.isRemoteImport ~= true
+        and descriptor.hasLevel == true
 end
 
 local function segmentLength(a, b)
@@ -814,8 +858,12 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.sourceInfo = nil
     self.lastSavedDescriptor = nil
     self.pendingPlaytestDescriptor = nil
+    self.pendingUploadDescriptor = nil
     self.pendingOpenBlankMap = false
     self.loadedMapPayload = nil
+    self.savedStateSnapshotJson = nil
+    self.savedMapUploadAvailable = false
+    self.savedMapUploadPending = false
     self.lastValidationError = nil
     self.validationErrors = {}
     self.previewWorld = nil
@@ -851,6 +899,7 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.validationScroll = 0
     self.validationScrollDrag = nil
     self.validationColorDisplayMode = "swatch"
+    self.hitboxOverlayVisible = false
 
     self:updateLayout()
     self:resetCameraToFit()
@@ -1596,17 +1645,65 @@ function mapEditor:refreshValidation(mapName)
     return level, buildError, self.validationErrors
 end
 
+function mapEditor:getSavedMapDescriptor()
+    if not isLocalSavedMapDescriptor(self.lastSavedDescriptor) then
+        return nil
+    end
+
+    return self.lastSavedDescriptor
+end
+
+function mapEditor:buildDirtyStateSnapshot()
+    return {
+        name = self.currentMapName,
+        mapUuid = self.editingMapUuid,
+        editor = self:getExportData(),
+    }
+end
+
+function mapEditor:updateSavedStateSnapshot()
+    self.savedStateSnapshotJson = json.encode(self:buildDirtyStateSnapshot())
+end
+
+function mapEditor:hasUnsavedChanges()
+    local savedSnapshotJson = self.savedStateSnapshotJson
+    if not savedSnapshotJson then
+        savedSnapshotJson = json.encode({
+            editor = buildBlankEditorData(),
+        })
+    end
+
+    return json.encode(self:buildDirtyStateSnapshot()) ~= savedSnapshotJson
+end
+
 function mapEditor:canPlaySavedMap()
-    return self.lastSavedDescriptor ~= nil and self.lastSavedDescriptor.hasLevel == true
+    return self:getSavedMapDescriptor() ~= nil and not self:hasUnsavedChanges()
+end
+
+function mapEditor:setSavedMapUploadState(isAvailable, isPending)
+    self.savedMapUploadAvailable = isAvailable == true
+    self.savedMapUploadPending = isPending == true
+end
+
+function mapEditor:canUploadSavedMap()
+    return self:getSavedMapDescriptor() ~= nil
+        and not self:hasUnsavedChanges()
+        and self.savedMapUploadAvailable == true
+        and self.savedMapUploadPending ~= true
 end
 
 function mapEditor:requestPlaytestFromSavedMap()
-    if not self:canPlaySavedMap() then
+    if self:getSavedMapDescriptor() == nil then
         self:showStatus("Save a playable map first, then test it from here.")
         return false
     end
 
-    self.pendingPlaytestDescriptor = self.lastSavedDescriptor
+    if self:hasUnsavedChanges() then
+        self:showStatus("Save the map again before starting the saved version.")
+        return false
+    end
+
+    self.pendingPlaytestDescriptor = self:getSavedMapDescriptor()
     self:showStatus("Starting test run from the saved map...")
     return true
 end
@@ -1614,6 +1711,38 @@ end
 function mapEditor:consumePlaytestRequest()
     local descriptor = self.pendingPlaytestDescriptor
     self.pendingPlaytestDescriptor = nil
+    return descriptor
+end
+
+function mapEditor:requestUploadFromSavedMap()
+    if self:getSavedMapDescriptor() == nil then
+        self:showStatus("Save a playable local map before uploading it.")
+        return false
+    end
+
+    if self:hasUnsavedChanges() then
+        self:showStatus("Save the map again before uploading it.")
+        return false
+    end
+
+    if self.savedMapUploadPending == true then
+        self:showStatus("This map is already uploading.")
+        return false
+    end
+
+    if self.savedMapUploadAvailable ~= true then
+        self:showStatus(UPLOAD_UNAVAILABLE_MESSAGE)
+        return false
+    end
+
+    self.pendingUploadDescriptor = self:getSavedMapDescriptor()
+    self:showStatus("Uploading the saved map...")
+    return true
+end
+
+function mapEditor:consumeUploadRequest()
+    local descriptor = self.pendingUploadDescriptor
+    self.pendingUploadDescriptor = nil
     return descriptor
 end
 
@@ -1693,8 +1822,18 @@ function mapEditor:getPlayTestButtonRect()
     return {
         x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
         y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 5 + PANEL_BUTTON_GAP * 4),
-        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        w = (self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2 - PANEL_BUTTON_GAP) * 0.5,
         h = PANEL_BUTTON_HEIGHT,
+    }
+end
+
+function mapEditor:getUploadMapButtonRect()
+    local playRect = self:getPlayTestButtonRect()
+    return {
+        x = playRect.x + playRect.w + PANEL_BUTTON_GAP,
+        y = playRect.y,
+        w = playRect.w,
+        h = playRect.h,
     }
 end
 
@@ -1708,11 +1847,23 @@ function mapEditor:getSequencerButtonRect()
 end
 
 function mapEditor:getResetButtonRect()
+    local fullWidth = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2
+    local buttonWidth = (fullWidth - PANEL_BUTTON_GAP) * 0.5
     return {
         x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
         y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 2 + PANEL_BUTTON_GAP),
-        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        w = buttonWidth,
         h = PANEL_BUTTON_HEIGHT,
+    }
+end
+
+function mapEditor:getHitboxToggleRect()
+    local resetRect = self:getResetButtonRect()
+    return {
+        x = resetRect.x + resetRect.w + PANEL_BUTTON_GAP,
+        y = resetRect.y,
+        w = resetRect.w,
+        h = resetRect.h,
     }
 end
 
@@ -2801,6 +2952,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     end
 
     self:rebuildIntersections()
+    self:updateSavedStateSnapshot()
     self:showStatus("Map loaded into the editor.")
 end
 
@@ -2944,10 +3096,12 @@ function mapEditor:saveMap(name)
     self.sourceInfo = record
     self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
+    self.pendingUploadDescriptor = nil
     self.hoveredValidationIndex = nil
+    self:updateSavedStateSnapshot()
     self:closeDialog()
     if level then
-        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ". Press Play Saved Map (P) to test.")
+        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ".")
     else
         self:showStatus("Saved map: " .. trimmedName .. ". Remaining issues: " .. buildError)
     end
@@ -2960,6 +3114,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
     self.editingMapUuid = mapData and mapData.mapUuid or nil
     self.lastSavedDescriptor = sourceInfo and sourceInfo.hasLevel and sourceInfo or nil
     self.pendingPlaytestDescriptor = nil
+    self.pendingUploadDescriptor = nil
 
     if not mapData then
         self.level = nil
@@ -2990,6 +3145,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self:updateLayout()
         self:resetCameraToFit()
         self:rebuildIntersections()
+        self:updateSavedStateSnapshot()
         return
     end
 
@@ -3004,6 +3160,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
     self:resetFromLevel(mapData.level)
     self.sourceInfo = sourceInfo
     self.loadedMapPayload = mapData
+    self:updateSavedStateSnapshot()
 end
 
 function mapEditor:resetFromLevel(level)
@@ -3187,8 +3344,14 @@ function mapEditor:update(dt)
 end
 
 function mapEditor:findIntersectionHit(x, y)
+<<<<<<< HEAD
     for _, intersection in ipairs(self.intersections) do
         local radius = self:getIntersectionInteractionRadius(intersection)
+=======
+    local radiusScale = 1 / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    for _, intersection in ipairs(self.intersections) do
+        local radius = (intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS) * radiusScale
+>>>>>>> origin/main
         if distanceSquared(x, y, intersection.x, intersection.y) <= radius * radius then
             return intersection
         end
@@ -3211,7 +3374,7 @@ function mapEditor:getMagnetHitRect(point, magnetKind)
 end
 
 function mapEditor:findPointHit(x, y)
-    local radiusScale = 1 / math.max(self.camera.zoom, 0.0001)
+    local radiusScale = 1 / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = #route.points, 1, -1 do
@@ -3230,7 +3393,11 @@ function mapEditor:findPointHit(x, y)
                 if isMagnet then
                     hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
                 else
+<<<<<<< HEAD
                     local radius = BEND_POINT_HIT_RADIUS * radiusScale
+=======
+                    local radius = POINT_HIT_RADIUS * radiusScale
+>>>>>>> origin/main
                     hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
                 end
 
@@ -3462,10 +3629,14 @@ end
 
 function mapEditor:findSegmentHit(x, y)
     local bestHit = nil
+<<<<<<< HEAD
     local zoomScale = math.max(self.camera.zoom, 0.0001)
     local segmentRadius = ROAD_SEGMENT_HIT_RADIUS / zoomScale
     local endpointMargin = ROAD_SEGMENT_ENDPOINT_MARGIN / zoomScale
     local endpointMarginSquared = endpointMargin * endpointMargin
+=======
+    local segmentRadius = SEGMENT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+>>>>>>> origin/main
     local bestDistance = segmentRadius * segmentRadius
 
     for routeIndex = #self.routes, 1, -1 do
@@ -3477,7 +3648,11 @@ function mapEditor:findSegmentHit(x, y)
             local isTooCloseToStart = distanceSquared(closestX, closestY, a.x, a.y) <= endpointMarginSquared
             local isTooCloseToEnd = distanceSquared(closestX, closestY, b.x, b.y) <= endpointMarginSquared
 
+<<<<<<< HEAD
             if distance < bestDistance and not isTooCloseToStart and not isTooCloseToEnd then
+=======
+            if distance < bestDistance and t > SEGMENT_HIT_MIN_T and t < SEGMENT_HIT_MAX_T then
+>>>>>>> origin/main
                 bestDistance = distance
                 bestHit = {
                     route = route,
@@ -3492,6 +3667,7 @@ function mapEditor:findSegmentHit(x, y)
     return bestHit
 end
 
+<<<<<<< HEAD
 function mapEditor:getIntersectionInteractionRadius(intersection)
     if intersection and intersection.unsupported then
         return UNSUPPORTED_INTERSECTION_HIT_RADIUS / math.max(self.camera.zoom, 0.0001)
@@ -3517,12 +3693,82 @@ function mapEditor:isNearRouteCreationGuard(x, y)
 
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
+=======
+function mapEditor:getPointHitRadius()
+    return POINT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+end
+
+function mapEditor:getIntersectionHitRadius(intersection)
+    local baseRadius = intersection and intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS
+    return baseRadius / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+end
+
+function mapEditor:getOutputSelectorHitRect(intersection)
+    return {
+        x = intersection.x - INTERSECTION_SELECTOR_CLICK_RADIUS,
+        y = intersection.y + INTERSECTION_SELECTOR_OFFSET_Y - INTERSECTION_SELECTOR_CLICK_RADIUS,
+        w = INTERSECTION_SELECTOR_CLICK_RADIUS * 2,
+        h = INTERSECTION_SELECTOR_CLICK_RADIUS * 2,
+    }
+end
+
+function mapEditor:getRouteDebugName(route)
+    local routeName = tostring(route and (route.label or route.id) or "")
+    if routeName == "" then
+        return "route"
+    end
+    return routeName
+end
+
+function mapEditor:getHitboxOverlayColor(index)
+    local option = COLOR_OPTIONS[((index - 1) % #COLOR_OPTIONS) + 1]
+    return option and option.color or COLOR_OPTIONS[1].color
+end
+
+function mapEditor:buildSegmentHitboxPolygon(pointA, pointB)
+    local dx = pointB.x - pointA.x
+    local dy = pointB.y - pointA.y
+    local length = math.sqrt(dx * dx + dy * dy)
+
+    if length <= HITBOX_OVERLAY_EPSILON then
+        return nil
+    end
+
+    local startX = lerp(pointA.x, pointB.x, SEGMENT_HIT_MIN_T)
+    local startY = lerp(pointA.y, pointB.y, SEGMENT_HIT_MIN_T)
+    local endX = lerp(pointA.x, pointB.x, SEGMENT_HIT_MAX_T)
+    local endY = lerp(pointA.y, pointB.y, SEGMENT_HIT_MAX_T)
+    local normalX = -dy / length
+    local normalY = dx / length
+    local halfWidth = SEGMENT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+
+    return {
+        points = {
+            startX + normalX * halfWidth, startY + normalY * halfWidth,
+            endX + normalX * halfWidth, endY + normalY * halfWidth,
+            endX - normalX * halfWidth, endY - normalY * halfWidth,
+            startX - normalX * halfWidth, startY - normalY * halfWidth,
+        },
+        labelX = (startX + endX) * 0.5,
+        labelY = (startY + endY) * 0.5,
+    }
+end
+
+function mapEditor:getHitboxOverlayEntries()
+    local entries = {}
+
+    for routeIndex = #self.routes, 1, -1 do
+        local route = self.routes[routeIndex]
+        local routeName = self:getRouteDebugName(route)
+
+>>>>>>> origin/main
         for pointIndex = #route.points, 1, -1 do
             local point = route.points[pointIndex]
             local isMagnet = pointIndex == 1 or pointIndex == #route.points
             local isSharedJunctionPoint = not isMagnet and point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
 
             if not isSharedJunctionPoint then
+<<<<<<< HEAD
                 if isMagnet then
                     local magnetKind = pointIndex == 1 and "start" or "end"
                     if pointInRect(x, y, expandRect(self:getMagnetHitRect(point, magnetKind), guardPadding)) then
@@ -3538,10 +3784,41 @@ function mapEditor:isNearRouteCreationGuard(x, y)
     for _, endpoint in ipairs(self.endpoints) do
         if distanceSquared(x, y, endpoint.x, endpoint.y) <= endpointGuardRadius * endpointGuardRadius then
             return true
+=======
+                local label = nil
+                local rect = nil
+
+                if pointIndex == 1 then
+                    rect = self:getMagnetHitRect(point, "start")
+                    label = string.format("%s start", routeName)
+                elseif pointIndex == #route.points then
+                    rect = self:getMagnetHitRect(point, "end")
+                    label = string.format("%s end", routeName)
+                else
+                    local radius = self:getPointHitRadius()
+                    rect = {
+                        x = point.x - radius,
+                        y = point.y - radius,
+                        w = radius * 2,
+                        h = radius * 2,
+                    }
+                    label = string.format("%s bend %d", routeName, pointIndex)
+                end
+
+                entries[#entries + 1] = {
+                    kind = "rect",
+                    rect = rect,
+                    label = label,
+                    labelX = rect.x + rect.w * 0.5,
+                    labelY = rect.y + rect.h * 0.5,
+                }
+            end
+>>>>>>> origin/main
         end
     end
 
     for _, intersection in ipairs(self.intersections) do
+<<<<<<< HEAD
         local intersectionGuardRadius = self:getIntersectionInteractionRadius(intersection) + guardPadding
         if distanceSquared(x, y, intersection.x, intersection.y) <= intersectionGuardRadius * intersectionGuardRadius then
             return true
@@ -3551,10 +3828,39 @@ function mapEditor:isNearRouteCreationGuard(x, y)
             and distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y) <= selectorGuardRadius * selectorGuardRadius then
             return true
         end
+=======
+        if self:isIntersectionOutputSelectorHit(intersection, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y) then
+            local rect = self:getOutputSelectorHitRect(intersection)
+            entries[#entries + 1] = {
+                kind = "rect",
+                rect = rect,
+                label = string.format("%s output", tostring(intersection.routeKey or intersection.id or "junction")),
+                labelX = rect.x + rect.w * 0.5,
+                labelY = rect.y + rect.h * 0.5,
+            }
+        end
+    end
+
+    for _, intersection in ipairs(self.intersections) do
+        local radius = self:getIntersectionHitRadius(intersection)
+        entries[#entries + 1] = {
+            kind = "rect",
+            rect = {
+                x = intersection.x - radius,
+                y = intersection.y - radius,
+                w = radius * 2,
+                h = radius * 2,
+            },
+            label = string.format("%s %s", tostring(intersection.routeKey or intersection.id or "junction"), intersection.controlType or "junction"),
+            labelX = intersection.x,
+            labelY = intersection.y,
+        }
+>>>>>>> origin/main
     end
 
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
+<<<<<<< HEAD
         for pointIndex = 1, #route.points - 1 do
             local a = route.points[pointIndex]
             local b = route.points[pointIndex + 1]
@@ -3564,11 +3870,36 @@ function mapEditor:isNearRouteCreationGuard(x, y)
 
             if distance <= segmentGuardRadius * segmentGuardRadius and not isTooCloseToStart and not isTooCloseToEnd then
                 return true
+=======
+        local routeName = self:getRouteDebugName(route)
+
+        for segmentIndex = 1, #route.points - 1 do
+            local polygon = self:buildSegmentHitboxPolygon(route.points[segmentIndex], route.points[segmentIndex + 1])
+            if polygon then
+                entries[#entries + 1] = {
+                    kind = "polygon",
+                    points = polygon.points,
+                    label = string.format("%s segment %d", routeName, segmentIndex),
+                    labelX = polygon.labelX,
+                    labelY = polygon.labelY,
+                }
+>>>>>>> origin/main
             end
         end
     end
 
+<<<<<<< HEAD
     return false
+=======
+    local totalEntries = #entries
+    for index, entry in ipairs(entries) do
+        entry.zIndex = totalEntries - index + 1
+        entry.color = self:getHitboxOverlayColor(index)
+        entry.label = string.format("Z%d %s", entry.zIndex, entry.label)
+    end
+
+    return entries
+>>>>>>> origin/main
 end
 
 function mapEditor:deleteSelection()
@@ -5098,6 +5429,12 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if key == "u" then
+        self:commitTextField()
+        self:requestUploadFromSavedMap()
+        return true
+    end
+
     if key == "c" then
         self:commitTextField()
         self.sidePanelMode = self.sidePanelMode == "sequencer" and "default" or "sequencer"
@@ -5108,6 +5445,12 @@ function mapEditor:keypressed(key)
     if key == "r" then
         self:commitTextField()
         self:openResetDialog()
+        return true
+    end
+
+    if key == "f3" then
+        self.hitboxOverlayVisible = not self.hitboxOverlayVisible
+        self:showStatus(self.hitboxOverlayVisible and "Hitbox overlay shown." or "Hitbox overlay hidden.")
         return true
     end
 
@@ -5171,6 +5514,11 @@ function mapEditor:mousepressed(screenX, screenY, button)
             return true
         end
 
+        if pointInRect(screenX, screenY, self:getUploadMapButtonRect()) then
+            self:requestUploadFromSavedMap()
+            return true
+        end
+
         if pointInRect(screenX, screenY, self:getSequencerButtonRect()) then
             self.sidePanelMode = "sequencer"
             self:showStatus("Sequencer opened.")
@@ -5179,6 +5527,12 @@ function mapEditor:mousepressed(screenX, screenY, button)
 
         if pointInRect(screenX, screenY, self:getResetButtonRect()) then
             self:openResetDialog()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getHitboxToggleRect()) then
+            self.hitboxOverlayVisible = not self.hitboxOverlayVisible
+            self:showStatus(self.hitboxOverlayVisible and "Hitbox overlay shown." or "Hitbox overlay hidden.")
             return true
         end
 
@@ -5949,6 +6303,13 @@ function mapEditor:drawPanelButton(rect, label, accentColor, isDisabled)
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5), rect.w, "center")
 end
 
+function mapEditor:drawHitboxToggle(game)
+    local graphics = love.graphics
+    local rect = self:getHitboxToggleRect()
+    local accentColor = self.hitboxOverlayVisible and { 0.48, 0.92, 0.62 } or { 0.36, 0.42, 0.5 }
+    self:drawPanelButton(rect, "Hitboxes (F3)", accentColor)
+end
+
 function mapEditor:drawGrid()
     if not self.gridVisible then
         return
@@ -6275,6 +6636,88 @@ function mapEditor:drawValidationMarkers()
                 end
             end
         end
+    end
+end
+
+function mapEditor:drawHitboxOverlay(game)
+    if not self.hitboxOverlayVisible then
+        return
+    end
+
+    local graphics = love.graphics
+    local font = game.fonts.small
+    local zoom = math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    local inverseZoom = 1 / zoom
+
+    love.graphics.setFont(font)
+
+    for _, entry in ipairs(self:getHitboxOverlayEntries()) do
+        local color = entry.color
+
+        graphics.setColor(color[1], color[2], color[3], HITBOX_OVERLAY_FILL_ALPHA)
+        if entry.kind == "polygon" then
+            graphics.polygon("fill", entry.points)
+        else
+            graphics.rectangle(
+                "fill",
+                entry.rect.x,
+                entry.rect.y,
+                entry.rect.w,
+                entry.rect.h,
+                HITBOX_OVERLAY_RECT_CORNER_RADIUS,
+                HITBOX_OVERLAY_RECT_CORNER_RADIUS
+            )
+        end
+
+        graphics.setColor(color[1], color[2], color[3], HITBOX_OVERLAY_OUTLINE_ALPHA)
+        graphics.setLineWidth(HITBOX_OVERLAY_STROKE_WIDTH * inverseZoom)
+        if entry.kind == "polygon" then
+            graphics.polygon("line", entry.points)
+        else
+            graphics.rectangle(
+                "line",
+                entry.rect.x,
+                entry.rect.y,
+                entry.rect.w,
+                entry.rect.h,
+                HITBOX_OVERLAY_RECT_CORNER_RADIUS,
+                HITBOX_OVERLAY_RECT_CORNER_RADIUS
+            )
+        end
+
+        local labelWidth = font:getWidth(entry.label) + HITBOX_OVERLAY_LABEL_PADDING_X * 2
+        local labelHeight = font:getHeight() + HITBOX_OVERLAY_LABEL_PADDING_Y * 2
+
+        graphics.push()
+        graphics.translate(entry.labelX, entry.labelY)
+        graphics.scale(inverseZoom, inverseZoom)
+        graphics.setColor(0.05, 0.06, 0.08, HITBOX_OVERLAY_LABEL_BACKGROUND_ALPHA)
+        graphics.rectangle(
+            "fill",
+            -labelWidth * 0.5,
+            -HITBOX_OVERLAY_LABEL_OFFSET_Y - labelHeight,
+            labelWidth,
+            labelHeight,
+            HITBOX_OVERLAY_LABEL_CORNER_RADIUS,
+            HITBOX_OVERLAY_LABEL_CORNER_RADIUS
+        )
+        graphics.setColor(color[1], color[2], color[3], HITBOX_OVERLAY_OUTLINE_ALPHA)
+        graphics.rectangle(
+            "line",
+            -labelWidth * 0.5,
+            -HITBOX_OVERLAY_LABEL_OFFSET_Y - labelHeight,
+            labelWidth,
+            labelHeight,
+            HITBOX_OVERLAY_LABEL_CORNER_RADIUS,
+            HITBOX_OVERLAY_LABEL_CORNER_RADIUS
+        )
+        graphics.setColor(0.97, 0.98, 1, HITBOX_OVERLAY_LABEL_TEXT_ALPHA)
+        graphics.print(
+            entry.label,
+            -labelWidth * 0.5 + HITBOX_OVERLAY_LABEL_PADDING_X,
+            -HITBOX_OVERLAY_LABEL_OFFSET_Y - labelHeight + HITBOX_OVERLAY_LABEL_PADDING_Y
+        )
+        graphics.pop()
     end
 end
 
@@ -6819,11 +7262,13 @@ function mapEditor:drawDefaultSidePanel(game)
     end
 
     love.graphics.setFont(game.fonts.small)
-    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
+    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
+    self:drawPanelButton(self:getUploadMapButtonRect(), "Upload Map (U)", { 0.99, 0.78, 0.32 }, not self:canUploadSavedMap())
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
     self:drawPanelButton(self:getSequencerButtonRect(), "Train Sequencer (C)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getResetButtonRect(), "Reset (R)", { 0.99, 0.78, 0.32 })
+    self:drawHitboxToggle(game)
     self:drawPanelButton(self:getOpenUserMapsButtonRect(), "Open User Maps Folder", { 0.98, 0.82, 0.34 })
 end
 
@@ -6863,6 +7308,8 @@ function mapEditor:draw(game)
     for _, route in ipairs(self.routes) do
         self:drawRouteHandles(route, self.selectedRouteId)
     end
+
+    self:drawHitboxOverlay(game)
 
     graphics.pop()
 

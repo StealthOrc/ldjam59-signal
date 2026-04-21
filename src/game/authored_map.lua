@@ -246,21 +246,6 @@ local function extractRouteSegment(routePoints, startDistance, endDistance)
     return segmentPoints
 end
 
-local function pointsRoughlyMatch(firstPoints, secondPoints, tolerance)
-    if #firstPoints ~= #secondPoints then
-        return false
-    end
-
-    local toleranceSquared = (tolerance or 0.001) * (tolerance or 0.001)
-    for index = 1, #firstPoints do
-        if distanceSquared(firstPoints[index].x, firstPoints[index].y, secondPoints[index].x, secondPoints[index].y) > toleranceSquared then
-            return false
-        end
-    end
-
-    return true
-end
-
 local function getEndpointById(editorData, endpointId)
     for _, endpoint in ipairs(editorData.endpoints or {}) do
         if endpoint.id == endpointId then
@@ -339,29 +324,6 @@ local function buildRouteStyleSections(route, startDistance, endDistance)
     return styleSections
 end
 
-local function styleSectionsRoughlyMatch(firstSections, secondSections, tolerance)
-    if #firstSections ~= #secondSections then
-        return false
-    end
-
-    local epsilon = tolerance or 0.001
-    for sectionIndex = 1, #firstSections do
-        local firstSection = firstSections[sectionIndex]
-        local secondSection = secondSections[sectionIndex]
-        if firstSection.roadType ~= secondSection.roadType then
-            return false
-        end
-        if math.abs(firstSection.startRatio - secondSection.startRatio) > epsilon then
-            return false
-        end
-        if math.abs(firstSection.endRatio - secondSection.endRatio) > epsilon then
-            return false
-        end
-    end
-
-    return true
-end
-
 local function sortRouteIdsByMagnet(editorData, routeIds, magnetKind)
     table.sort(routeIds, function(firstRouteId, secondRouteId)
         local firstRoute = getRouteById(editorData, firstRouteId)
@@ -402,25 +364,6 @@ local function buildOutputRoutesByEndpoint(editorData, junctionData)
     end
 
     return routesByEndpoint
-end
-
-local function roundPointKey(point)
-    return string.format("%.4f:%.4f", point.x, point.y)
-end
-
-local function buildEdgeKey(edge)
-    local parts = {
-        edge.sourceType or "unknown",
-        edge.sourceId or "none",
-        edge.targetType or "unknown",
-        edge.targetId or "none",
-    }
-
-    for _, point in ipairs(edge.points or {}) do
-        parts[#parts + 1] = roundPointKey(point)
-    end
-
-    return table.concat(parts, "|")
 end
 
 local function sortEdgesByStart(edges)
@@ -755,23 +698,9 @@ local function buildCompiledLevel(mapName, editorData)
                 targetId = targetNode.id,
             }
 
-            local edgeKey = buildEdgeKey(edge)
-            local existingEdge = edgeLookup[edgeKey]
-            if existingEdge then
-                if not pointsRoughlyMatch(existingEdge.points, edge.points) then
-                    local diagnosticIndex = addError("Merged tracks must share the same path between their nodes.")
-                    routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
-                    goto continue_route
-                end
-                if not styleSectionsRoughlyMatch(existingEdge.styleSections or {}, edge.styleSections or {}) then
-                    local diagnosticIndex = addError("Merged tracks must use the same road style profile.")
-                    routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
-                    goto continue_route
-                end
-                edge = existingEdge
-            else
-                edgeLookup[edgeKey] = edge
-            end
+            -- Keep authored route segments distinct even when they overlap exactly,
+            -- so each lane can preserve its own style and speed profile.
+            edgeLookup[edge.id] = edge
 
             if sourceNode.kind == "junction" then
                 local sourceJunction = junctionLookup[sourceNode.id]
