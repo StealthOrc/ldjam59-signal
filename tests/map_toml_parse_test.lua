@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local toml = require("src.game.toml")
+local toml = require("src.game.util.toml")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then
@@ -8,7 +8,7 @@ local function assertEqual(actual, expected, label)
     end
 end
 
-local map = toml.parseFile("src/game/maps/tutorial/01_direct_lever.toml")
+local map = toml.parseFile("src/game/data/maps/tutorial/01_direct_lever.toml")
 
 assertEqual(type(map), "table", "map toml parses into a table")
 assertEqual(map.name, "Map 1: Direct Lever", "map toml keeps the title")

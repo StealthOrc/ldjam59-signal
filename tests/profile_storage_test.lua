@@ -9,6 +9,13 @@ love.filesystem = {
         inMemoryFiles[path] = body
         return true
     end,
+    read = function(path)
+        local body = inMemoryFiles[path]
+        if not body then
+            return nil, "missing"
+        end
+        return body
+    end,
     getInfo = function(path, kind)
         if kind == "file" and inMemoryFiles[path] then
             return { type = "file" }
@@ -24,8 +31,8 @@ love.filesystem = {
     end,
 }
 
-package.loaded["src.game.profile_storage"] = nil
-local profileStorage = require("src.game.profile_storage")
+package.loaded["src.game.storage.profile_storage"] = nil
+local profileStorage = require("src.game.storage.profile_storage")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then
@@ -70,24 +77,20 @@ assertEqual(
     "profile load keeps invalid dismissed guide ids removed"
 )
 
-inMemoryFiles["profile.lua"] = [[
-return {
-    version = 1,
-    player_uuid = "11111111-2222-3333-4444-555555555555",
-    playerDisplayName = "Signal Tester",
-    playMode = "offline",
-    debugMode = false,
-    editor = {
-        gridVisible = true,
-        gridStep = 64,
-    },
-    tutorials = {
-        dismissedMapGuides = {
-            ["map-keep"] = true,
-            ["map-drop"] = "yes",
-        },
-    },
-}
+inMemoryFiles["profile.toml"] = [[
+version = 1
+player_uuid = "11111111-2222-3333-4444-555555555555"
+playerDisplayName = "Signal Tester"
+playMode = "offline"
+debugMode = false
+
+[editor]
+gridVisible = true
+gridStep = 64
+
+[tutorials.dismissedMapGuides]
+map-keep = true
+map-drop = "yes"
 ]]
 
 local sanitizedProfile = profileStorage.load()

@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local localScoreStorage = require("src.game.local_score_storage")
+local localScoreStorage = require("src.game.storage.local_score_storage")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

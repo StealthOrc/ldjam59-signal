@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local authoredMap = require("src.game.authored_map")
+local authoredMap = require("src.game.data.authored_map")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

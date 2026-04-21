@@ -1,7 +1,7 @@
 love = love or {}
 love.graphics = love.graphics or {}
 
-local renderer = require("src.game.track_scene_renderer")
+local renderer = require("src.game.rendering.track_scene_renderer")
 
 local function assertEqual(actual, expected, message)
     if actual ~= expected then

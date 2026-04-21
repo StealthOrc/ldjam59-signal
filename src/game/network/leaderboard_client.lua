@@ -1,6 +1,6 @@
-local envLoader = require("src.game.env_loader")
-local httpTransport = require("src.game.http_transport")
-local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
+local envLoader = require("src.game.network.env_loader")
+local httpTransport = require("src.game.network.http_transport")
+local marketplaceFavoriteLogic = require("src.game.network.marketplace_favorite_logic")
 
 local leaderboardClient = {}
 

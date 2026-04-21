@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local toml = require("src.game.toml")
+local toml = require("src.game.util.toml")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

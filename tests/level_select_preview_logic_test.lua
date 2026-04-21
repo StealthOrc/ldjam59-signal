@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local previewLogic = require("src.game.level_select_preview_logic")
+local previewLogic = require("src.game.ui.level_select_preview_logic")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

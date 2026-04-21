@@ -8,7 +8,7 @@ love.filesystem.getInfo = function()
     return false
 end
 
-local world = require("src.game.world")
+local world = require("src.game.gameplay.world")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

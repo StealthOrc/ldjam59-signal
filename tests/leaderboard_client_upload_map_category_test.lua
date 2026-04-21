@@ -8,7 +8,7 @@ end
 
 local capturedRequest = nil
 
-package.loaded["src.game.http_transport"] = {
+package.loaded["src.game.network.http_transport"] = {
     postJson = function(request)
         capturedRequest = request
         return {
@@ -17,8 +17,8 @@ package.loaded["src.game.http_transport"] = {
     end,
 }
 
-package.loaded["src.game.leaderboard_client"] = nil
-local leaderboardClient = require("src.game.leaderboard_client")
+package.loaded["src.game.network.leaderboard_client"] = nil
+local leaderboardClient = require("src.game.network.leaderboard_client")
 
 local response, responseError = leaderboardClient.uploadMap({
     mapUuid = "map-1",
