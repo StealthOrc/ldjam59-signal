@@ -5,6 +5,8 @@ local WEB_OS_NAMES = {
     HTML5 = true,
 }
 
+local WEB_BUILD_DOWNLOAD_MESSAGE = "Download the Windows build from the zip down below for the full experience including online features like leaderboards and rankings."
+
 local function getOsName()
     if not (love and love.system and love.system.getOS) then
         return nil
@@ -25,11 +27,11 @@ function platform.detect()
     return {
         os = osName,
         isWeb = isWeb,
-        supportsOnlineServices = true,
+        supportsOnlineServices = not isWeb,
         supportsThreadWorkers = not isWeb and love and love.thread and love.thread.getChannel and love.thread.newThread and true or false,
         supportsClipboard = not isWeb and love and love.system and love.system.setClipboardText and true or false,
         supportsFileManagerReveal = not isWeb and love and love.system and love.system.openURL and true or false,
-        onlineUnavailableReason = nil,
+        onlineUnavailableReason = isWeb and WEB_BUILD_DOWNLOAD_MESSAGE or nil,
     }
 end
 

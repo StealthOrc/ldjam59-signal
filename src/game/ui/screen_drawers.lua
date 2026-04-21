@@ -122,7 +122,7 @@ function ui.drawProfileModeSetup(game)
     local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
     local promptText = supportsOnlineServices
         and "Do you want to use online features such as online leaderboards and community maps?"
-        or "This HTML5 build uses offline mode only so it can run directly in the browser."
+        or "Download the Windows build from the zip down below for the full experience including online features like leaderboards and rankings."
     local offlineTooltipText = supportsOnlineServices
         and "We're only storing your username as well as the uploaded maps and leaderboard stats. You can turn this on or off at any time in the main menu."
         or "Your local progress and personal bests stay in browser storage on this device."

@@ -874,11 +874,27 @@ function Game:refreshMarketplaceData()
 end
 
 function Game:refreshLeaderboard()
+    if self.platform and self.platform.isWeb and not self.leaderboardMapUuid then
+        self.leaderboardState = self:buildLeaderboardState(
+            LEADERBOARD_STATUS_DISABLED,
+            self:getOnlineUnavailableReason(),
+            nil,
+            nil
+        )
+        return
+    end
+
     if self:isOfflineMode() then
         local payload, fetchedAt = self:buildLocalLeaderboardPayload(self.leaderboardMapUuid)
         self.leaderboardState = self:buildLeaderboardState(LEADERBOARD_STATUS_READY, nil, payload, fetchedAt)
         if self.leaderboardState.totalEntries == 0 then
-            self.leaderboardState.message = self.leaderboardMapUuid and LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST or LEADERBOARD_MESSAGE_NO_LOCAL_SCORES
+            if self.leaderboardMapUuid then
+                self.leaderboardState.message = LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_BEST
+            elseif self.platform and self.platform.isWeb then
+                self.leaderboardState.message = self:getOnlineUnavailableReason()
+            else
+                self.leaderboardState.message = LEADERBOARD_MESSAGE_NO_LOCAL_SCORES
+            end
         end
         return
     end

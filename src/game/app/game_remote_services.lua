@@ -158,6 +158,10 @@ function Game:isOnlineMode()
 end
 
 function Game:getLeaderboardButtonLabel()
+    if self.platform and self.platform.isWeb then
+        return LEADERBOARD_TITLE_ONLINE
+    end
+
     if self:isOfflineMode() then
         return "Personal Scores"
     end
@@ -172,6 +176,10 @@ function Game:getLeaderboardTitle(mapUuid)
         end
 
         return LEADERBOARD_TITLE_MAP
+    end
+
+    if self.platform and self.platform.isWeb then
+        return LEADERBOARD_TITLE_ONLINE
     end
 
     if self:isOfflineMode() then

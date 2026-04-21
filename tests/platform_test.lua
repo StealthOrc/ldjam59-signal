@@ -18,9 +18,13 @@ local platform = require("src.game.platform")
 local webPlatform = platform.detect()
 
 assertEqual(webPlatform.isWeb, true, "web detection recognizes the browser runtime")
-assertEqual(webPlatform.supportsOnlineServices, true, "web builds keep online services enabled")
+assertEqual(webPlatform.supportsOnlineServices, false, "web builds disable online services")
 assertEqual(webPlatform.supportsThreadWorkers, false, "web builds disable worker threads")
-assertEqual(webPlatform.onlineUnavailableReason, nil, "web builds do not expose an online-disabled reason")
+assertEqual(
+    webPlatform.onlineUnavailableReason,
+    "Download the Windows build from the zip down below for the full experience including online features like leaderboards and rankings.",
+    "web builds expose the download prompt for unavailable online features"
+)
 
 love = {
     system = {
