@@ -114,25 +114,29 @@ function fetch.update()
         return
     end
 
-    for requestId, callback in pairs(pendingCallbacksByRequestId) do
-        local responsePath = getResponsePath(requestId)
-        if love.filesystem.getInfo(responsePath, "file") then
-            local responseContent, readError = love.filesystem.read(responsePath)
-            love.filesystem.remove(responsePath)
-            pendingCallbacksByRequestId[requestId] = nil
+    local pendingRequestIds = {}
+    for requestId, _ in pairs(pendingCallbacksByRequestId) do
+        pendingRequestIds[#pendingRequestIds + 1] = requestId
+    end
 
-            if not responseContent then
-                if callback then
+    for _, requestId in ipairs(pendingRequestIds) do
+        local callback = pendingCallbacksByRequestId[requestId]
+        if callback ~= nil then
+            local responsePath = getResponsePath(requestId)
+            if love.filesystem.getInfo(responsePath, "file") then
+                local responseContent, readError = love.filesystem.read(responsePath)
+                love.filesystem.remove(responsePath)
+                pendingCallbacksByRequestId[requestId] = nil
+
+                if not responseContent then
                     callback(RESPONSE_STATUS_ERROR, tostring(readError or "The browser response could not be read."))
-                end
-            else
-                local decodedResponse, decodeError = json.decode(responseContent)
-                if type(decodedResponse) ~= "table" then
-                    if callback then
+                else
+                    local decodedResponse, decodeError = json.decode(responseContent)
+                    if type(decodedResponse) ~= "table" then
                         callback(RESPONSE_STATUS_ERROR, tostring(decodeError or "The browser response was invalid."))
+                    else
+                        callback(tonumber(decodedResponse.status) or RESPONSE_STATUS_ERROR, tostring(decodedResponse.body or ""))
                     end
-                elseif callback then
-                    callback(tonumber(decodedResponse.status) or RESPONSE_STATUS_ERROR, tostring(decodedResponse.body or ""))
                 end
             end
         end
