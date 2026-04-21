@@ -84,10 +84,11 @@ local editorData = {
             color = "orange",
             startEndpointId = "input_b",
             endEndpointId = "output_b",
-            segmentRoadTypes = { "normal", "normal" },
+            segmentRoadTypes = { "normal", "normal", "normal" },
             points = {
                 { x = 636 / 1280, y = 360 / 720 },
                 { x = 640 / 1280, y = 400 / 720 },
+                { x = 660 / 1280, y = 388 / 720 },
                 { x = 644 / 1280, y = 360 / 720 },
             },
         },
@@ -127,7 +128,7 @@ end
 assertTrue(sawSegment, "overlay should include segment hitboxes")
 assertTrue(sawIntersection, "overlay should include junction hitboxes")
 
-local defaultBendEntry = findOverlayEntry(entries, "route_b bend 2")
+local defaultBendEntry = findOverlayEntry(entries, "route_b bend 3")
 local defaultSegmentEntry = findOverlayEntry(entries, "route_b segment 1")
 assertTrue(defaultBendEntry ~= nil, "overlay should expose bend hitboxes by label")
 assertTrue(defaultSegmentEntry ~= nil, "overlay should expose segment hitboxes by label")
@@ -137,7 +138,7 @@ local defaultSegmentThickness = polygonEdgeLength(defaultSegmentEntry.points, 1,
 
 editor.camera.zoom = 0.5
 local zoomedOutEntries = editor:getHitboxOverlayEntries()
-local zoomedOutBendEntry = findOverlayEntry(zoomedOutEntries, "route_b bend 2")
+local zoomedOutBendEntry = findOverlayEntry(zoomedOutEntries, "route_b bend 3")
 local zoomedOutSegmentEntry = findOverlayEntry(zoomedOutEntries, "route_b segment 1")
 assertNear(zoomedOutBendEntry.rect.w, defaultBendWidth, 0.0001, "bend hitbox width should stay stable when zooming out")
 assertNear(
@@ -149,7 +150,7 @@ assertNear(
 
 editor.camera.zoom = 2
 local zoomedInEntries = editor:getHitboxOverlayEntries()
-local zoomedInBendEntry = findOverlayEntry(zoomedInEntries, "route_b bend 2")
+local zoomedInBendEntry = findOverlayEntry(zoomedInEntries, "route_b bend 3")
 local zoomedInSegmentEntry = findOverlayEntry(zoomedInEntries, "route_b segment 1")
 assertNear(zoomedInBendEntry.rect.w, defaultBendWidth, 0.0001, "bend hitbox width should stay stable when zooming in")
 assertNear(

@@ -52,9 +52,12 @@ local STATUS_TOAST_FADE_TIME = 0.35
 local POINT_HIT_RADIUS = 12
 local INTERSECTION_HIT_RADIUS = 22
 local INTERSECTION_UNSUPPORTED_HIT_RADIUS = 18
+local MAGNET_HIT_RADIUS = 18
 local SEGMENT_HIT_RADIUS = 16
-local SEGMENT_HIT_MIN_T = 0.08
-local SEGMENT_HIT_MAX_T = 0.92
+local SEGMENT_HIT_MIN_HALF_WIDTH = 8
+local SEGMENT_HIT_HALF_WIDTH_RATIO = 0.3
+local SEGMENT_HIT_MIN_INSET = 4
+local SEGMENT_HIT_INSET_RATIO = 0.22
 local HITBOX_OVERLAY_FILL_ALPHA = 0.18
 local HITBOX_OVERLAY_OUTLINE_ALPHA = 0.94
 local HITBOX_OVERLAY_LABEL_BACKGROUND_ALPHA = 0.92
@@ -74,6 +77,7 @@ local INTERSECTION_POINT_TOLERANCE_SQUARED = 9
 local INTERNAL_POINT_MATCH_DISTANCE_SQUARED = 1
 local INTERSECTION_SHARED_POINT_DISTANCE_SQUARED = 12 * 12
 local INTERSECTION_STATE_MATCH_DISTANCE_SQUARED = 24 * 24
+local MAX_INTERSECTION_MATERIALIZE_PASSES = 3
 local JUNCTION_MENU_SIZE_MULTIPLIER = 1.5
 local JUNCTION_MENU_POP_DURATION = 0.14
 local JUNCTION_MENU_ROOT_RADIUS = 36 * JUNCTION_MENU_SIZE_MULTIPLIER
@@ -3352,17 +3356,8 @@ function mapEditor:findIntersectionHit(x, y)
     return nil
 end
 
-function mapEditor:getMagnetHitRect(point, magnetKind)
-    local width = magnetKind == "start" and 58 or 46
-    local height = 24
-    local padding = 8
-
-    return {
-        x = point.x - width * 0.5 - padding,
-        y = point.y - height * 0.5 - padding,
-        w = width + padding * 2,
-        h = height + padding * 2,
-    }
+function mapEditor:getMagnetHitRadius()
+    return MAGNET_HIT_RADIUS
 end
 
 function mapEditor:findPointHit(x, y)
@@ -3382,7 +3377,8 @@ function mapEditor:findPointHit(x, y)
 
                 local hit = false
                 if isMagnet then
-                    hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
+                    local radius = self:getMagnetHitRadius()
+                    hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
                 else
                     local radius = self:getPointHitRadius()
                     hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
@@ -3405,7 +3401,9 @@ function mapEditor:findBendPointAt(x, y, excludeRouteId, excludePointIndex)
         local route = self.routes[routeIndex]
         for pointIndex = #route.points - 1, 2, -1 do
             local point = route.points[pointIndex]
+            local isSharedJunctionPoint = point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
             if not (route.id == excludeRouteId and pointIndex == excludePointIndex)
+                and not isSharedJunctionPoint
                 and distanceSquared(x, y, point.x, point.y) <= radiusSquared then
                 return route, pointIndex, point
             end
@@ -3525,6 +3523,54 @@ function mapEditor:updateSharedPointGroup(sharedPointId, x, y)
             end
         end
     end
+
+    self:collapseRoutesForSharedPoint(sharedPointId)
+end
+
+function mapEditor:pruneSharedPointFromRoutes(sharedPointId, preservedRouteIds)
+    if not sharedPointId then
+        return
+    end
+
+    local preservedLookup = {}
+    for _, routeId in ipairs(preservedRouteIds or {}) do
+        preservedLookup[routeId] = true
+    end
+
+    for _, route in ipairs(self.routes) do
+        if not preservedLookup[route.id] then
+            for pointIndex = #route.points - 1, 2, -1 do
+                local point = route.points[pointIndex]
+                if point.sharedPointId == sharedPointId then
+                    table.remove(route.points, pointIndex)
+                    self:mergeRouteSegmentStyle(route, pointIndex)
+                end
+            end
+        end
+    end
+end
+
+function mapEditor:collapseRoutesForSharedPoint(sharedPointId)
+    if not sharedPointId then
+        return
+    end
+
+    for _, route in ipairs(self.routes) do
+        local pointIndex = 2
+        while pointIndex <= #route.points - 1 do
+            local point = route.points[pointIndex]
+            local previousPoint = route.points[pointIndex - 1]
+
+            if point.sharedPointId == sharedPointId
+                and previousPoint
+                and distanceSquared(point.x, point.y, previousPoint.x, previousPoint.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED then
+                table.remove(route.points, pointIndex)
+                self:mergeRouteSegmentStyle(route, pointIndex)
+            else
+                pointIndex = pointIndex + 1
+            end
+        end
+    end
 end
 
 function mapEditor:restoreSharedPointsForRoutes(routeIds)
@@ -3616,17 +3662,21 @@ end
 
 function mapEditor:findSegmentHit(x, y)
     local bestHit = nil
-    local segmentRadius = SEGMENT_HIT_RADIUS
-    local bestDistance = segmentRadius * segmentRadius
+    local bestDistance = SEGMENT_HIT_RADIUS * SEGMENT_HIT_RADIUS
 
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = 1, #route.points - 1 do
             local a = route.points[pointIndex]
             local b = route.points[pointIndex + 1]
+            local metrics = self:getSegmentHitMetrics(route, pointIndex)
             local closestX, closestY, t, distance = closestPointOnSegment(x, y, a, b)
+            local projectionDistance = metrics.length * t
 
-            if distance < bestDistance and t > SEGMENT_HIT_MIN_T and t < SEGMENT_HIT_MAX_T then
+            if distance < bestDistance
+                and distance <= metrics.halfWidth * metrics.halfWidth
+                and projectionDistance > metrics.startInset
+                and projectionDistance < metrics.length - metrics.endInset then
                 bestDistance = distance
                 bestHit = {
                     route = route,
@@ -3647,6 +3697,9 @@ end
 
 function mapEditor:getIntersectionHitRadius(intersection)
     local baseRadius = intersection and intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS
+    if not (intersection and intersection.unsupported) and self.previewWorld and self.previewWorld.crossingRadius then
+        baseRadius = math.max(INTERSECTION_HIT_RADIUS, self.previewWorld.crossingRadius - 4)
+    end
     return baseRadius
 end
 
@@ -3672,22 +3725,27 @@ function mapEditor:getHitboxOverlayColor(index)
     return option and option.color or COLOR_OPTIONS[1].color
 end
 
-function mapEditor:buildSegmentHitboxPolygon(pointA, pointB)
+function mapEditor:buildSegmentHitboxPolygon(route, segmentIndex)
+    local pointA = route.points[segmentIndex]
+    local pointB = route.points[segmentIndex + 1]
     local dx = pointB.x - pointA.x
     local dy = pointB.y - pointA.y
-    local length = math.sqrt(dx * dx + dy * dy)
+    local metrics = self:getSegmentHitMetrics(route, segmentIndex)
+    local length = metrics.length
 
-    if length <= HITBOX_OVERLAY_EPSILON then
+    if length <= HITBOX_OVERLAY_EPSILON or metrics.startInset + metrics.endInset >= length - HITBOX_OVERLAY_EPSILON then
         return nil
     end
 
-    local startX = lerp(pointA.x, pointB.x, SEGMENT_HIT_MIN_T)
-    local startY = lerp(pointA.y, pointB.y, SEGMENT_HIT_MIN_T)
-    local endX = lerp(pointA.x, pointB.x, SEGMENT_HIT_MAX_T)
-    local endY = lerp(pointA.y, pointB.y, SEGMENT_HIT_MAX_T)
+    local startRatio = metrics.startInset / length
+    local endRatio = (length - metrics.endInset) / length
+    local startX = lerp(pointA.x, pointB.x, startRatio)
+    local startY = lerp(pointA.y, pointB.y, startRatio)
+    local endX = lerp(pointA.x, pointB.x, endRatio)
+    local endY = lerp(pointA.y, pointB.y, endRatio)
     local normalX = -dy / length
     local normalY = dx / length
-    local halfWidth = SEGMENT_HIT_RADIUS
+    local halfWidth = metrics.halfWidth
 
     return {
         points = {
@@ -3698,6 +3756,52 @@ function mapEditor:buildSegmentHitboxPolygon(pointA, pointB)
         },
         labelX = (startX + endX) * 0.5,
         labelY = (startY + endY) * 0.5,
+    }
+end
+
+function mapEditor:getSegmentEndpointInset(route, pointIndex)
+    local point = route and route.points and route.points[pointIndex] or nil
+    if not point then
+        return 0
+    end
+
+    if pointIndex == 1 or pointIndex == #route.points then
+        return self:getMagnetHitRadius()
+    end
+
+    if point.sharedPointId then
+        local _, intersection = self:getSharedPointGroupForPoint(route, pointIndex)
+        if intersection then
+            return self:getIntersectionHitRadius(intersection)
+        end
+    end
+
+    return self:getPointHitRadius()
+end
+
+function mapEditor:getSegmentHitMetrics(route, segmentIndex)
+    local pointA = route.points[segmentIndex]
+    local pointB = route.points[segmentIndex + 1]
+    local dx = pointB.x - pointA.x
+    local dy = pointB.y - pointA.y
+    local length = math.sqrt(dx * dx + dy * dy)
+    local halfWidth = math.min(SEGMENT_HIT_RADIUS, math.max(SEGMENT_HIT_MIN_HALF_WIDTH, length * SEGMENT_HIT_HALF_WIDTH_RATIO))
+    local defaultInset = math.max(SEGMENT_HIT_MIN_INSET, math.min(SEGMENT_HIT_RADIUS, length * SEGMENT_HIT_INSET_RATIO))
+    local startInset = math.max(defaultInset, self:getSegmentEndpointInset(route, segmentIndex))
+    local endInset = math.max(defaultInset, self:getSegmentEndpointInset(route, segmentIndex + 1))
+    local maxInsetSum = math.max(length - HITBOX_OVERLAY_EPSILON, 0)
+
+    if startInset + endInset > maxInsetSum and maxInsetSum > 0 then
+        local scale = maxInsetSum / (startInset + endInset)
+        startInset = startInset * scale
+        endInset = endInset * scale
+    end
+
+    return {
+        length = length,
+        halfWidth = halfWidth,
+        startInset = startInset,
+        endInset = endInset,
     }
 end
 
@@ -3715,32 +3819,44 @@ function mapEditor:getHitboxOverlayEntries()
 
             if not isSharedJunctionPoint then
                 local label = nil
-                local rect = nil
+                local entry = nil
 
                 if pointIndex == 1 then
-                    rect = self:getMagnetHitRect(point, "start")
+                    local radius = self:getMagnetHitRadius()
+                    entry = {
+                        kind = "circle",
+                        x = point.x,
+                        y = point.y,
+                        radius = radius,
+                    }
                     label = string.format("%s start", routeName)
                 elseif pointIndex == #route.points then
-                    rect = self:getMagnetHitRect(point, "end")
+                    local radius = self:getMagnetHitRadius()
+                    entry = {
+                        kind = "circle",
+                        x = point.x,
+                        y = point.y,
+                        radius = radius,
+                    }
                     label = string.format("%s end", routeName)
                 else
                     local radius = self:getPointHitRadius()
-                    rect = {
-                        x = point.x - radius,
-                        y = point.y - radius,
-                        w = radius * 2,
-                        h = radius * 2,
+                    entry = {
+                        kind = "rect",
+                        rect = {
+                            x = point.x - radius,
+                            y = point.y - radius,
+                            w = radius * 2,
+                            h = radius * 2,
+                        },
                     }
                     label = string.format("%s bend %d", routeName, pointIndex)
                 end
 
-                entries[#entries + 1] = {
-                    kind = "rect",
-                    rect = rect,
-                    label = label,
-                    labelX = rect.x + rect.w * 0.5,
-                    labelY = rect.y + rect.h * 0.5,
-                }
+                entry.label = label
+                entry.labelX = point.x
+                entry.labelY = point.y
+                entries[#entries + 1] = entry
             end
         end
     end
@@ -3761,13 +3877,10 @@ function mapEditor:getHitboxOverlayEntries()
     for _, intersection in ipairs(self.intersections) do
         local radius = self:getIntersectionHitRadius(intersection)
         entries[#entries + 1] = {
-            kind = "rect",
-            rect = {
-                x = intersection.x - radius,
-                y = intersection.y - radius,
-                w = radius * 2,
-                h = radius * 2,
-            },
+            kind = "circle",
+            x = intersection.x,
+            y = intersection.y,
+            radius = radius,
             label = string.format("%s %s", tostring(intersection.routeKey or intersection.id or "junction"), intersection.controlType or "junction"),
             labelX = intersection.x,
             labelY = intersection.y,
@@ -3779,7 +3892,7 @@ function mapEditor:getHitboxOverlayEntries()
         local routeName = self:getRouteDebugName(route)
 
         for segmentIndex = 1, #route.points - 1 do
-            local polygon = self:buildSegmentHitboxPolygon(route.points[segmentIndex], route.points[segmentIndex + 1])
+            local polygon = self:buildSegmentHitboxPolygon(route, segmentIndex)
             if polygon then
                 entries[#entries + 1] = {
                     kind = "polygon",
@@ -4081,7 +4194,8 @@ function mapEditor:isSharedEndpointIntersection(groupedIntersection)
         or (allAtSharedEnd and sharedEndEndpointId ~= nil)
 end
 
-function mapEditor:rebuildIntersections()
+function mapEditor:rebuildIntersections(passIndex)
+    passIndex = passIndex or 1
     local previousIntersections = self.intersections or {}
     local grouped = {}
 
@@ -4200,6 +4314,18 @@ function mapEditor:rebuildIntersections()
         return a.x < b.x
     end)
 
+    if not self.deferIntersectionMaterialization and passIndex < MAX_INTERSECTION_MATERIALIZE_PASSES then
+        local changed = false
+
+        for _, intersection in ipairs(self.intersections) do
+            changed = self:materializeIntersectionSharedPoints(intersection) or changed
+        end
+
+        if changed then
+            return self:rebuildIntersections(passIndex + 1)
+        end
+    end
+
     self:refreshValidation()
 end
 
@@ -4263,15 +4389,19 @@ function mapEditor:updateDraggedPoint(x, y)
             self.drag.sharedPointId = preparedDrag.sharedPointId
             self.drag.routeId = preparedDrag.routeId
             self.drag.pointIndex = preparedDrag.pointIndex
+            self.drag.primaryRouteIds = copyArray(preparedDrag.routeIds or {})
             self.selectedRouteId = preparedDrag.routeId
             self.selectedPointIndex = preparedDrag.pointIndex
         end
 
         local clampedX, clampedY = self:clampPoint(x, y, false)
+        self:pruneSharedPointFromRoutes(self.drag.sharedPointId, self.drag.primaryRouteIds)
         self:updateSharedPointGroup(self.drag.sharedPointId, clampedX, clampedY)
         self:closeColorPicker()
         self:closeRouteTypePicker()
+        self.deferIntersectionMaterialization = true
         self:rebuildIntersections()
+        self.deferIntersectionMaterialization = false
         return
     end
 
@@ -4314,18 +4444,20 @@ function mapEditor:updateDraggedPoint(x, y)
         end
     end
     self:closeColorPicker()
+    self.deferIntersectionMaterialization = true
     self:rebuildIntersections()
+    self.deferIntersectionMaterialization = false
 end
 
 function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
     if not route or not route.points or #route.points < 2 then
-        return nil, nil
+        return nil, nil, false
     end
 
     for pointIndex = 2, #route.points - 1 do
         local point = route.points[pointIndex]
         if distanceSquared(point.x, point.y, intersectionPoint.x, intersectionPoint.y) <= INTERSECTION_POINT_TOLERANCE_SQUARED then
-            return pointIndex, point
+            return pointIndex, point, false
         end
     end
 
@@ -4335,21 +4467,21 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
         local hitPoint = pointOnSegment(intersectionPoint, pointA, pointB, INTERSECTION_POINT_TOLERANCE_SQUARED)
         if hitPoint then
             if distanceSquared(hitPoint.x, hitPoint.y, pointA.x, pointA.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED and segmentIndex > 1 then
-                return segmentIndex, pointA
+                return segmentIndex, pointA, false
             end
             if distanceSquared(hitPoint.x, hitPoint.y, pointB.x, pointB.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED
                 and (segmentIndex + 1) < #route.points then
-                return segmentIndex + 1, pointB
+                return segmentIndex + 1, pointB, false
             end
 
             local insertIndex = segmentIndex + 1
             table.insert(route.points, insertIndex, hitPoint)
             self:splitRouteSegmentStyle(route, segmentIndex)
-            return insertIndex, route.points[insertIndex]
+            return insertIndex, route.points[insertIndex], true
         end
     end
 
-    return nil, nil
+    return nil, nil, false
 end
 
 function mapEditor:prepareIntersectionForDrag(intersection)
@@ -4397,7 +4529,59 @@ function mapEditor:prepareIntersectionForDrag(intersection)
         sharedPointId = sharedPointId,
         routeId = members[1].route.id,
         pointIndex = members[1].pointIndex,
+        routeIds = copyArray(intersection.routeIds or {}),
     }
+end
+
+function mapEditor:materializeIntersectionSharedPoints(intersection)
+    if not intersection then
+        return false
+    end
+
+    local members = {}
+    local sharedPointId = nil
+    local changed = false
+
+    for _, routeId in ipairs(intersection.routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        local pointIndex, point, inserted = self:ensureRoutePointAtIntersection(route, intersection)
+        if route and pointIndex and point then
+            members[#members + 1] = {
+                route = route,
+                pointIndex = pointIndex,
+                point = point,
+            }
+            changed = changed or inserted
+
+            if point.sharedPointId and not sharedPointId then
+                sharedPointId = point.sharedPointId
+            end
+        end
+    end
+
+    if #members < 2 then
+        return changed
+    end
+
+    if not sharedPointId then
+        sharedPointId = self.nextSharedPointId
+        self.nextSharedPointId = self.nextSharedPointId + 1
+        changed = true
+    end
+
+    for _, member in ipairs(members) do
+        if member.point.sharedPointId and member.point.sharedPointId ~= sharedPointId then
+            self:reassignSharedPointGroup(member.point.sharedPointId, sharedPointId)
+            changed = true
+        end
+        if member.point.sharedPointId ~= sharedPointId then
+            changed = true
+        end
+        member.point.sharedPointId = sharedPointId
+    end
+
+    self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
+    return changed
 end
 
 function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
@@ -4668,9 +4852,10 @@ function mapEditor:splitSharedJunctionColor(intersection, colorId, startMouseX, 
         isMagnet = false,
         magnetKind = nil,
         splitOriginSharedPointId = group.sharedPointId,
+        pickupMode = true,
+        awaitingPickupRelease = true,
     }
     self:closeColorPicker()
-    self:rebuildIntersections()
     self:showStatus("Drag to split that color out of the merger lane.")
     return true
 end
@@ -4870,7 +5055,8 @@ function mapEditor:handleColorPickerClick(x, y, button)
             if hitEntry then
                 if layout.submenu.branch == "disconnect" then
                     if self.colorPicker.mode == "junction" then
-                        self:splitSharedJunctionColor(intersection, hitEntry.option.id, rawX, rawY)
+                        local mapX, mapY = self:screenToMap(rawX, rawY)
+                        self:splitSharedJunctionColor(intersection, hitEntry.option.id, mapX, mapY)
                     elseif self.colorPicker.mode == "route_end" then
                         local mapX, mapY = self:screenToMap(rawX, rawY)
                         self:splitEndpointColor(route, "end", hitEntry.option.id, mapX, mapY)
@@ -5378,6 +5564,10 @@ function mapEditor:mousepressed(screenX, screenY, button)
         self:commitTextField()
     end
 
+    if button == 1 and self.drag and self.drag.pickupMode then
+        return true
+    end
+
     if self.colorPicker and self:handleColorPickerClick(screenX, screenY, button) then
         return true
     end
@@ -5583,6 +5773,18 @@ function mapEditor:mousepressed(screenX, screenY, button)
     return false
 end
 
+function mapEditor:isCameraScrollLocked()
+    if self.colorPicker and self.colorPicker.mode == "junction" then
+        return true
+    end
+
+    if self.drag and self.drag.kind == "intersection" then
+        return true
+    end
+
+    return false
+end
+
 function mapEditor:wheelmoved(screenX, screenY, _, y)
     if self.dialog and self.dialog.type == "open" then
         if y > 0 then
@@ -5594,6 +5796,10 @@ function mapEditor:wheelmoved(screenX, screenY, _, y)
             return true
         end
         return false
+    end
+
+    if self:isCameraScrollLocked() then
+        return true
     end
 
     if pointInRect(screenX, screenY, self.sidePanel) then
@@ -5702,6 +5908,11 @@ function mapEditor:mousereleased(screenX, screenY, button)
 
     if not self.drag then
         return false
+    end
+
+    if button == 1 and self.drag.pickupMode and self.drag.awaitingPickupRelease then
+        self.drag.awaitingPickupRelease = false
+        return true
     end
 
     local x, y = self:screenToMap(screenX, screenY)
@@ -6048,7 +6259,7 @@ function mapEditor:drawRoute(route, selectedRouteId)
     end
 
     graphics.setLineStyle("smooth")
-    graphics.setLineJoin("bevel")
+    graphics.setLineJoin("none")
     graphics.setColor(0.11, 0.14, 0.18, 1)
     graphics.setLineWidth(selectedRouteId == route.id and 16 or 13)
     graphics.line(points)
@@ -6546,6 +6757,8 @@ function mapEditor:drawHitboxOverlay(game)
         graphics.setColor(color[1], color[2], color[3], HITBOX_OVERLAY_FILL_ALPHA)
         if entry.kind == "polygon" then
             graphics.polygon("fill", entry.points)
+        elseif entry.kind == "circle" then
+            graphics.circle("fill", entry.x, entry.y, entry.radius)
         else
             graphics.rectangle(
                 "fill",
@@ -6562,6 +6775,8 @@ function mapEditor:drawHitboxOverlay(game)
         graphics.setLineWidth(HITBOX_OVERLAY_STROKE_WIDTH * inverseZoom)
         if entry.kind == "polygon" then
             graphics.polygon("line", entry.points)
+        elseif entry.kind == "circle" then
+            graphics.circle("line", entry.x, entry.y, entry.radius)
         else
             graphics.rectangle(
                 "line",

@@ -17,6 +17,7 @@ love.filesystem.getInfo = function()
 end
 
 local world = require("src.game.world")
+local trackSceneRenderer = require("src.game.track_scene_renderer")
 
 local function assertTrue(value, label)
     if not value then
@@ -29,13 +30,6 @@ local simulation = world.new(100, 100, {
     junctions = {},
     trains = {},
 })
-
-local markersCalled = 0
-simulation.drawTrackRoadTypeMarkers = function(_, track, isActive)
-    markersCalled = markersCalled + 1
-    assertTrue(track.id == "input_track", "input track markers should receive the input track")
-    assertTrue(isActive == true, "input track markers should preserve the active state")
-end
 
 simulation.drawTrackLine = function()
 end
@@ -74,7 +68,25 @@ local inputTrack = {
     targetType = "junction",
 }
 
-simulation:drawInputTrack(inputTrack, true)
+local originalDrawTrackRoadTypeMarkers = trackSceneRenderer.drawTrackRoadTypeMarkers
+local markersCalled = 0
+
+trackSceneRenderer.drawTrackRoadTypeMarkers = function(scene, track, isActive)
+    markersCalled = markersCalled + 1
+    assertTrue(scene == simulation, "input track markers should receive the active world")
+    assertTrue(track.id == "input_track", "input track markers should receive the input track")
+    assertTrue(isActive == true, "input track markers should preserve the active state")
+end
+
+local ok, err = pcall(function()
+    simulation:drawInputTrack(inputTrack, true)
+end)
+
+trackSceneRenderer.drawTrackRoadTypeMarkers = originalDrawTrackRoadTypeMarkers
+
+if not ok then
+    error(err, 0)
+end
 
 assertTrue(markersCalled == 1, "input tracks should render road type markers once")
 

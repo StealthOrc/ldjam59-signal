@@ -542,6 +542,7 @@ function renderer.drawInputTrack(scene, track, isActive)
     local points = flattenPoints(renderedPoints)
 
     graphics.setLineStyle("rough")
+    graphics.setLineJoin("none")
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.trackWidth + 10)
     graphics.line(points)
@@ -551,6 +552,8 @@ function renderer.drawInputTrack(scene, track, isActive)
     else
         renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
+
+    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
 end
 
 function renderer.drawStandaloneTrack(scene, track, isActive)
@@ -571,6 +574,7 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
     local points = flattenPoints(renderedPoints)
 
     graphics.setLineStyle("rough")
+    graphics.setLineJoin("none")
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.trackWidth + 10)
     graphics.line(points)
@@ -596,6 +600,7 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
 
     local points = flattenPoints(renderedPoints)
 
+    graphics.setLineJoin("none")
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.sharedWidth + 10)
     graphics.line(points)
