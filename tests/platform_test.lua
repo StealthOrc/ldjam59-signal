@@ -18,9 +18,9 @@ local platform = require("src.game.platform")
 local webPlatform = platform.detect()
 
 assertEqual(webPlatform.isWeb, true, "web detection recognizes the browser runtime")
-assertEqual(webPlatform.supportsOnlineServices, false, "web builds disable desktop online services")
+assertEqual(webPlatform.supportsOnlineServices, true, "web builds keep online services enabled")
 assertEqual(webPlatform.supportsThreadWorkers, false, "web builds disable worker threads")
-assertEqual(webPlatform.onlineUnavailableReason, "Online features are disabled in the HTML5 build.", "web builds expose a clear reason")
+assertEqual(webPlatform.onlineUnavailableReason, nil, "web builds do not expose an online-disabled reason")
 
 love = {
     system = {

@@ -1,3 +1,5 @@
+local webRequestWorker = require("src.game.network.web_request_worker")
+
 return function(Game, shared)
     -- Reuse the original module scope through a shared lookup table during the extraction refactor.
     setfenv(1, setmetatable({ Game = Game }, {
@@ -34,6 +36,21 @@ end
 
 function Game:getOnlineUnavailableReason()
     return self.platform and self.platform.onlineUnavailableReason or getLeaderboardUnavailableMessage()
+end
+
+local function getTransientRemoteRetryDelaySeconds(message, defaultDelaySeconds)
+    local transientDelaySeconds = tonumber(TRANSIENT_REMOTE_RETRY_DELAY_SECONDS) or 3
+    local text = string.lower(tostring(message or ""))
+    if text:find("cors", 1, true)
+        or text:find("failed to fetch", 1, true)
+        or text:find("browser blocked", 1, true)
+        or text:find("server responded", 1, true)
+        or text:find("network", 1, true)
+    then
+        return transientDelaySeconds
+    end
+
+    return defaultDelaySeconds
 end
 
 function Game:getLeaderboardCacheEntry(scopeKey)
@@ -782,18 +799,30 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
 end
 
 function Game:ensureLeaderboardWorker()
-    if not self:supportsThreadWorkers() or not self.leaderboardRequestChannel or not self.leaderboardResponseChannel then
-        return false
-    end
-
     local existingThread = self.leaderboardWorkerThread
     if existingThread and existingThread:isRunning() and not existingThread:getError() then
         return true
     end
 
-    self.leaderboardWorkerThread = love.thread.newThread(LEADERBOARD_THREAD_FILE)
-    self.leaderboardWorkerThread:start()
-    return true
+    if self:supportsThreadWorkers() then
+        if not self.leaderboardRequestChannel or not self.leaderboardResponseChannel then
+            return false
+        end
+
+        self.leaderboardWorkerThread = love.thread.newThread(LEADERBOARD_THREAD_FILE)
+        self.leaderboardWorkerThread:start()
+        return true
+    end
+
+    if self.platform and self.platform.isWeb then
+        local worker = webRequestWorker.new()
+        self.leaderboardWorkerThread = worker
+        self.leaderboardRequestChannel = worker:getRequestChannel()
+        self.leaderboardResponseChannel = worker:getResponseChannel()
+        return true
+    end
+
+    return false
 end
 
 function Game:beginLeaderboardFetch(onlineConfig)
@@ -887,8 +916,8 @@ function Game:applyLeaderboardFetchResult(response)
         return
     end
 
-    self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + LEADERBOARD_CACHE_DURATION_SECONDS
     local fetchMessage = normalizeLeaderboardErrorMessage(response.error)
+    self.leaderboardNextFetchAtByScope[requestScopeKey] = getNowSeconds() + getTransientRemoteRetryDelaySeconds(fetchMessage, LEADERBOARD_CACHE_DURATION_SECONDS)
     if requestScopeKey == getLeaderboardScopeKey(self.leaderboardMapUuid) then
         self.leaderboardState = self:buildLeaderboardState(
             LEADERBOARD_STATUS_ERROR,
@@ -936,7 +965,8 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
         return
     end
 
-    self.levelSelectPreviewNextFetchAtByMap[mapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+    local previewFetchMessage = normalizeLeaderboardErrorMessage(response.error)
+    self.levelSelectPreviewNextFetchAtByMap[mapUuid] = getNowUnixSeconds() + getTransientRemoteRetryDelaySeconds(previewFetchMessage, LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS)
     if cacheEntry then
         self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
             hasResolvedInitialRemoteAttempt = true,
@@ -944,7 +974,7 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
         return
     end
 
-    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, previewFetchMessage ~= "" and previewFetchMessage or LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
         hasResolvedInitialRemoteAttempt = true,
     })
 end
@@ -1091,11 +1121,12 @@ function Game:applyMarketplaceFetchResult(response, scopeKey)
         return
     end
 
-    self.marketplaceNextFetchAtByScope[scopeKey] = getNowSeconds() + LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS
+    local marketplaceFetchMessage = response.error or LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED
+    self.marketplaceNextFetchAtByScope[scopeKey] = getNowSeconds() + getTransientRemoteRetryDelaySeconds(marketplaceFetchMessage, LEVEL_SELECT_MARKETPLACE_CACHE_DURATION_SECONDS)
     self:setMarketplaceState(
         scopeKey,
         LEVEL_SELECT_MARKETPLACE_STATUS_ERROR,
-        response.error or LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED
+        marketplaceFetchMessage
     )
 end
 
@@ -1131,6 +1162,10 @@ function Game:updateLeaderboardFetchState()
     local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid)
     local marketplaceScopeKey = self.activeMarketplaceRequestScopeKey
     local activeFavoriteMapUuid = self.activeFavoriteMapMapUuid
+
+    if self.leaderboardWorkerThread and self.leaderboardWorkerThread.update then
+        self.leaderboardWorkerThread:update()
+    end
 
     if self.leaderboardWorkerThread and (
         self.activeLeaderboardRequestId ~= nil

@@ -25,11 +25,11 @@ function platform.detect()
     return {
         os = osName,
         isWeb = isWeb,
-        supportsOnlineServices = not isWeb,
+        supportsOnlineServices = true,
         supportsThreadWorkers = not isWeb and love and love.thread and love.thread.getChannel and love.thread.newThread and true or false,
         supportsClipboard = not isWeb and love and love.system and love.system.setClipboardText and true or false,
         supportsFileManagerReveal = not isWeb and love and love.system and love.system.openURL and true or false,
-        onlineUnavailableReason = isWeb and "Online features are disabled in the HTML5 build." or nil,
+        onlineUnavailableReason = nil,
     }
 end
 

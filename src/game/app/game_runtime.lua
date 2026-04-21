@@ -75,6 +75,7 @@ local LEVEL_SELECT_MARKETPLACE_MESSAGE_LOADING = "Loading online maps..."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH = "Type a map name, UUID, code, or creator to search."
 local LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED = "The online maps could not be loaded."
 local ONLINE_WRITE_TIMEOUT_SECONDS = 5
+local TRANSIENT_REMOTE_RETRY_DELAY_SECONDS = 3
 local MARKETPLACE_FAVORITE_ANIMATION_DURATION_SECONDS = 0.55
 local MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA = 1
 local LEVEL_SELECT_ACTION_STATUS_INFO = "info"
@@ -364,7 +365,16 @@ end
 
 local function normalizeLeaderboardErrorMessage(message)
     local text = tostring(message or "")
-    if text:find("API_KEY", 1, true) or text:find("API_BASE_URL", 1, true) or text:find(".env", 1, true) then
+    local lowerText = string.lower(text)
+    local isConfigSetupMessage = (
+        lowerText:find("api_key is missing", 1, true)
+        or lowerText:find("api_base_url is missing", 1, true)
+        or lowerText:find(".env was not found", 1, true)
+        or lowerText:find("set api_key and api_base_url", 1, true)
+        or lowerText:find("offline mode is enabled", 1, true)
+    )
+
+    if isConfigSetupMessage then
         return getLeaderboardUnavailableMessage()
     end
 
@@ -594,6 +604,7 @@ local shared = {
     LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH = LEVEL_SELECT_MARKETPLACE_MESSAGE_EMPTY_SEARCH,
     LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED = LEVEL_SELECT_MARKETPLACE_MESSAGE_FETCH_FAILED,
     ONLINE_WRITE_TIMEOUT_SECONDS = ONLINE_WRITE_TIMEOUT_SECONDS,
+    TRANSIENT_REMOTE_RETRY_DELAY_SECONDS = TRANSIENT_REMOTE_RETRY_DELAY_SECONDS,
     MARKETPLACE_FAVORITE_ANIMATION_DURATION_SECONDS = MARKETPLACE_FAVORITE_ANIMATION_DURATION_SECONDS,
     MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA = MARKETPLACE_FAVORITE_OPTIMISTIC_DELTA,
     LEVEL_SELECT_ACTION_STATUS_INFO = LEVEL_SELECT_ACTION_STATUS_INFO,

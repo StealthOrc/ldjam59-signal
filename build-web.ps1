@@ -2,6 +2,7 @@ param(
     [string]$ProjectName = "out-of-signal",
     [string]$Version = "0.1.0",
     [string]$OutputRoot = "",
+    [string]$EnvFilePath = "",
     [string]$LoveJsRef = "main",
     [switch]$ForceDownload
 )
@@ -12,6 +13,14 @@ $ProgressPreference = "SilentlyContinue"
 
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$envFileName = ".env"
+$buildEnvFileName = "build.env"
+$envKeys = @(
+    "API_KEY",
+    "API_BASE_URL",
+    "HMAC_SECRET"
+)
 
 $projectRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($projectRoot)) {
@@ -29,11 +38,14 @@ $playerCacheDir = Join-Path $OutputRoot "_lovejs_cache"
 $loveFileName = "$ProjectName.love"
 $loveFile = Join-Path $buildDir $loveFileName
 $zipFile = Join-Path $OutputRoot ($buildName + ".zip")
+$projectEnvFile = Join-Path $projectRoot $envFileName
+$projectBuildEnvFile = Join-Path $projectRoot $buildEnvFileName
 $userAgent = "Codex-WebBuild"
 
 $includeRoots = @(
     "main.lua",
     "conf.lua",
+    "fetch.lua",
     "src",
     "assets"
 )
@@ -145,6 +157,41 @@ function Create-ZipFromDirectory {
     }
 }
 
+function Get-BuildEnvContent {
+    param(
+        [string]$ProjectEnvFilePath,
+        [string]$ProjectBuildEnvFilePath,
+        [string]$ExplicitEnvFilePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitEnvFilePath) -and (Test-Path -LiteralPath $ExplicitEnvFilePath)) {
+        return Get-Content -LiteralPath $ExplicitEnvFilePath -Raw
+    }
+
+    if (Test-Path -LiteralPath $ProjectBuildEnvFilePath) {
+        return Get-Content -LiteralPath $ProjectBuildEnvFilePath -Raw
+    }
+
+    if (Test-Path -LiteralPath $ProjectEnvFilePath) {
+        return Get-Content -LiteralPath $ProjectEnvFilePath -Raw
+    }
+
+    $envLines = New-Object System.Collections.Generic.List[string]
+
+    foreach ($envKey in $envKeys) {
+        $envValue = [Environment]::GetEnvironmentVariable($envKey)
+        if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+            [void]$envLines.Add(($envKey + "=" + $envValue))
+        }
+    }
+
+    if ($envLines.Count -eq 0) {
+        throw "No build environment source was found. Create '$envFileName' in the project root or set one of these process environment variables: $($envKeys -join ', ')."
+    }
+
+    return ($envLines -join [Environment]::NewLine) + [Environment]::NewLine
+}
+
 function Invoke-DownloadFile {
     param(
         [string]$Url,
@@ -201,9 +248,172 @@ function Get-WebIndexHtml {
     <canvas id="canvas"></canvas>
     <div id="spinner" class="pending"></div>
     <noscript>This HTML5 build needs JavaScript enabled in the browser.</noscript>
+    <script src="web-fetch-bridge.js"></script>
     <script src="player.js?g=$PackageUri&v=11.5"></script>
   </body>
 </html>
+"@
+}
+
+function Get-WebFetchBridgeScript {
+    param(
+        [string]$LoveIdentity
+    )
+
+    return @"
+(function () {
+  window.Module = window.Module || {};
+
+  var HOME_DIRECTORY = "/home/web_user";
+  var SAVE_DIRECTORY = HOME_DIRECTORY + "/love/$LoveIdentity";
+  var REQUEST_DIRECTORY = SAVE_DIRECTORY + "/.web_fetch_bridge/requests";
+  var RESPONSE_DIRECTORY = SAVE_DIRECTORY + "/.web_fetch_bridge/responses";
+  var pollIntervalMs = 50;
+  var inflightByFileName = {};
+  var hasStarted = false;
+
+  function getFs() {
+    return window.Module && window.Module.FS ? window.Module.FS : null;
+  }
+
+  function ensureDirectory(FS, path) {
+    try {
+      FS.mkdirTree(path);
+    } catch (error) {
+      if (!FS.analyzePath(path).exists) {
+        throw error;
+      }
+    }
+  }
+
+  function ensureDirectories(FS) {
+    ensureDirectory(FS, SAVE_DIRECTORY);
+    ensureDirectory(FS, REQUEST_DIRECTORY);
+    ensureDirectory(FS, RESPONSE_DIRECTORY);
+  }
+
+  function readText(FS, path) {
+    return FS.readFile(path, { encoding: "utf8" });
+  }
+
+  function writeText(FS, path, text) {
+    FS.writeFile(path, text, { encoding: "utf8" });
+  }
+
+  function listRequestFiles(FS) {
+    try {
+      return FS.readdir(REQUEST_DIRECTORY).filter(function (name) {
+        return name !== "." && name !== ".." && name.slice(-5) === ".json";
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function writeResponse(FS, fileName, payload) {
+    var tempPath = RESPONSE_DIRECTORY + "/" + fileName + ".tmp";
+    var responsePath = RESPONSE_DIRECTORY + "/" + fileName;
+    try {
+      FS.unlink(tempPath);
+    } catch (error) {
+    }
+    try {
+      FS.unlink(responsePath);
+    } catch (error) {
+    }
+    writeText(FS, tempPath, JSON.stringify(payload));
+    FS.rename(tempPath, responsePath);
+  }
+
+  function finishRequest(FS, fileName) {
+    delete inflightByFileName[fileName];
+    try {
+      FS.unlink(REQUEST_DIRECTORY + "/" + fileName);
+    } catch (error) {
+    }
+  }
+
+  function processRequestFile(FS, fileName) {
+    if (inflightByFileName[fileName]) {
+      return;
+    }
+
+    var requestPath = REQUEST_DIRECTORY + "/" + fileName;
+    var requestText;
+    try {
+      requestText = readText(FS, requestPath);
+    } catch (error) {
+      return;
+    }
+
+    var requestPayload;
+    try {
+      requestPayload = JSON.parse(requestText);
+    } catch (error) {
+      writeResponse(FS, fileName, {
+        status: 0,
+        body: "The browser bridge could not parse the request payload: " + String(error && error.message || error),
+      });
+      finishRequest(FS, fileName);
+      return;
+    }
+
+    inflightByFileName[fileName] = true;
+
+    var requestOptions = {
+      method: String(requestPayload.method || "GET"),
+      headers: requestPayload.headers || {},
+    };
+
+    if (requestPayload.body !== undefined && requestPayload.body !== null && requestPayload.body !== "") {
+      requestOptions.body = String(requestPayload.body);
+    }
+
+    fetch(String(requestPayload.url || ""), requestOptions)
+      .then(function (response) {
+        return response.text().then(function (bodyText) {
+          return {
+            status: response.status,
+            body: bodyText,
+          };
+        });
+      })
+      .then(function (responsePayload) {
+        writeResponse(FS, fileName, responsePayload);
+        finishRequest(FS, fileName);
+      })
+      .catch(function (error) {
+        writeResponse(FS, fileName, {
+          status: 0,
+          body: String(error && error.message || error || "The browser fetch request failed."),
+        });
+        finishRequest(FS, fileName);
+      });
+  }
+
+  function poll() {
+    var FS = getFs();
+    if (!FS) {
+      return;
+    }
+
+    ensureDirectories(FS);
+    listRequestFiles(FS).forEach(function (fileName) {
+      processRequestFile(FS, fileName);
+    });
+  }
+
+  function start() {
+    if (hasStarted) {
+      return;
+    }
+
+    hasStarted = true;
+    window.setInterval(poll, pollIntervalMs);
+  }
+
+  start();
+})();
 "@
 }
 
@@ -229,9 +439,13 @@ Upload notes:
   - Cross-Origin-Embedder-Policy: require-corp
 - Do not open index.html directly from disk. love.js must be served by a web server.
 
-This HTML5 build is intentionally offline-first:
+This HTML5 build stores progress locally in browser storage and supports online services when build.env is present:
 - local saves and personal bests work in browser storage
-- desktop-only online features are disabled in the web build
+- online features use the build-time API config bundled into build.env
+- if your API is hosted on another origin, enable CORS for:
+  - x-api-key
+  - x-signature
+  - content-type
 "@
 }
 
@@ -281,6 +495,9 @@ foreach ($file in $filesToStage) {
     Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
 }
 
+$buildEnvContent = Get-BuildEnvContent -ProjectEnvFilePath $projectEnvFile -ProjectBuildEnvFilePath $projectBuildEnvFile -ExplicitEnvFilePath $EnvFilePath
+Write-Utf8NoBomFile -Path (Join-Path $stageDir $buildEnvFileName) -Content $buildEnvContent
+
 $zipArchive = [System.IO.Compression.ZipFile]::Open($loveFile, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach ($file in Get-ChildItem -LiteralPath $stageDir -Recurse -File) {
@@ -304,6 +521,7 @@ $gameTitle = (Get-Culture).TextInfo.ToTitleCase($gameTitle)
 $packageCacheKey = Get-Date -Format "yyyyMMddHHmmss"
 $packageUri = [Uri]::EscapeDataString("${loveFileName}?cb=$packageCacheKey")
 Write-Utf8NoBomFile -Path (Join-Path $buildDir "index.html") -Content (Get-WebIndexHtml -GameTitle $gameTitle -PackageUri $packageUri)
+Write-Utf8NoBomFile -Path (Join-Path $buildDir "web-fetch-bridge.js") -Content (Get-WebFetchBridgeScript -LoveIdentity $ProjectName)
 Write-Utf8NoBomFile -Path (Join-Path $buildDir "README.txt") -Content (Get-WebReadme -BuildName $buildName -PackageFileName $loveFileName)
 
 Remove-Item -LiteralPath $stageDir -Recurse -Force

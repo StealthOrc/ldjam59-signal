@@ -300,7 +300,7 @@ function json.decode(text)
     end
 
     local value, index = parseValue(text, 1)
-    if index == nil then
+    if type(index) ~= "number" then
         return value, index
     end
 
@@ -313,4 +313,3 @@ function json.decode(text)
 end
 
 return json
-
