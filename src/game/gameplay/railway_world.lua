@@ -481,6 +481,7 @@ function world.new(viewportW, viewportH, levelSource)
     self.elapsedTime = 0
     self.failureTrain = nil
     self.interactionCount = 0
+    self.replayListener = nil
     self.chargeImage = nil
     self.crossImage = nil
     self.directImage = nil
@@ -877,6 +878,55 @@ function world:registerInteraction()
     self.interactionCount = (self.interactionCount or 0) + 1
 end
 
+function world:setReplayListener(listener)
+    self.replayListener = listener
+end
+
+function world:emitReplayEvent(event)
+    local listener = self.replayListener
+    if listener and listener.recordTimelineEvent then
+        listener:recordTimelineEvent(event)
+    end
+end
+
+function world:getReplayJunctionStates()
+    local junctionStates = {}
+
+    for _, junction in ipairs(self.junctionOrder or {}) do
+        junctionStates[#junctionStates + 1] = {
+            id = junction.id,
+            activeInputIndex = junction.activeInputIndex or 1,
+            activeOutputIndex = junction.activeOutputIndex or 1,
+        }
+    end
+
+    return junctionStates
+end
+
+function world:applyReplayJunctionStates(junctionStates)
+    local stateById = {}
+
+    for _, junctionState in ipairs(junctionStates or {}) do
+        stateById[junctionState.id] = junctionState
+    end
+
+    for _, junction in ipairs(self.junctionOrder or {}) do
+        local state = stateById[junction.id]
+        if state then
+            junction.activeInputIndex = clamp(
+                tonumber(state.activeInputIndex) or junction.activeInputIndex or 1,
+                1,
+                math.max(1, #junction.inputs)
+            )
+            junction.activeOutputIndex = clamp(
+                tonumber(state.activeOutputIndex) or junction.activeOutputIndex or 1,
+                1,
+                math.max(1, #junction.outputs)
+            )
+        end
+    end
+end
+
 function world:triggerPressAnimation(stateTable, valueKey, velocityKey, strength, baseLift)
     if not stateTable then
         return
@@ -1149,6 +1199,12 @@ function world:spawnTrain(train)
     train.exitFadeRemaining = 0
     train.clearedAt = nil
     train.clearingExitEdgeId = nil
+    self:emitReplayEvent({
+        time = self.elapsedTime,
+        kind = "train_spawn",
+        trainId = train.id,
+        edgeId = train.startEdgeId,
+    })
 end
 
 function world:isTrainCleared(train)
@@ -1156,7 +1212,7 @@ function world:isTrainCleared(train)
 end
 
 function world:beginTrainExit(train)
-    if not train or train.completed then
+    if not train or train.completed or train.exiting then
         return
     end
 
@@ -1165,6 +1221,12 @@ function world:beginTrainExit(train)
     if currentEdge and currentEdge.targetType == "exit" then
         train.exiting = true
         train.clearingExitEdgeId = train.clearingExitEdgeId or currentEdge.id
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "train_exit",
+            trainId = train.id,
+            edgeId = train.clearingExitEdgeId,
+        })
     end
 end
 
@@ -1180,6 +1242,14 @@ function world:completeTrain(train)
     train.completedAt = train.clearedAt or self.elapsedTime
     train.deliveredCorrectly = not train.failedWrongDestination
     train.deliveredLate = train.deliveredCorrectly and train.deadline ~= nil and train.completedAt > train.deadline
+    self:emitReplayEvent({
+        time = train.completedAt,
+        kind = "train_complete",
+        trainId = train.id,
+        edgeId = train.clearingExitEdgeId,
+        deliveredCorrectly = train.deliveredCorrectly,
+        deliveredLate = train.deliveredLate,
+    })
 end
 
 function world:updateTrainExit(train, dt)
@@ -1380,6 +1450,17 @@ function world:activatePreparationControl(junction)
         self:syncCrossbarOutput(junction)
     end
 
+    if changed then
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "junction_state",
+            junctionId = junction.id,
+            reason = "preparation",
+            activeInputIndex = junction.activeInputIndex,
+            activeOutputIndex = junction.activeOutputIndex,
+        })
+    end
+
     return changed
 end
 
@@ -1387,7 +1468,18 @@ function world:activateControl(junction)
     local control = junction.control
 
     if control.type == "direct" then
-        return self:cycleInput(junction)
+        local changed = self:cycleInput(junction)
+        if changed then
+            self:emitReplayEvent({
+                time = self.elapsedTime,
+                kind = "junction_state",
+                junctionId = junction.id,
+                reason = "direct",
+                activeInputIndex = junction.activeInputIndex,
+                activeOutputIndex = junction.activeOutputIndex,
+            })
+        end
+        return changed
     end
 
     if control.type == "delayed" then
@@ -1407,6 +1499,14 @@ function world:activateControl(junction)
             control.pumpCount = 0
             control.decayHold = 0
             control.decayTimer = 0
+            self:emitReplayEvent({
+                time = self.elapsedTime,
+                kind = "junction_state",
+                junctionId = junction.id,
+                reason = "pump",
+                activeInputIndex = junction.activeInputIndex,
+                activeOutputIndex = junction.activeOutputIndex,
+            })
         end
 
         return control.pumpCount ~= previousPumpCount or control.target > 0
@@ -1418,6 +1518,14 @@ function world:activateControl(junction)
         control.remainingHold = control.holdTime
         control.releaseTimer = 0
         control.armed = true
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "junction_state",
+            junctionId = junction.id,
+            reason = "spring_forward",
+            activeInputIndex = junction.activeInputIndex,
+            activeOutputIndex = junction.activeOutputIndex,
+        })
         return true
     end
 
@@ -1425,6 +1533,14 @@ function world:activateControl(junction)
         self:cycleInput(junction)
         self:syncRelayOutput(junction)
         control.flashTimer = RELAY_FLASH_DURATION
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "junction_state",
+            junctionId = junction.id,
+            reason = "relay",
+            activeInputIndex = junction.activeInputIndex,
+            activeOutputIndex = junction.activeOutputIndex,
+        })
         return true
     end
 
@@ -1440,6 +1556,14 @@ function world:activateControl(junction)
         control.pendingResetTrainId = nil
         control.pendingResetEdgeId = nil
         control.flashTimer = TRIP_FLASH_DURATION
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "junction_state",
+            junctionId = junction.id,
+            reason = "trip_forward",
+            activeInputIndex = junction.activeInputIndex,
+            activeOutputIndex = junction.activeOutputIndex,
+        })
         return true
     end
 
@@ -1447,6 +1571,14 @@ function world:activateControl(junction)
         self:cycleInput(junction)
         self:syncCrossbarOutput(junction)
         control.flashTimer = CROSSBAR_FLASH_DURATION
+        self:emitReplayEvent({
+            time = self.elapsedTime,
+            kind = "junction_state",
+            junctionId = junction.id,
+            reason = "crossbar",
+            activeInputIndex = junction.activeInputIndex,
+            activeOutputIndex = junction.activeOutputIndex,
+        })
         return true
     end
 
@@ -1482,7 +1614,14 @@ function world:handleClick(x, y, button, isPreparationPhase)
                     self:registerInteraction()
                 end
             end
-            return true
+            return true, {
+                changed = changed == true,
+                junctionId = junction.id,
+                target = "selector",
+                button = button,
+                x = x,
+                y = y,
+            }
         end
 
         if button == 1 and self:isCrossingHit(junction, x, y) then
@@ -1499,11 +1638,50 @@ function world:handleClick(x, y, button, isPreparationPhase)
                     self:registerInteraction()
                 end
             end
-            return true
+            return true, {
+                changed = changed == true,
+                junctionId = junction.id,
+                target = "junction",
+                button = button,
+                x = x,
+                y = y,
+            }
         end
     end
 
-    return false
+    return false, nil
+end
+
+function world:applyReplayInteraction(interaction)
+    if type(interaction) ~= "table" then
+        return false
+    end
+
+    local junction = self.junctions[interaction.junctionId]
+    if not junction then
+        return false
+    end
+
+    if interaction.target == "selector" then
+        local direction = tonumber(interaction.button) == 2 and -1 or 1
+        local changed = self:cycleOutput(junction, direction)
+        if changed then
+            self:pressOutputSelector(junction, 1)
+            self:registerInteraction()
+        end
+        return changed
+    end
+
+    if not self:canActivateControl(junction, false) then
+        return false
+    end
+
+    local changed = self:activateControl(junction)
+    if changed then
+        self:pressJunctionIcon(junction, 1)
+        self:registerInteraction()
+    end
+    return changed
 end
 
 function world:updateControlState(junction, dt)
@@ -1516,6 +1694,14 @@ function world:updateControlState(junction, dt)
         if control.remainingDelay <= 0 then
             control.armed = false
             self:cycleInput(junction)
+            self:emitReplayEvent({
+                time = self.elapsedTime,
+                kind = "junction_state",
+                junctionId = junction.id,
+                reason = "delayed_release",
+                activeInputIndex = junction.activeInputIndex,
+                activeOutputIndex = junction.activeOutputIndex,
+            })
         end
         return
     end
@@ -1541,6 +1727,14 @@ function world:updateControlState(junction, dt)
                 control.armed = false
                 control.releaseTimer = SPRING_RELEASE_DURATION
                 junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+                self:emitReplayEvent({
+                    time = self.elapsedTime,
+                    kind = "junction_state",
+                    junctionId = junction.id,
+                    reason = "spring_return",
+                    activeInputIndex = junction.activeInputIndex,
+                    activeOutputIndex = junction.activeOutputIndex,
+                })
             end
             return
         end
@@ -1578,6 +1772,14 @@ function world:updateControlState(junction, dt)
                 if control.remainingTrips <= 0 then
                     control.armed = false
                     junction.activeInputIndex = clamp(control.returnInputIndex, 1, math.max(1, #junction.inputs))
+                    self:emitReplayEvent({
+                        time = self.elapsedTime,
+                        kind = "junction_state",
+                        junctionId = junction.id,
+                        reason = "trip_return",
+                        activeInputIndex = junction.activeInputIndex,
+                        activeOutputIndex = junction.activeOutputIndex,
+                    })
                 end
             end
         end

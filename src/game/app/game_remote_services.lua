@@ -971,6 +971,7 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
             hmacSecret = onlineConfig.hmacSecret,
             map = deepCopy(mapData.level),
             mapCategory = MAP_CATEGORY_ONLINE,
+            mapHash = mapData.mapHash,
             mapName = mapData.name or selectedMap.displayName or selectedMap.name,
             playerDisplayName = self.profile and self.profile.playerDisplayName or "",
             mapUuid = mapData.mapUuid or selectedMap.mapUuid,

@@ -141,6 +141,9 @@ assertEqual(
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
 assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
 assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
+assert(type(ui.getReplayHit) == "function", "ui.getReplayHit should exist")
+assert(type(ui.getReplayHoverInfoAt) == "function", "ui.getReplayHoverInfoAt should exist")
+assert(type(ui.getReplayTimelineTimeAt) == "function", "ui.getReplayTimelineTimeAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
@@ -390,6 +393,9 @@ assertEqual(resultsHover.text:find("Late arrivals: -10", 1, true) ~= nil, true, 
 assertEqual(resultsHover.text:find("Wrong destinations: -10", 1, true) ~= nil, true, "results hover includes wrong destination losses")
 assertEqual(ui.getResultsHoverInfoAt(resultsHoverGame, 640, 340), nil, "results hover ignores non-hover rows")
 
+local resultsRetryHit = ui.getResultsHit({ viewport = { w = 1280, h = 720 } }, 350, 652)
+assertEqual(resultsRetryHit, "retry", "results hit detection includes the retry button")
+
 hoverGame.playPhase = "play"
 assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
 hoverGame.playPhase = "prepare"
@@ -533,6 +539,7 @@ local marketplaceDescriptorGame = {
                 creator_uuid = "creator-1",
                 creator_display_name = "Creator",
                 map_name = "Shared Map",
+                updated_at = "2026-04-21T12:00:00Z",
                 map_category = "users",
                 liked_by_player = false,
                 favorite_count = 2,
@@ -547,6 +554,7 @@ local marketplaceDescriptorGame = {
                 creator_uuid = "creator-1",
                 creator_display_name = "Creator",
                 map_name = "Shared Map Variant",
+                updated_at = "2026-04-21T12:05:00Z",
                 map_category = "users",
                 liked_by_player = true,
                 favorite_count = 5,
@@ -564,6 +572,11 @@ assertEqual(#marketplaceDescriptors, 2, "marketplace descriptors include both en
 assert(
     marketplaceDescriptors[1].id ~= marketplaceDescriptors[2].id,
     "marketplace descriptors keep unique ids when entries share a map UUID"
+)
+assertEqual(
+    marketplaceDescriptors[1].savedAt,
+    "2026-04-21T12:00:00Z",
+    "marketplace descriptors keep the backend updated_at timestamp as savedAt"
 )
 
 local delayBadgeHover = nil
@@ -637,5 +650,37 @@ assertEqual(blockedHit.kind, "upload_dialog_blocked", "upload dialog blocks clic
 
 local outsideHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.panel.x - 8, uploadDialogRects.panel.y - 8, 1)
 assertEqual(outsideHit.kind, "upload_dialog_close", "upload dialog closes when clicking outside the panel")
+
+local replayGame = {
+    viewport = { w = 1280, h = 720 },
+    replayRuntime = {
+        duration = 10,
+        currentTime = 3,
+        record = {
+            timelineEvents = {
+                { time = 0, kind = "start" },
+                { time = 3, kind = "interaction", junctionId = "junction_1", target = "junction" },
+            },
+        },
+        playbackWorld = {
+            junctions = {
+                junction_1 = {
+                    label = "Main Junction",
+                },
+            },
+        },
+    },
+}
+
+assertEqual(ui.getReplayHit(replayGame, 40, 40), "back", "replay hit detection includes the back button")
+assertEqual(ui.getReplayTimelineTimeAt(replayGame, 640, 0), 5, "replay timeline converts x positions into replay time")
+
+local replayHover = ui.getReplayHoverInfoAt(replayGame, 402, 628)
+assertEqual(replayHover.title, "3.0s", "replay hover labels events with their timestamp")
+assertEqual(
+    replayHover.text,
+    "Triggered Main Junction",
+    "replay hover formats interaction event copy"
+)
 
 print("ui formatting tests passed")

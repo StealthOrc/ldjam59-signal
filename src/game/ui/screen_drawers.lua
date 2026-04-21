@@ -633,6 +633,7 @@ function ui.drawResults(game)
         lineY = lineY + 26
     end
 
+    drawButton(buttons.retry, "Retry", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
     drawButton(buttons.replay, "Replay", { 0.1, 0.14, 0.18, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.small)
     drawButton(
         buttons.leaderboard,
@@ -646,6 +647,176 @@ function ui.drawResults(game)
 
     if game.resultsHoverInfo then
         drawPlayTooltip(game, game.resultsHoverInfo)
+    end
+end
+
+local function getReplayCurrentEvent(game)
+    local runtime = game and game.replayRuntime or nil
+    if not runtime then
+        return nil
+    end
+
+    local bestEvent = nil
+    for _, event in ipairs(runtime.record and runtime.record.timelineEvents or {}) do
+        if (event.time or 0) <= (runtime.currentTime or 0) then
+            bestEvent = event
+        else
+            break
+        end
+    end
+
+    return bestEvent
+end
+
+local function drawReplayCursor(game)
+    local runtime = game and game.replayRuntime or nil
+    if not runtime then
+        return
+    end
+
+    local graphics = love.graphics
+    local cursor = runtime:getCursor()
+    if not cursor then
+        return
+    end
+
+    local cursorRadius = 7
+    graphics.setColor(0.02, 0.03, 0.04, 0.94)
+    graphics.circle("fill", cursor.x, cursor.y, cursorRadius + 3)
+    graphics.setColor(0.98, 0.98, 1, 1)
+    graphics.circle("fill", cursor.x, cursor.y, cursorRadius)
+    graphics.setColor(0.18, 0.24, 0.32, 1)
+    graphics.circle("fill", cursor.x, cursor.y, 2)
+
+    local recentInteraction = runtime:getRecentInteraction()
+    if not recentInteraction then
+        return
+    end
+
+    local pulseDuration = 0.25
+    local elapsed = math.max(0, (runtime.currentTime or 0) - (recentInteraction.time or 0))
+    if elapsed > pulseDuration then
+        return
+    end
+
+    local progress = elapsed / pulseDuration
+    local radius = 10 + 20 * progress
+    local alpha = 1 - progress
+    graphics.setColor(0.48, 0.92, 0.62, 0.7 * alpha)
+    graphics.setLineWidth(3)
+    graphics.circle("line", recentInteraction.x or cursor.x, recentInteraction.y or cursor.y, radius)
+    graphics.setLineWidth(1)
+end
+
+function ui.drawReplay(game)
+    local runtime = game and game.replayRuntime or nil
+    if not runtime then
+        return
+    end
+
+    local replayEventColorByKind = {
+        start = { 0.56, 0.72, 0.98, 1 },
+        preparation = { 0.7, 0.76, 0.84, 1 },
+        interaction = { 0.48, 0.92, 0.62, 1 },
+        junction_state = { 0.99, 0.78, 0.32, 1 },
+        train_spawn = { 0.52, 0.86, 0.98, 1 },
+        train_exit = { 0.98, 0.66, 0.28, 1 },
+        train_complete = { 0.98, 0.84, 0.38, 1 },
+        run_end = { 0.98, 0.48, 0.62, 1 },
+    }
+    local markerRadius = 5
+    local playheadWidth = 4
+    local graphics = love.graphics
+    local layout = getReplayLayout(game)
+    local currentEvent = getReplayCurrentEvent(game)
+    local currentEventLabel = currentEvent and formatReplayEventLabel(game, currentEvent) or "Replay loaded"
+    local playbackLabel = runtime.isPlaying and "Pause" or "Play"
+    local currentTimeLabel = formatSecondsLabel(runtime.currentTime or 0)
+    local totalTimeLabel = formatSecondsLabel(runtime.duration or 0)
+    local compatibilityStatus = game.replayRecord and game.replayRecord.mapCompatibility or "unknown"
+    local timelineMidY = layout.timeline.y + layout.timeline.h * 0.5
+    local playheadX = getReplayTimelineX(game, runtime.currentTime or 0)
+
+    drawReplayCursor(game)
+
+    drawButton(layout.back, "Back To Results", { 0.09, 0.11, 0.15, 0.98 }, { 0.3, 0.36, 0.42, 1 }, game.fonts.small)
+    drawButton(layout.retry, "Retry", { 0.1, 0.14, 0.18, 0.98 }, { 0.99, 0.78, 0.32, 1 }, game.fonts.small)
+    drawButton(layout.toggle, playbackLabel, { 0.12, 0.17, 0.2, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.small)
+
+    graphics.setColor(0.05, 0.07, 0.1, 0.96)
+    graphics.rectangle("fill", layout.panel.x, layout.panel.y, layout.panel.w, layout.panel.h, 20, 20)
+    graphics.setColor(0.26, 0.34, 0.42, 1)
+    graphics.rectangle("line", layout.panel.x, layout.panel.y, layout.panel.w, layout.panel.h, 20, 20)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print("Replay", layout.panel.x + 22, layout.panel.y + 14)
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.printf(
+        currentEventLabel,
+        layout.panel.x + 22,
+        layout.panel.y + 18,
+        layout.panel.w - 44,
+        "right"
+    )
+
+    if compatibilityStatus == "stale" then
+        graphics.setColor(0.99, 0.78, 0.32, 1)
+        graphics.print("Map changed since this replay was recorded", layout.panel.x + 22, layout.panel.y + 42)
+    elseif compatibilityStatus == "matching" then
+        graphics.setColor(0.48, 0.92, 0.62, 1)
+        graphics.print("Replay matches the current map revision", layout.panel.x + 22, layout.panel.y + 42)
+    else
+        graphics.setColor(0.72, 0.78, 0.84, 1)
+        graphics.print("Map revision could not be verified", layout.panel.x + 22, layout.panel.y + 42)
+    end
+
+    graphics.setColor(0.16, 0.2, 0.25, 1)
+    graphics.rectangle("fill", layout.timeline.x, layout.timeline.y, layout.timeline.w, layout.timeline.h, 8, 8)
+    graphics.setColor(0.48, 0.92, 0.62, 0.26)
+    graphics.rectangle(
+        "fill",
+        layout.timeline.x,
+        layout.timeline.y,
+        math.max(0, playheadX - layout.timeline.x),
+        layout.timeline.h,
+        8,
+        8
+    )
+
+    for _, event in ipairs(runtime.record and runtime.record.timelineEvents or {}) do
+        local markerX = getReplayTimelineX(game, event.time or 0)
+        local markerColor = replayEventColorByKind[event.kind] or { 0.72, 0.78, 0.84, 1 }
+        graphics.setColor(markerColor[1], markerColor[2], markerColor[3], markerColor[4])
+        graphics.circle("fill", markerX, timelineMidY, markerRadius)
+    end
+
+    graphics.setColor(0.98, 0.98, 1, 1)
+    graphics.rectangle(
+        "fill",
+        playheadX - playheadWidth * 0.5,
+        layout.timeline.y - 8,
+        playheadWidth,
+        layout.timeline.h + 16,
+        2,
+        2
+    )
+
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print(currentTimeLabel, layout.timeline.x, layout.timeline.y + 24)
+    graphics.printf(totalTimeLabel, layout.timeline.x, layout.timeline.y + 24, layout.timeline.w, "right")
+    graphics.setColor(0.72, 0.78, 0.84, 1)
+    graphics.printf(
+        "Space Play or Pause  Left or Right Seek  Home Start  End Finish",
+        layout.panel.x + 22,
+        layout.panel.y + layout.panel.h - 28,
+        layout.panel.w - 44,
+        "center"
+    )
+
+    if game.replayHoverInfo then
+        drawPlayTooltip(game, game.replayHoverInfo)
     end
 end
 

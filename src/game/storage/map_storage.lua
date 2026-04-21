@@ -1,5 +1,6 @@
 local mapStorage = {}
 local mapCompiler = require("src.game.map_compiler.map_compiler")
+local mapHash = require("src.game.util.map_hash")
 local toml = require("src.game.util.toml")
 local uuid = require("src.game.util.uuid")
 
@@ -11,6 +12,19 @@ local BUILTIN_CAMPAIGN_DIR = BUILTIN_MAP_DIR .. "/campaign"
 local IMPORT_DUPLICATE_START_INDEX = 2
 local MAP_FILE_EXTENSION = ".toml"
 local MAP_FILE_PATTERN = "%.toml$"
+
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = deepCopy(entry)
+    end
+
+    return copy
+end
 
 local function ensureUserMapDirectory()
     if not love.filesystem.getInfo("maps", "directory") then
@@ -62,6 +76,21 @@ end
 
 local function writeMapFile(path, payload)
     return love.filesystem.write(path, toml.stringify(payload))
+end
+
+local function createPersistedPayload(payload)
+    local persistedPayload = deepCopy(payload)
+    persistedPayload.mapHash = nil
+    return persistedPayload
+end
+
+local function attachComputedMapHash(data)
+    if type(data) ~= "table" then
+        return data
+    end
+
+    data.mapHash = mapHash.computeForLevel(data.level)
+    return data
 end
 
 local function getBuiltinDirectory(mapKind)
@@ -158,6 +187,7 @@ local function buildDescriptor(source, fileName, data, options)
         storageDirectory = descriptorOptions.directory,
         builtinDirectory = descriptorOptions.directory,
         savedAt = data.savedAt,
+        mapHash = data.mapHash,
         hasEditor = data.editor ~= nil,
         hasLevel = data.level ~= nil,
         hasErrors = #((data.validationErrors) or {}) > 0,
@@ -264,8 +294,9 @@ function mapStorage.saveMap(name, payload)
     local fileName = sanitizeFileName(name)
     local path = USER_MAP_DIR .. "/" .. fileName
     local resolvedPayload = ensureMapPayload(payload)
+    attachComputedMapHash(resolvedPayload)
 
-    local ok, writeError = writeMapFile(path, resolvedPayload)
+    local ok, writeError = writeMapFile(path, createPersistedPayload(resolvedPayload))
     if not ok then
         return nil, writeError
     end
@@ -278,6 +309,7 @@ end
 
 function mapStorage.importMap(name, payload)
     local resolvedPayload = ensureMapPayload(payload)
+    attachComputedMapHash(resolvedPayload)
     local isRemoteImport = type(resolvedPayload.remoteSource) == "table"
 
     if isRemoteImport then
@@ -290,7 +322,7 @@ function mapStorage.importMap(name, payload)
     local directory = isRemoteImport and DOWNLOADED_MAP_DIR or USER_MAP_DIR
     local path = directory .. "/" .. fileName
 
-    local ok, writeError = writeMapFile(path, resolvedPayload)
+    local ok, writeError = writeMapFile(path, createPersistedPayload(resolvedPayload))
     if not ok then
         return nil, writeError
     end
@@ -373,6 +405,7 @@ function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)
             data.level = level
         end
     end
+    attachComputedMapHash(data)
     return data
 end
 

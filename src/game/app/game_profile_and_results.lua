@@ -555,6 +555,7 @@ function Game:downloadMarketplaceMap(mapDescriptor)
         version = 1,
         mapUuid = tostring(sourceEntry.map_uuid or selectedMap.mapUuid or ""),
         name = tostring(sourceEntry.map_name or selectedMap.displayName or selectedMap.name or "Untitled Map"),
+        savedAt = tostring(sourceEntry.updated_at or selectedMap.savedAt or ""),
         previewDescription = selectedMap.previewDescription,
         level = deepCopy(sourceEntry.map),
         remoteSource = {
@@ -564,6 +565,8 @@ function Game:downloadMarketplaceMap(mapDescriptor)
             internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
             likedByPlayer = sourceEntry.liked_by_player == true,
             mapCategory = tostring(sourceEntry.map_category or ""),
+            mapHash = tostring(sourceEntry.map_hash or ""),
+            updatedAt = tostring(sourceEntry.updated_at or ""),
         },
     }
 

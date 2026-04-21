@@ -209,6 +209,7 @@ function buildMarketplaceDescriptor(entry)
         favoriteCount = tonumber(entry.favorite_count or 0) or 0,
         likedByPlayer = entry.liked_by_player == true,
         mapKind = normalizeMarketplaceMapKind(entry.map_category),
+        mapHash = tostring(entry.map_hash or ""),
         savedAt = entry.updated_at,
         hasEditor = false,
         hasLevel = type(entry.map) == "table",

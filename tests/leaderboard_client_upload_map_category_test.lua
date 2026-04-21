@@ -23,6 +23,7 @@ local leaderboardClient = require("src.game.network.leaderboard_client")
 local response, responseError = leaderboardClient.uploadMap({
     mapUuid = "map-1",
     creator_uuid = "creator-1",
+    mapHash = "hash-1",
     mapName = "Test Map",
     playerDisplayName = "Player One",
     map = {
@@ -46,5 +47,6 @@ end
 assertEqual(capturedRequest.url, "https://example.com/api/maps", "uploadMap uses the correct endpoint")
 assertEqual(capturedRequest.payload.map_category, "online", "uploadMap keeps the default map category contract")
 assertEqual(capturedRequest.payload.display_name, "Player One", "uploadMap includes the player display name in the payload")
+assertEqual(capturedRequest.payload.map_hash, "hash-1", "uploadMap includes the computed map hash in the payload")
 
 print("leaderboard client upload map category tests passed")

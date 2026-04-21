@@ -11,12 +11,21 @@ return function(Game, shared)
         end,
     }))
 
+local REPLAY_SEEK_STEP_SECONDS = 1
+
 function Game:update(dt)
     self:updateLeaderboardFetchState()
     self:updatePlayGuideTransition(dt)
 
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
+        return
+    end
+
+    if self.screen == "replay" then
+        if self.replayRuntime then
+            self.replayRuntime:update(dt)
+        end
         return
     end
 
@@ -72,6 +81,9 @@ function Game:draw()
         self.editor:draw(self)
     elseif self.screen == "results" then
         ui.drawResults(self)
+    elseif self.screen == "replay" and self.replayRuntime and self.replayRuntime.playbackWorld then
+        self.replayRuntime.playbackWorld:draw()
+        ui.drawReplay(self)
     elseif self.screen == "play" and self.world then
         self.world:draw()
         ui.drawPlay(self)
@@ -100,6 +112,8 @@ function Game:keypressed(key)
             if not self.editor:keypressed(key) then
                 self:openMenu()
             end
+        elseif self.screen == "replay" then
+            self:returnFromReplay()
         elseif self.screen == "play" or self.screen == "results" then
             self:navigateBackFromRun()
         else
@@ -257,6 +271,10 @@ function Game:keypressed(key)
     end
 
     if self.screen == "results" then
+        if key == "p" then
+            self:openReplay()
+            return
+        end
         if key == "m" then
             self:navigateBackFromRun()
             return
@@ -274,6 +292,43 @@ function Game:keypressed(key)
         end
         if key == "r" or key == "return" or key == "space" then
             self:restart()
+        end
+        return
+    end
+
+    if self.screen == "replay" then
+        if not self.replayRuntime then
+            self:returnFromReplay()
+            return
+        end
+
+        if key == "m" then
+            self:returnFromReplay()
+            return
+        end
+        if key == "r" then
+            self:restart()
+            return
+        end
+        if key == "space" then
+            self.replayRuntime:togglePlaying()
+            return
+        end
+        if key == "left" then
+            self.replayRuntime:seek((self.replayRuntime.currentTime or 0) - REPLAY_SEEK_STEP_SECONDS)
+            return
+        end
+        if key == "right" then
+            self.replayRuntime:seek((self.replayRuntime.currentTime or 0) + REPLAY_SEEK_STEP_SECONDS)
+            return
+        end
+        if key == "home" then
+            self.replayRuntime:seek(0)
+            return
+        end
+        if key == "end" then
+            self.replayRuntime:seek(self.replayRuntime.duration or 0)
+            return
         end
         return
     end
@@ -353,6 +408,8 @@ end
 
 function Game:mousepressed(x, y, button)
     local viewportX, viewportY = self:toViewportPosition(x, y)
+    self.mouseViewportX = viewportX
+    self.mouseViewportY = viewportY
 
     if self.screen == "profile_setup" then
         local action = ui.getProfileSetupActionAt(self, viewportX, viewportY)
@@ -469,6 +526,28 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self.screen == "replay" then
+        if button ~= 1 or not self.replayRuntime then
+            return
+        end
+
+        local hit = ui.getReplayHit(self, viewportX, viewportY)
+        if hit == "back" then
+            self:returnFromReplay()
+        elseif hit == "retry" then
+            self:restart()
+        elseif hit == "toggle_playback" then
+            self.replayRuntime:togglePlaying()
+        elseif hit == "timeline" then
+            self.replayDragActive = true
+            local timelineTime = ui.getReplayTimelineTimeAt(self, viewportX, viewportY)
+            self.replayDragTime = timelineTime
+            self.replayRuntime:setPlaying(false)
+            self.replayRuntime:seek(timelineTime)
+        end
+        return
+    end
+
     if self.screen == "results" then
         if button ~= 1 then
             return
@@ -480,6 +559,8 @@ function Game:mousepressed(x, y, button)
         end
 
         if hit == "replay" then
+            self:openReplay()
+        elseif hit == "retry" then
             self:restart()
         elseif hit == "leaderboard" then
             self:openLeaderboard({
@@ -528,51 +609,82 @@ function Game:mousepressed(x, y, button)
         return
     end
 
-    self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+    local consumed, interaction = self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+    if consumed and interaction then
+        if self.playPhase == "prepare" then
+            self.pendingReplayPreparationInteractions[#self.pendingReplayPreparationInteractions + 1] = interaction
+        elseif self.playPhase == "play" and self.replayRecorder then
+            self.replayRecorder:recordInteraction({
+                time = self.world.elapsedTime or 0,
+                junctionId = interaction.junctionId,
+                target = interaction.target,
+                button = interaction.button,
+                x = interaction.x,
+                y = interaction.y,
+            })
+        end
+    end
 end
 
 function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
     self.levelSelectHoverInfo = nil
+    self.replayHoverInfo = nil
+    local viewportX, viewportY = self:toViewportPosition(x, y)
+    self.mouseViewportX = viewportX
+    self.mouseViewportY = viewportY
     if self.screen == "leaderboard" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "profile_mode_setup" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.profileModeHoverId = ui.getProfileModeSetupActionAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "level_select" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
         self.levelSelectHoverInfo = ui.getLevelSelectHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "editor" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
         return
     end
 
     if self.screen == "results" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.resultsHoverInfo = ui.getResultsHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
+    if self.screen == "replay" then
+        if self.replayDragActive and self.replayRuntime then
+            local timelineTime = ui.getReplayTimelineTimeAt(self, viewportX, viewportY)
+            self.replayDragTime = timelineTime
+            self.replayRuntime:seek(timelineTime)
+        end
+        self.replayHoverInfo = ui.getReplayHoverInfoAt(self, viewportX, viewportY)
+        return
+    end
+
     if self.screen == "play" and self.world then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
+        if self.playPhase == "play" and self.replayRecorder then
+            self.replayRecorder:recordCursor(self.world.elapsedTime or 0, viewportX, viewportY, false)
+        end
         self.playHoverInfo = ui.getPlayHoverInfoAt(self, viewportX, viewportY)
     end
 end
 
 function Game:mousereleased(x, y, button)
+    if self.screen == "replay" and button == 1 then
+        self.replayDragActive = false
+        self.replayDragTime = nil
+        return
+    end
+
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousereleased(viewportX, viewportY, button)

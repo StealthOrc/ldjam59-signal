@@ -813,6 +813,7 @@ function buildPlayHelpSections(game)
 end
 
 function buildPlayDebugSections(game)
+    local currentMapDescriptor = game.currentMapDescriptor or {}
     local runSummary = game.world:getRunSummary()
     local nextTrain = game.world:getNextQueuedTrain()
     local nextDeadline = game.world:getNearestPendingDeadline()
@@ -826,6 +827,8 @@ function buildPlayDebugSections(game)
                 string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains),
                 string.format("Interactions: %d", runSummary.interactionCount or 0),
                 string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
+                string.format("Map UUID: %s", currentMapDescriptor.mapUuid or "n/a"),
+                string.format("Map Hash: %s", currentMapDescriptor.mapHash or "n/a"),
                 nextTrain and string.format(
                     "Next spawn: %s at %.1fs",
                     game.world:getTrainSummary(nextTrain),

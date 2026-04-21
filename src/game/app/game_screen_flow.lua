@@ -432,6 +432,12 @@ function Game:openMenu()
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self.playPhase = nil
+    self.replayRuntime = nil
+    self.replayRecord = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
     self:refreshMaps()
 end
 
@@ -449,6 +455,12 @@ function Game:openLevelSelect()
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self.playPhase = nil
+    self.replayRuntime = nil
+    self.replayRecord = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
     self:refreshMaps()
     local preferredMap = self.currentMapDescriptor
     if preferredMap then
@@ -471,6 +483,12 @@ function Game:openEditorBlank()
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self.playPhase = nil
+    self.replayRuntime = nil
+    self.replayRecord = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
     self.editor:resetFromMap(nil, nil)
 end
 
@@ -495,6 +513,12 @@ function Game:openEditorMap(mapDescriptor)
     self.resultsSummary = nil
     self.playOverlayMode = nil
     self.playPhase = nil
+    self.replayRuntime = nil
+    self.replayRecord = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
     self.editor:resetFromMap(mapData, mapDescriptor)
     return true
 end
@@ -528,6 +552,14 @@ function Game:startMap(mapDescriptor, options)
     self.playOverlayMode = nil
     self.playPhase = "prepare"
     self.playHoverInfo = nil
+    self.replayRuntime = nil
+    self.replayRecord = nil
+    self.replayRecorder = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    self.pendingReplayPreparationInteractions = {}
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.playGuide = self:buildPlayGuideState(mapData.level)
     self.playGuideTransition = nil
@@ -597,9 +629,98 @@ function Game:startPlayPhase()
         return false
     end
 
+    self.replayLevelSource = deepCopy(self.world:getLevel() or {})
+    self.replayRecorder = replayRecorder.new({
+        mapUuid = self.currentMapDescriptor and self.currentMapDescriptor.mapUuid or nil,
+        mapTitle = self.currentMapDescriptor and self.currentMapDescriptor.displayName or nil,
+        mapUpdatedAt = self.currentMapDescriptor and self.currentMapDescriptor.savedAt or nil,
+        createdAt = getNowUnixSeconds(),
+        initialJunctions = self.world:getReplayJunctionStates(),
+        preparationInteractions = self.pendingReplayPreparationInteractions,
+        initialCursor = {
+            x = self.mouseViewportX,
+            y = self.mouseViewportY,
+        },
+    })
+    self.world:setReplayListener({
+        recordTimelineEvent = function(_, event)
+            if self.replayRecorder then
+                self.replayRecorder:recordTimelineEvent(event)
+            end
+        end,
+    })
     self.playPhase = "play"
     self.playHoverInfo = nil
     return true
+end
+
+function Game:finalizeReplayRecord()
+    if not self.world or not self.replayRecorder then
+        return
+    end
+
+    local elapsedTime = self.world.elapsedTime or 0
+    local endReason = self.world:getRunEndReason()
+    self.replayRecorder:recordCursor(elapsedTime, self.mouseViewportX, self.mouseViewportY, true)
+    self.replayRecorder:recordTimelineEvent({
+        time = elapsedTime,
+        kind = "run_end",
+        endReason = endReason,
+    })
+    self.replayRecorder:setDuration(elapsedTime)
+
+    local baseRecord = self.replayRecorder:buildRecord({
+        endReason = endReason,
+    })
+    local savedRecord, saveError = replayStorage.save(baseRecord)
+
+    if self.world.setReplayListener then
+        self.world:setReplayListener(nil)
+    end
+
+    self.replayRecord = savedRecord or baseRecord
+    self.replayRecord.localSaveError = saveError
+    self.replayRecorder = nil
+end
+
+function Game:openReplay()
+    if not self.replayRecord or not self.replayLevelSource then
+        return false
+    end
+
+    local currentMapUpdatedAt = self.currentMapDescriptor and self.currentMapDescriptor.savedAt or nil
+    local recordedMapUpdatedAt = self.replayRecord.mapUpdatedAt
+    if recordedMapUpdatedAt and recordedMapUpdatedAt ~= "" and currentMapUpdatedAt and currentMapUpdatedAt ~= "" then
+        self.replayRecord.mapCompatibility = recordedMapUpdatedAt == currentMapUpdatedAt and "matching" or "stale"
+    else
+        self.replayRecord.mapCompatibility = "unknown"
+    end
+    self.replayRecord.currentMapUpdatedAt = currentMapUpdatedAt
+
+    self.replayRuntime = replayRuntime.new(
+        self.replayLevelSource,
+        self.replayRecord,
+        self.viewport.w,
+        self.viewport.h
+    )
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    self.screen = "replay"
+    return true
+end
+
+function Game:returnFromReplay()
+    self.replayRuntime = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    if self.resultsSummary then
+        self.screen = "results"
+        return
+    end
+
+    self:navigateBackFromRun()
 end
 
 function Game:openResults()
@@ -607,6 +728,7 @@ function Game:openResults()
         return
     end
 
+    self:finalizeReplayRecord()
     self.resultsSummary = self.world:getRunSummary()
     self.resultsHoverInfo = nil
     self.failureReason = self.resultsSummary.endReason == "level_clear" and nil or self.resultsSummary.endReason

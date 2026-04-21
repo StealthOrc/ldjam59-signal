@@ -91,6 +91,10 @@ function leaderboardClient.uploadMap(submission, config)
         display_name = display_name,
         map = submission.map,
     }
+    local mapHash = tostring(submission.mapHash or submission.map_hash or "")
+    if mapHash ~= "" then
+        payload.map_hash = mapHash
+    end
 
     return postJson(resolvedConfig, "/api/maps", payload)
 end
