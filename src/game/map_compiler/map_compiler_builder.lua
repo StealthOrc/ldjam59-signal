@@ -84,6 +84,7 @@ function buildCompiledLevel(mapName, editorData)
         local routeHits = routeJunctions[route.id] or {}
         local validRouteHits = {}
         local routeTotalLength = 0
+        local skipRoute = false
 
         for pointIndex = 1, #(route.points or {}) - 1 do
             routeTotalLength = routeTotalLength + segmentLength(route.points[pointIndex], route.points[pointIndex + 1])
@@ -106,7 +107,8 @@ function buildCompiledLevel(mapName, editorData)
                     }
                 )
                 routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
-                goto continue_route
+                skipRoute = true
+                break
             end
 
             if distanceAlongRoute > 0.0001 and distanceAlongRoute < routeTotalLength - 0.0001 then
@@ -116,121 +118,122 @@ function buildCompiledLevel(mapName, editorData)
             end
         end
 
-        table.sort(validRouteHits, function(first, second)
-            return first.distance < second.distance
-        end)
+        if not skipRoute then
+            table.sort(validRouteHits, function(first, second)
+                return first.distance < second.distance
+            end)
 
-        local nodes = {
-            {
-                kind = "start",
-                id = route.startEndpointId,
-                point = copyPoint((route.points or {})[1]),
-                distance = 0,
-            },
-        }
-
-        for _, hit in ipairs(validRouteHits) do
-            nodes[#nodes + 1] = {
-                kind = "junction",
-                id = hit.junctionId,
-                point = copyPoint(hit.point),
-                distance = hit.distance,
-            }
-        end
-
-        nodes[#nodes + 1] = {
-            kind = "exit",
-            id = route.endEndpointId,
-            point = copyPoint((route.points or {})[#(route.points or {})]),
-            distance = routeTotalLength,
-        }
-
-        for nodeIndex = 1, #nodes - 1 do
-            local sourceNode = nodes[nodeIndex]
-            local targetNode = nodes[nodeIndex + 1]
-            local points = extractRouteSegment(route.points or {}, sourceNode.distance, targetNode.distance)
-
-            if #points < 2 then
-                local diagnosticIndex = addError(
-                    string.format(
-                        "%s has two junctions so close together that no track remains between them. Move one junction farther away so a track segment can fit between the junctions.",
-                        getRouteDisplayName(route)
-                    ),
-                    {
-                        kind = "route_zero_length_segment",
-                        routeId = route.id,
-                        routeColor = route.color,
-                        x = (sourceNode.point.x + targetNode.point.x) * 0.5,
-                        y = (sourceNode.point.y + targetNode.point.y) * 0.5,
-                        sourceNodeId = sourceNode.id,
-                        targetNodeId = targetNode.id,
-                    }
-                )
-                routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
-                goto continue_route
-            end
-
-            local targetEndpoint = targetNode.kind == "exit" and getEndpointById(editorData, targetNode.id) or nil
-            local sourceEndpoint = sourceNode.kind == "start" and getEndpointById(editorData, sourceNode.id) or nil
-            local styleSections = buildRouteStyleSections(route, sourceNode.distance, targetNode.distance)
-            local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
-            local edge = {
-                id = string.format("%s_segment_%d", route.id, nodeIndex),
-                label = string.format("%s Segment %d", getRouteDisplayName(route), nodeIndex),
-                routeId = route.id,
-                roadType = primaryRoadType,
-                speedScale = roadTypes.getConfig(primaryRoadType).speedScale,
-                styleSections = styleSections,
-                points = points,
-                color = getColor(route.color),
-                darkColor = darkerColor(getColor(route.color)),
-                colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
-                inputColors = sourceEndpoint and (sourceEndpoint.colors or {}) or {},
-                -- Merged endpoints may accept multiple colors, but authored route visuals
-                -- should stay tied to the route's defined map color.
-                adoptInputColor = false,
-                sourceType = sourceNode.kind,
-                sourceId = sourceNode.id,
-                targetType = targetNode.kind,
-                targetId = targetNode.id,
+            local nodes = {
+                {
+                    kind = "start",
+                    id = route.startEndpointId,
+                    point = copyPoint((route.points or {})[1]),
+                    distance = 0,
+                },
             }
 
-            -- Keep authored route segments distinct even when they overlap exactly,
-            -- so each lane can preserve its own style and speed profile.
-            edgeLookup[edge.id] = edge
-
-            if sourceNode.kind == "junction" then
-                local sourceJunction = junctionLookup[sourceNode.id]
-                sourceJunction.outputEdgeIds[#sourceJunction.outputEdgeIds + 1] = edge.id
-            end
-            if targetNode.kind == "junction" then
-                local targetJunction = junctionLookup[targetNode.id]
-                targetJunction.inputEdgeIds[#targetJunction.inputEdgeIds + 1] = edge.id
-            end
-            if sourceNode.kind == "start" then
-                startEdgeRecords[edge.id] = startEdgeRecords[edge.id] or {
-                    edgeId = edge.id,
-                    colors = {},
+            for _, hit in ipairs(validRouteHits) do
+                nodes[#nodes + 1] = {
+                    kind = "junction",
+                    id = hit.junctionId,
+                    point = copyPoint(hit.point),
+                    distance = hit.distance,
                 }
-                for _, colorId in ipairs(sourceEndpoint and (sourceEndpoint.colors or {}) or {}) do
-                    startEdgeRecords[edge.id].colors[colorId] = true
-                    if lineColorToEdgeId[colorId] and lineColorToEdgeId[colorId] ~= edge.id then
-                        if not duplicateInputColorErrors[colorId] then
-                            duplicateInputColorErrors[colorId] = true
-                            addError(string.format("Input color '%s' is used on more than one source line.", colorId))
+            end
+
+            nodes[#nodes + 1] = {
+                kind = "exit",
+                id = route.endEndpointId,
+                point = copyPoint((route.points or {})[#(route.points or {})]),
+                distance = routeTotalLength,
+            }
+
+            for nodeIndex = 1, #nodes - 1 do
+                local sourceNode = nodes[nodeIndex]
+                local targetNode = nodes[nodeIndex + 1]
+                local points = extractRouteSegment(route.points or {}, sourceNode.distance, targetNode.distance)
+
+                if #points < 2 then
+                    local diagnosticIndex = addError(
+                        string.format(
+                            "%s has two junctions so close together that no track remains between them. Move one junction farther away so a track segment can fit between the junctions.",
+                            getRouteDisplayName(route)
+                        ),
+                        {
+                            kind = "route_zero_length_segment",
+                            routeId = route.id,
+                            routeColor = route.color,
+                            x = (sourceNode.point.x + targetNode.point.x) * 0.5,
+                            y = (sourceNode.point.y + targetNode.point.y) * 0.5,
+                            sourceNodeId = sourceNode.id,
+                            targetNodeId = targetNode.id,
+                        }
+                    )
+                    routeBlockingDiagnosticIndexByColor[route.color] = diagnosticIndex
+                    skipRoute = true
+                    break
+                end
+
+                local targetEndpoint = targetNode.kind == "exit" and getEndpointById(editorData, targetNode.id) or nil
+                local sourceEndpoint = sourceNode.kind == "start" and getEndpointById(editorData, sourceNode.id) or nil
+                local styleSections = buildRouteStyleSections(route, sourceNode.distance, targetNode.distance)
+                local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
+                local edge = {
+                    id = string.format("%s_segment_%d", route.id, nodeIndex),
+                    label = string.format("%s Segment %d", getRouteDisplayName(route), nodeIndex),
+                    routeId = route.id,
+                    roadType = primaryRoadType,
+                    speedScale = roadTypes.getConfig(primaryRoadType).speedScale,
+                    styleSections = styleSections,
+                    points = points,
+                    color = getColor(route.color),
+                    darkColor = darkerColor(getColor(route.color)),
+                    colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
+                    inputColors = sourceEndpoint and (sourceEndpoint.colors or {}) or {},
+                    -- Merged endpoints may accept multiple colors, but authored route visuals
+                    -- should stay tied to the route's defined map color.
+                    adoptInputColor = false,
+                    sourceType = sourceNode.kind,
+                    sourceId = sourceNode.id,
+                    targetType = targetNode.kind,
+                    targetId = targetNode.id,
+                }
+
+                -- Keep authored route segments distinct even when they overlap exactly,
+                -- so each lane can preserve its own style and speed profile.
+                edgeLookup[edge.id] = edge
+
+                if sourceNode.kind == "junction" then
+                    local sourceJunction = junctionLookup[sourceNode.id]
+                    sourceJunction.outputEdgeIds[#sourceJunction.outputEdgeIds + 1] = edge.id
+                end
+                if targetNode.kind == "junction" then
+                    local targetJunction = junctionLookup[targetNode.id]
+                    targetJunction.inputEdgeIds[#targetJunction.inputEdgeIds + 1] = edge.id
+                end
+                if sourceNode.kind == "start" then
+                    startEdgeRecords[edge.id] = startEdgeRecords[edge.id] or {
+                        edgeId = edge.id,
+                        colors = {},
+                    }
+                    for _, colorId in ipairs(sourceEndpoint and (sourceEndpoint.colors or {}) or {}) do
+                        startEdgeRecords[edge.id].colors[colorId] = true
+                        if lineColorToEdgeId[colorId] and lineColorToEdgeId[colorId] ~= edge.id then
+                            if not duplicateInputColorErrors[colorId] then
+                                duplicateInputColorErrors[colorId] = true
+                                addError(string.format("Input color '%s' is used on more than one source line.", colorId))
+                            end
+                        else
+                            lineColorToEdgeId[colorId] = edge.id
                         end
-                    else
-                        lineColorToEdgeId[colorId] = edge.id
                     end
                 end
-            end
 
-            if targetNode.kind == "exit" then
-                addOutputColors(outputColorLookup, edge, sourceEndpoint, targetEndpoint)
+                if targetNode.kind == "exit" then
+                    addOutputColors(outputColorLookup, edge, sourceEndpoint, targetEndpoint)
+                end
             end
         end
-
-        ::continue_route::
     end
 
     local edges = {}
@@ -269,35 +272,31 @@ function buildCompiledLevel(mapName, editorData)
         sortEdgesByStart(inputEdges)
         sortEdgesByEnd(outputEdges)
 
-        if #inputEdges == 0 and #outputEdges == 0 then
-            goto continue_junction
-        end
+        if #inputEdges > 0 or #outputEdges > 0 then
+            if #inputEdges == 0 or #outputEdges == 0 then
+                addError(
+                    "A playable junction needs at least one input and one output.",
+                    {
+                        kind = "junction_missing_edges",
+                        x = junction.x,
+                        y = junction.y,
+                        junctionId = junction.id,
+                    }
+                )
+            end
 
-        if #inputEdges == 0 or #outputEdges == 0 then
-            addError(
-                "A playable junction needs at least one input and one output.",
-                {
-                    kind = "junction_missing_edges",
-                    x = junction.x,
-                    y = junction.y,
-                    junctionId = junction.id,
-                }
-            )
+            junction.inputEdgeIds = {}
+            junction.outputEdgeIds = {}
+            for _, edge in ipairs(inputEdges) do
+                junction.inputEdgeIds[#junction.inputEdgeIds + 1] = edge.id
+            end
+            for _, edge in ipairs(outputEdges) do
+                junction.outputEdgeIds[#junction.outputEdgeIds + 1] = edge.id
+            end
+            junction.activeInputIndex = math.min(junction.activeInputIndex, math.max(1, #junction.inputEdgeIds))
+            junction.activeOutputIndex = math.min(junction.activeOutputIndex, math.max(1, #junction.outputEdgeIds))
+            playableJunctions[#playableJunctions + 1] = junction
         end
-
-        junction.inputEdgeIds = {}
-        junction.outputEdgeIds = {}
-        for _, edge in ipairs(inputEdges) do
-            junction.inputEdgeIds[#junction.inputEdgeIds + 1] = edge.id
-        end
-        for _, edge in ipairs(outputEdges) do
-            junction.outputEdgeIds[#junction.outputEdgeIds + 1] = edge.id
-        end
-        junction.activeInputIndex = math.min(junction.activeInputIndex, math.max(1, #junction.inputEdgeIds))
-        junction.activeOutputIndex = math.min(junction.activeOutputIndex, math.max(1, #junction.outputEdgeIds))
-        playableJunctions[#playableJunctions + 1] = junction
-
-        ::continue_junction::
     end
 
     local authoredTrains = editorData.trains

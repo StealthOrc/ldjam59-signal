@@ -743,7 +743,8 @@ end
 function getMenuButtons(game)
     local centerX = math.floor((game.viewport.w - MENU_LAYOUT.buttonWidth) * 0.5 + 0.5)
     local buttonY = MENU_LAYOUT.firstButtonY
-    return {
+    local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
+    local buttons = {
         {
             id = "play",
             x = centerX,
@@ -768,23 +769,29 @@ function getMenuButtons(game)
             h = MENU_LAYOUT.buttonHeight,
             label = "Map Editor",
         },
-        {
+    }
+
+    if supportsOnlineServices then
+        buttons[#buttons + 1] = {
             id = "toggle_play_mode",
             x = centerX,
             y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 3),
             w = MENU_LAYOUT.buttonWidth,
             h = MENU_LAYOUT.buttonHeight,
             label = game:getPlayModeButtonLabel(),
-        },
-        {
-            id = "quit",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 4),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Quit",
-        },
+        }
+    end
+
+    buttons[#buttons + 1] = {
+        id = "quit",
+        x = centerX,
+        y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * (supportsOnlineServices and 4 or 3)),
+        w = MENU_LAYOUT.buttonWidth,
+        h = MENU_LAYOUT.buttonHeight,
+        label = "Quit",
     }
+
+    return buttons
 end
 
 function getProfileSetupConfirmRect(game)
@@ -869,7 +876,8 @@ end
 
 function ui.getProfileModeSetupActionAt(game, x, y)
     local optionRects = getProfileModeSetupOptionRects(game)
-    if pointInRect(x, y, optionRects.online) then
+    local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
+    if pointInRect(x, y, optionRects.online) and supportsOnlineServices then
         return "online"
     end
     if pointInRect(x, y, optionRects.offline) then
@@ -980,7 +988,7 @@ function ui.getLevelSelectHit(game, x, y, button)
 
     local modeSelectorRect = getLevelSelectModeSelectorRect(game)
     if pointInRect(x, y, modeSelectorRect) then
-        local modeSegments = getLevelSelectModeSegments()
+        local modeSegments = getLevelSelectModeSegments(game)
         for index, segment in ipairs(modeSegments) do
             if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
                 if segment.id == "marketplace" and not game:isOnlineMode() then
@@ -1078,7 +1086,7 @@ function ui.getLevelSelectHoverId(game, x, y)
         end
         local modeSelectorRect = getLevelSelectModeSelectorRect(game)
         if pointInRect(x, y, modeSelectorRect) then
-            local modeSegments = getLevelSelectModeSegments()
+            local modeSegments = getLevelSelectModeSegments(game)
             for index, segment in ipairs(modeSegments) do
                 if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
                     if segment.id == "marketplace" and not game:isOnlineMode() then
@@ -1108,7 +1116,7 @@ function ui.getLevelSelectHoverId(game, x, y)
 
     local modeSelectorRect = getLevelSelectModeSelectorRect(game)
     if pointInRect(x, y, modeSelectorRect) then
-        local modeSegments = getLevelSelectModeSegments()
+        local modeSegments = getLevelSelectModeSegments(game)
         for index, segment in ipairs(modeSegments) do
             if pointInRect(x, y, uiControls.segmentRect(modeSelectorRect, index, #modeSegments)) then
                 if segment.id == "marketplace" and not game:isOnlineMode() then

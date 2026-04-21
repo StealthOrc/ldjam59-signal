@@ -1,5 +1,6 @@
 local input = require("src.game.ui.shortcut_input")
 local mapEditor = require("src.game.editor.map_editor")
+local platform = require("src.game.platform")
 local mapStorage = require("src.game.storage.map_storage")
 local localScoreStorage = require("src.game.storage.local_score_storage")
 local profileStorage = require("src.game.storage.profile_storage")
@@ -346,6 +347,21 @@ local function getLeaderboardUnavailableMessage()
     return LEADERBOARD_MESSAGE_UNAVAILABLE
 end
 
+local function buildUnsupportedOnlineConfig(platformInfo)
+    local message = platformInfo and platformInfo.onlineUnavailableReason or getLeaderboardUnavailableMessage()
+    return {
+        values = {},
+        apiKey = "",
+        apiBaseUrl = "",
+        hmacSecret = "",
+        sourceByKey = {},
+        hasLocalConfigFile = false,
+        hasLocalRequiredConfig = false,
+        isConfigured = false,
+        errors = { message },
+    }
+end
+
 local function normalizeLeaderboardErrorMessage(message)
     local text = tostring(message or "")
     if text:find("API_KEY", 1, true) or text:find("API_BASE_URL", 1, true) or text:find(".env", 1, true) then
@@ -358,6 +374,7 @@ end
 function Game.new()
     local self = setmetatable({}, Game)
     local profile = profileStorage.load()
+    local platformInfo = platform.detect()
 
     self.viewport = {
         w = 1280,
@@ -374,13 +391,16 @@ function Game.new()
         small = love.graphics.newFont(14),
     }
 
+    self.platform = platformInfo
     self.profile = profile
     self.localScoreboard = localScoreStorage.load()
-    self.onlineConfig = leaderboardClient.getConfig()
+    self.onlineConfig = platformInfo.supportsOnlineServices and leaderboardClient.getConfig() or buildUnsupportedOnlineConfig(platformInfo)
     logOnlineConfig(self.onlineConfig)
     self.screen = "profile_setup"
     if trim(profile.playerDisplayName) ~= "" then
-        if getProfilePlayMode(profile) == PLAY_MODE_ONLINE or getProfilePlayMode(profile) == PLAY_MODE_OFFLINE then
+        if platformInfo.supportsOnlineServices and (getProfilePlayMode(profile) == PLAY_MODE_ONLINE or getProfilePlayMode(profile) == PLAY_MODE_OFFLINE) then
+            self.screen = "menu"
+        elseif not platformInfo.supportsOnlineServices then
             self.screen = "menu"
         else
             self.screen = "profile_mode_setup"
@@ -458,7 +478,9 @@ function Game.new()
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
     self.profileSetupError = nil
-    self.profileModeSelection = getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE
+    self.profileModeSelection = platformInfo.supportsOnlineServices
+        and (getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE)
+        or PLAY_MODE_OFFLINE
     self.profileModeHoverId = nil
     self.profileModeSetupError = nil
     self.playOverlayMode = nil
@@ -482,10 +504,14 @@ function Game.new()
     self.activeLeaderboardRequestStartedAt = nil
     self.activeLeaderboardRequestScopeKey = nil
     self.leaderboardWorkerThread = nil
-    self.leaderboardRequestChannel = love.thread.getChannel(LEADERBOARD_REQUEST_CHANNEL_NAME)
-    self.leaderboardResponseChannel = love.thread.getChannel(LEADERBOARD_RESPONSE_CHANNEL_NAME)
-    drainChannel(self.leaderboardRequestChannel)
-    drainChannel(self.leaderboardResponseChannel)
+    self.leaderboardRequestChannel = nil
+    self.leaderboardResponseChannel = nil
+    if platformInfo.supportsThreadWorkers then
+        self.leaderboardRequestChannel = love.thread.getChannel(LEADERBOARD_REQUEST_CHANNEL_NAME)
+        self.leaderboardResponseChannel = love.thread.getChannel(LEADERBOARD_RESPONSE_CHANNEL_NAME)
+        drainChannel(self.leaderboardRequestChannel)
+        drainChannel(self.leaderboardResponseChannel)
+    end
     self.playPhase = nil
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
@@ -512,6 +538,7 @@ local shared = {
     world = world,
     ui = ui,
     json = json,
+    platform = platform,
     ONLINE_CONFIG_LOG_PREFIX = ONLINE_CONFIG_LOG_PREFIX,
     LEADERBOARD_CACHE_DURATION_SECONDS = LEADERBOARD_CACHE_DURATION_SECONDS,
     LEADERBOARD_FETCH_TIMEOUT_SECONDS = LEADERBOARD_FETCH_TIMEOUT_SECONDS,
@@ -613,6 +640,7 @@ local shared = {
     describeConfigSource = describeConfigSource,
     logOnlineConfig = logOnlineConfig,
     getLeaderboardUnavailableMessage = getLeaderboardUnavailableMessage,
+    buildUnsupportedOnlineConfig = buildUnsupportedOnlineConfig,
     normalizeLeaderboardErrorMessage = normalizeLeaderboardErrorMessage,
     buildLevelSelectPreviewCacheEntry = buildLevelSelectPreviewCacheEntry,
 }

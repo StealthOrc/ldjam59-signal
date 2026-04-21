@@ -112,10 +112,11 @@ function getLevelSelectTitleBarRect(game)
     }
 end
 
-function getLevelSelectModeSegments()
+function getLevelSelectModeSegments(game)
+    local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
     return {
         { id = "library", label = "Local Maps" },
-        { id = "marketplace", label = "Online Maps" },
+        { id = "marketplace", label = supportsOnlineServices and "Online Maps" or "Online Disabled" },
     }
 end
 

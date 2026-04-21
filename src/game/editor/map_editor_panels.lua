@@ -918,8 +918,9 @@ function mapEditor:openDialogMap(savedMap)
 end
 
 function mapEditor:openUserMapsFolder()
+    local platformInfo = require("src.game.platform").detect()
     local saveDirectory = mapStorage.getSaveDirectory()
-    if not (love and love.system and love.system.openURL) then
+    if not platformInfo.supportsFileManagerReveal then
         self:showStatus("Opening the user maps folder is not supported here.")
         return false
     end

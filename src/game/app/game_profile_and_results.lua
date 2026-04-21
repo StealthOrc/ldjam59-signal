@@ -259,6 +259,12 @@ function Game:cycleProfileModeSelection(direction)
         return
     end
 
+    if not self:supportsOnlineServices() then
+        self.profileModeSelection = PLAY_MODE_OFFLINE
+        self.profileModeSetupError = nil
+        return
+    end
+
     if self.profileModeSelection == PLAY_MODE_OFFLINE then
         self.profileModeSelection = PLAY_MODE_ONLINE
     else
@@ -268,6 +274,10 @@ function Game:cycleProfileModeSelection(direction)
 end
 
 function Game:confirmProfileModeSelection()
+    if not self:supportsOnlineServices() then
+        self.profileModeSelection = PLAY_MODE_OFFLINE
+    end
+
     local ok, saveError = self:setPlayMode(self.profileModeSelection)
     if not ok then
         self.profileModeSetupError = saveError or "The play mode could not be saved."
@@ -310,7 +320,7 @@ function Game:submitResultsScore()
     if not onlineConfig.isConfigured then
         self.resultsOnlineState = {
             status = "disabled",
-            message = "Saved locally. " .. getLeaderboardUnavailableMessage(),
+            message = "Saved locally. " .. self:getOnlineUnavailableReason(),
         }
         return
     end
@@ -338,6 +348,10 @@ function Game:canUploadMapDescriptor(mapDescriptor)
 end
 
 function Game:getUploadConfig()
+    if not self:supportsOnlineServices() then
+        return buildUnsupportedOnlineConfig(self.platform)
+    end
+
     if not self:isOnlineMode() then
         return {
             isConfigured = false,
@@ -874,7 +888,7 @@ function Game:refreshLeaderboard()
     if not onlineConfig.isConfigured then
         self.leaderboardState = self:buildLeaderboardState(
             LEADERBOARD_STATUS_DISABLED,
-            getLeaderboardUnavailableMessage(),
+            self:getOnlineUnavailableReason(),
             cacheEntry.payload,
             cacheEntry.fetchedAt
         )

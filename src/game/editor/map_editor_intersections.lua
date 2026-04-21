@@ -920,58 +920,54 @@ function mapEditor:rebuildIntersections(passIndex)
     for _, groupedIntersection in pairs(grouped) do
         table.sort(groupedIntersection.routeIds)
         for _, strictIntersection in ipairs(self:resolveGroupedIntersections(groupedIntersection)) do
-            if self:isSharedEndpointIntersection(strictIntersection) then
-                goto continue_strict_intersection
-            end
+            if not self:isSharedEndpointIntersection(strictIntersection) then
+                local routeKey = table.concat(strictIntersection.routeIds, "|")
+                local inputEndpointIds = {}
+                local outputEndpointIds = {}
+                local inputLookup = {}
+                local outputLookup = {}
+                local inputRouteIds = {}
+                local outputRouteIds = {}
 
-            local routeKey = table.concat(strictIntersection.routeIds, "|")
-            local inputEndpointIds = {}
-            local outputEndpointIds = {}
-            local inputLookup = {}
-            local outputLookup = {}
-            local inputRouteIds = {}
-            local outputRouteIds = {}
-
-            for _, routeId in ipairs(strictIntersection.routeIds) do
-                local route = self:getRouteById(routeId)
-                if route then
-                    inputRouteIds[#inputRouteIds + 1] = route.id
-                    outputRouteIds[#outputRouteIds + 1] = route.id
-                    if not inputLookup[route.startEndpointId] then
-                        inputLookup[route.startEndpointId] = true
-                        inputEndpointIds[#inputEndpointIds + 1] = route.startEndpointId
-                    end
-                    if not outputLookup[route.endEndpointId] then
-                        outputLookup[route.endEndpointId] = true
-                        outputEndpointIds[#outputEndpointIds + 1] = route.endEndpointId
+                for _, routeId in ipairs(strictIntersection.routeIds) do
+                    local route = self:getRouteById(routeId)
+                    if route then
+                        inputRouteIds[#inputRouteIds + 1] = route.id
+                        outputRouteIds[#outputRouteIds + 1] = route.id
+                        if not inputLookup[route.startEndpointId] then
+                            inputLookup[route.startEndpointId] = true
+                            inputEndpointIds[#inputEndpointIds + 1] = route.startEndpointId
+                        end
+                        if not outputLookup[route.endEndpointId] then
+                            outputLookup[route.endEndpointId] = true
+                            outputEndpointIds[#outputEndpointIds + 1] = route.endEndpointId
+                        end
                     end
                 end
+
+                self:sortEndpointIdsByPosition(inputEndpointIds, "input")
+                self:sortEndpointIdsByPosition(outputEndpointIds, "output")
+                self:sortRouteIdsByMagnet(inputRouteIds, "start")
+                self:sortRouteIdsByMagnet(outputRouteIds, "end")
+
+                local intersection = {
+                    id = strictIntersection.id,
+                    x = strictIntersection.x,
+                    y = strictIntersection.y,
+                    routeIds = strictIntersection.routeIds,
+                    routeKey = routeKey,
+                    inputEndpointIds = inputEndpointIds,
+                    outputEndpointIds = outputEndpointIds,
+                    inputRouteIds = inputRouteIds,
+                    outputRouteIds = outputRouteIds,
+                }
+                local state = self:getJunctionState(intersection, previousIntersections)
+                intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
+                intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
+                intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
+                intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
+                self.intersections[#self.intersections + 1] = intersection
             end
-
-            self:sortEndpointIdsByPosition(inputEndpointIds, "input")
-            self:sortEndpointIdsByPosition(outputEndpointIds, "output")
-            self:sortRouteIdsByMagnet(inputRouteIds, "start")
-            self:sortRouteIdsByMagnet(outputRouteIds, "end")
-
-            local intersection = {
-                id = strictIntersection.id,
-                x = strictIntersection.x,
-                y = strictIntersection.y,
-                routeIds = strictIntersection.routeIds,
-                routeKey = routeKey,
-                inputEndpointIds = inputEndpointIds,
-                outputEndpointIds = outputEndpointIds,
-                inputRouteIds = inputRouteIds,
-                outputRouteIds = outputRouteIds,
-            }
-            local state = self:getJunctionState(intersection, previousIntersections)
-            intersection.controlType = self:getIntersectionControlType(intersection, previousIntersections)
-            intersection.passCount = math.max(1, math.min(MAX_TRIP_PASS_COUNT, (state and state.passCount) or DEFAULT_CONTROL_CONFIGS.trip.passCount))
-            intersection.activeInputIndex = math.min((state and state.activeInputIndex) or 1, math.max(1, #inputRouteIds))
-            intersection.activeOutputIndex = math.min((state and state.activeOutputIndex) or 1, math.max(1, #outputEndpointIds))
-            self.intersections[#self.intersections + 1] = intersection
-
-            ::continue_strict_intersection::
         end
     end
 

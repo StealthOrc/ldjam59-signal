@@ -16,6 +16,7 @@ return function(ui, shared)
 function ui.drawMenu(game)
     local graphics = love.graphics
     local buttons = getMenuButtons(game)
+    local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -31,7 +32,9 @@ function ui.drawMenu(game)
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
     graphics.printf(
-        game:isOfflineMode()
+        not supportsOnlineServices
+            and "Route trains through lever-controlled merges in the jam-ready HTML5 build, with scores saved locally in your browser."
+            or game:isOfflineMode()
             and "Route trains through lever-controlled merges and keep your personal scores on this device."
             or "Route trains through lever-controlled merges, upload cleared scores, and compare runs online.",
         game.viewport.w * 0.5 - 280,
@@ -116,8 +119,13 @@ function ui.drawProfileModeSetup(game)
     local panel = getProfileModeSetupPanelRect(game)
     local optionRects = getProfileModeSetupOptionRects(game)
     local isOnlineSelected = game.profileModeSelection == "online"
-    local promptText = "Do you want to use online features such as online leaderboards and community maps?"
-    local offlineTooltipText = "We're only storing your username as well as the uploaded maps and leaderboard stats. You can turn this on or off at any time in the main menu."
+    local supportsOnlineServices = game.supportsOnlineServices and game:supportsOnlineServices() or false
+    local promptText = supportsOnlineServices
+        and "Do you want to use online features such as online leaderboards and community maps?"
+        or "This HTML5 build uses offline mode only so it can run directly in the browser."
+    local offlineTooltipText = supportsOnlineServices
+        and "We're only storing your username as well as the uploaded maps and leaderboard stats. You can turn this on or off at any time in the main menu."
+        or "Your local progress and personal bests stay in browser storage on this device."
     local promptWidth = panel.w - 88
     local promptLineCount = getWrappedLineCount(game.fonts.body, promptText, promptWidth)
     local promptHeight = promptLineCount * game.fonts.body:getHeight()
@@ -133,7 +141,7 @@ function ui.drawProfileModeSetup(game)
 
     love.graphics.setFont(game.fonts.title)
     graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf("Enable Online Functionality?", panel.x + 24, panel.y + 34, panel.w - 48, "center")
+    graphics.printf(supportsOnlineServices and "Enable Online Functionality?" or "HTML5 Build Mode", panel.x + 24, panel.y + 34, panel.w - 48, "center")
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(0.84, 0.88, 0.92, 1)
@@ -147,10 +155,11 @@ function ui.drawProfileModeSetup(game)
 
     drawButton(
         optionRects.online,
-        "Online",
+        supportsOnlineServices and "Online" or "Unavailable",
         isOnlineSelected and { 0.1, 0.22, 0.14, 0.98 } or { 0.08, 0.18, 0.11, 0.98 },
         isOnlineSelected and { 0.54, 0.96, 0.66, 1 } or { 0.42, 0.86, 0.55, 1 },
-        game.fonts.body
+        game.fonts.body,
+        not supportsOnlineServices
     )
     drawButton(
         optionRects.offline,
@@ -162,6 +171,9 @@ function ui.drawProfileModeSetup(game)
 
     if game.profileModeHoverId == "offline" then
         drawProfileModeTooltip(game, optionRects.offline, offlineTooltipText)
+    elseif game.profileModeHoverId == "online" and not supportsOnlineServices then
+        local onlineUnavailableReason = game.getOnlineUnavailableReason and game:getOnlineUnavailableReason() or "Online features are unavailable here."
+        drawProfileModeTooltip(game, optionRects.online, onlineUnavailableReason)
     end
 
     if game.profileModeSetupError then
@@ -321,7 +333,7 @@ function ui.drawLevelSelect(game)
     local primarySelectionSegments = game.levelSelectMode == "marketplace" and getMarketplaceTabSegments() or getLevelSelectFilterSegments()
     local primarySelectionValue = game.levelSelectMode == "marketplace" and (game.levelSelectMarketplaceTab or "top") or (game.levelSelectFilter or "campaign")
     local modeSelectionRect = getLevelSelectModeSelectorRect(game)
-    local modeSelectionSegments = getLevelSelectModeSegments()
+    local modeSelectionSegments = getLevelSelectModeSegments(game)
 
     graphics.setColor(PANEL_COLORS.background[1], PANEL_COLORS.background[2], PANEL_COLORS.background[3], PANEL_COLORS.background[4])
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)

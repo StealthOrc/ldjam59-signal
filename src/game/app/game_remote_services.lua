@@ -12,11 +12,28 @@ return function(Game, shared)
     }))
 
 function Game:reloadOnlineConfig()
+    if not self:supportsOnlineServices() then
+        self.onlineConfig = buildUnsupportedOnlineConfig(self.platform)
+        return self.onlineConfig
+    end
+
     local loadedConfig = leaderboardClient.getConfig()
     if loadedConfig.isConfigured or not (self.onlineConfig and self.onlineConfig.isConfigured) then
         self.onlineConfig = loadedConfig
     end
     return self.onlineConfig
+end
+
+function Game:supportsOnlineServices()
+    return self.platform and self.platform.supportsOnlineServices == true
+end
+
+function Game:supportsThreadWorkers()
+    return self.platform and self.platform.supportsThreadWorkers == true
+end
+
+function Game:getOnlineUnavailableReason()
+    return self.platform and self.platform.onlineUnavailableReason or getLeaderboardUnavailableMessage()
 end
 
 function Game:getLeaderboardCacheEntry(scopeKey)
@@ -83,6 +100,10 @@ function Game:isLeaderboardFetchAllowed()
 end
 
 function Game:getActiveOnlineConfig()
+    if not self:supportsOnlineServices() then
+        return buildUnsupportedOnlineConfig(self.platform)
+    end
+
     if not self:isOnlineMode() then
         return {
             isConfigured = false,
@@ -103,16 +124,20 @@ function Game:getActiveOnlineConfig()
 end
 
 function Game:isPlayModeConfigured()
+    if not self:supportsOnlineServices() then
+        return true
+    end
+
     local playMode = getProfilePlayMode(self.profile)
     return playMode == PLAY_MODE_ONLINE or playMode == PLAY_MODE_OFFLINE
 end
 
 function Game:isOfflineMode()
-    return getProfilePlayMode(self.profile) == PLAY_MODE_OFFLINE
+    return not self:supportsOnlineServices() or getProfilePlayMode(self.profile) == PLAY_MODE_OFFLINE
 end
 
 function Game:isOnlineMode()
-    return getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE
+    return self:supportsOnlineServices() and getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE
 end
 
 function Game:getLeaderboardButtonLabel()
@@ -140,6 +165,10 @@ function Game:getLeaderboardTitle(mapUuid)
 end
 
 function Game:getPlayModeButtonLabel()
+    if not self:supportsOnlineServices() then
+        return "Mode: Offline (Web)"
+    end
+
     if self:isOfflineMode() then
         return "Mode: Offline"
     end
@@ -308,6 +337,10 @@ function Game:clearOnlineRequestState()
 end
 
 function Game:setPlayMode(playMode)
+    if playMode == PLAY_MODE_ONLINE and not self:supportsOnlineServices() then
+        return false, self:getOnlineUnavailableReason()
+    end
+
     if playMode ~= PLAY_MODE_ONLINE and playMode ~= PLAY_MODE_OFFLINE then
         return false, "Select online or offline mode before continuing."
     end
@@ -331,6 +364,10 @@ function Game:setPlayMode(playMode)
 end
 
 function Game:togglePlayMode()
+    if not self:supportsOnlineServices() then
+        return false, self:getOnlineUnavailableReason()
+    end
+
     local nextPlayMode = self:isOfflineMode() and PLAY_MODE_ONLINE or PLAY_MODE_OFFLINE
     return self:setPlayMode(nextPlayMode)
 end
@@ -389,7 +426,7 @@ function Game:copyLevelSelectUploadDialogId()
         return false, dialog.copyStatus.message
     end
 
-    if not (love and love.system and love.system.setClipboardText) then
+    if not (self.platform and self.platform.supportsClipboard) then
         dialog.copyStatus = {
             status = LEVEL_SELECT_ACTION_STATUS_ERROR,
             message = "Clipboard copy is not available here.",
@@ -745,6 +782,10 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
 end
 
 function Game:ensureLeaderboardWorker()
+    if not self:supportsThreadWorkers() or not self.leaderboardRequestChannel or not self.leaderboardResponseChannel then
+        return false
+    end
+
     local existingThread = self.leaderboardWorkerThread
     if existingThread and existingThread:isRunning() and not existingThread:getError() then
         return true
@@ -760,7 +801,15 @@ function Game:beginLeaderboardFetch(onlineConfig)
         return
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        self.leaderboardState = self:buildLeaderboardState(
+            LEADERBOARD_STATUS_DISABLED,
+            self:getOnlineUnavailableReason(),
+            nil,
+            nil
+        )
+        return
+    end
     local requestScopeKey = getLeaderboardScopeKey(self.leaderboardMapUuid)
     local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
 
@@ -792,7 +841,12 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
         return
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, self:getOnlineUnavailableReason(), {
+            hasResolvedInitialRemoteAttempt = true,
+        })
+        return
+    end
     local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
     local previewState = self.levelSelectPreviewState or {}
     local showCachedWhileLoading = previewState.mapUuid == mapUuid
@@ -900,7 +954,10 @@ function Game:beginMarketplaceFetch(onlineConfig, scopeDetails)
         return
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        self:setMarketplaceState(scopeDetails.scopeKey, LEVEL_SELECT_MARKETPLACE_STATUS_DISABLED, self:getOnlineUnavailableReason())
+        return
+    end
     local scopeKey = scopeDetails.scopeKey
     self.marketplaceRequestSequence = self.marketplaceRequestSequence + 1
     self.activeMarketplaceRequestId = self.marketplaceRequestSequence
@@ -926,7 +983,14 @@ function Game:beginFavoriteMapRequest(onlineConfig, mapUuid, likedByPlayer)
         return false
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            self:getOnlineUnavailableReason(),
+            "Like failed"
+        )
+        return false
+    end
     self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
     self.activeFavoriteMapRequestId = self.remoteWriteRequestSequence
     self.activeFavoriteMapRequestStartedAt = getNowSeconds()
@@ -952,7 +1016,9 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
         return false
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        return false
+    end
     self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
     self.activeUploadMapRequestId = self.remoteWriteRequestSequence
     self.activeUploadMapRequestStartedAt = getNowSeconds()
@@ -985,7 +1051,13 @@ function Game:beginScoreSubmitRequest(onlineConfig, summary)
         return false
     end
 
-    self:ensureLeaderboardWorker()
+    if not self:ensureLeaderboardWorker() then
+        self.resultsOnlineState = {
+            status = "disabled",
+            message = "Saved locally. " .. self:getOnlineUnavailableReason(),
+        }
+        return false
+    end
     self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
     self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
     self.activeScoreSubmitRequestStartedAt = getNowSeconds()
@@ -1227,7 +1299,7 @@ function Game:updateLeaderboardFetchState()
         end
     end
 
-    while true do
+    while self.leaderboardResponseChannel do
         local encodedResponse = self.leaderboardResponseChannel:pop()
         if not encodedResponse then
             break
@@ -1358,7 +1430,7 @@ function Game:updateLeaderboardFetchState()
         if not onlineConfig.isConfigured then
             self.leaderboardState = self:buildLeaderboardState(
                 LEADERBOARD_STATUS_DISABLED,
-                getLeaderboardUnavailableMessage(),
+                self:getOnlineUnavailableReason(),
                 cacheEntry.payload,
                 cacheEntry.fetchedAt
             )

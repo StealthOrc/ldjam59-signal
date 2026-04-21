@@ -1006,48 +1006,49 @@ function world:buildMinimumDistanceLookup()
             while queueIndex <= #queue do
                 local current = queue[queueIndex]
                 queueIndex = queueIndex + 1
+                local shouldExploreCurrent = true
 
                 if bestDistance and current.distance >= bestDistance then
-                    goto continue_distance_search
+                    shouldExploreCurrent = false
                 end
 
-                local currentEdge = self.edges[current.edgeId]
-                if not currentEdge then
-                    goto continue_distance_search
+                local currentEdge = shouldExploreCurrent and self.edges[current.edgeId] or nil
+                if shouldExploreCurrent and not currentEdge then
+                    shouldExploreCurrent = false
                 end
 
-                if currentEdge.targetType == "exit" then
+                if shouldExploreCurrent and currentEdge.targetType == "exit" then
                     if containsColorId(currentEdge.colors, goalColor) or nearestColorId(currentEdge.color) == goalColor then
                         if not bestDistance or current.distance < bestDistance then
                             bestDistance = current.distance
                         end
                     end
-                    goto continue_distance_search
+                    shouldExploreCurrent = false
                 end
 
-                if currentEdge.targetType ~= "junction" then
-                    goto continue_distance_search
+                if shouldExploreCurrent and currentEdge.targetType ~= "junction" then
+                    shouldExploreCurrent = false
                 end
 
-                local junction = self.junctions[currentEdge.targetId]
-                for _, outputEdge in ipairs(self:getReachableOutputEdgesForInput(junction, currentEdge.id)) do
-                    if self:doesEdgeAcceptGoalColor(currentEdge, outputEdge, goalColor) then
-                        local nextDistance = current.distance + outputEdge.path.length
-                        if outputEdge.targetType == "exit" then
-                            if not bestDistance or nextDistance < bestDistance then
-                                bestDistance = nextDistance
+                if shouldExploreCurrent then
+                    local junction = self.junctions[currentEdge.targetId]
+                    for _, outputEdge in ipairs(self:getReachableOutputEdgesForInput(junction, currentEdge.id)) do
+                        if self:doesEdgeAcceptGoalColor(currentEdge, outputEdge, goalColor) then
+                            local nextDistance = current.distance + outputEdge.path.length
+                            if outputEdge.targetType == "exit" then
+                                if not bestDistance or nextDistance < bestDistance then
+                                    bestDistance = nextDistance
+                                end
+                            elseif nextDistance < (bestByEdge[outputEdge.id] or math.huge) then
+                                bestByEdge[outputEdge.id] = nextDistance
+                                queue[#queue + 1] = {
+                                    edgeId = outputEdge.id,
+                                    distance = nextDistance,
+                                }
                             end
-                        elseif nextDistance < (bestByEdge[outputEdge.id] or math.huge) then
-                            bestByEdge[outputEdge.id] = nextDistance
-                            queue[#queue + 1] = {
-                                edgeId = outputEdge.id,
-                                distance = nextDistance,
-                            }
                         end
                     end
                 end
-
-                ::continue_distance_search::
             end
         end
 
