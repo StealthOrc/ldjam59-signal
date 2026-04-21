@@ -448,11 +448,7 @@ function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
         if roadTypeConfig.pattern ~= "plain" then
             local sectionStartDistance = math.max(startDistance, section.startDistance)
             local sectionEndDistance = math.min(endDistance, section.endDistance)
-            local visibleSectionLength = math.max(sectionEndDistance - sectionStartDistance, 0)
-            local markerDistance = sectionStartDistance
-                + (visibleSectionLength <= roadTypeConfig.markerSpacing
-                    and visibleSectionLength * 0.5
-                    or roadTypeConfig.markerSpacing * 0.5)
+            local markerDistance = sectionStartDistance + roadTypeConfig.markerSpacing * 0.5
             local markerSize = roadTypeConfig.markerSize
             local outlineWidth = roadTypeConfig.markerWidth + 2
             local fillWidth = roadTypeConfig.markerWidth
@@ -551,12 +547,10 @@ function renderer.drawInputTrack(scene, track, isActive)
     graphics.line(points)
 
     if stripeColors then
-        scene:drawStripedTrack(points, scene.trackWidth, stripeColors, trackAlpha)
+        renderer.drawStripedTrack(scene, points, scene.trackWidth, stripeColors, trackAlpha)
     else
-        scene:drawTrackLine(points, scene.trackWidth, trackColor, trackAlpha)
+        renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
-
-    scene:drawTrackRoadTypeMarkers(track, isActive)
 end
 
 function renderer.drawStandaloneTrack(scene, track, isActive)
@@ -582,12 +576,12 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
     graphics.line(points)
 
     if stripeColors then
-        scene:drawStripedTrack(points, scene.trackWidth, stripeColors, trackAlpha)
+        renderer.drawStripedTrack(scene, points, scene.trackWidth, stripeColors, trackAlpha)
     else
-        scene:drawTrackLine(points, scene.trackWidth, trackColor, trackAlpha)
+        renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
 
-    scene:drawTrackRoadTypeMarkers(track, isActive)
+    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
 end
 
 function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
@@ -607,12 +601,12 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
     graphics.line(points)
 
     if stripeColors then
-        scene:drawStripedTrack(points, scene.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
+        renderer.drawStripedTrack(scene, points, scene.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
     else
-        scene:drawTrackLine(points, scene.sharedWidth, color, isActive and 0.98 or 0.7)
+        renderer.drawTrackLine(scene, points, scene.sharedWidth, color, isActive and 0.98 or 0.7)
     end
 
-    scene:drawTrackRoadTypeMarkers(outputTrack, isActive)
+    renderer.drawTrackRoadTypeMarkers(scene, outputTrack, isActive)
 end
 
 function renderer.drawControlOverlay(scene, junction)
