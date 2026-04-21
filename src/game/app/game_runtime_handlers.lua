@@ -350,6 +350,7 @@ function Game:keypressed(key)
     end
 
     if key == "f2" then
+        self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "help" then
             self.playOverlayMode = nil
         else
@@ -359,6 +360,7 @@ function Game:keypressed(key)
     end
 
     if key == "f3" then
+        self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "debug" then
             self.playOverlayMode = nil
         else
@@ -619,6 +621,16 @@ function Game:mousepressed(x, y, button)
 
     if button ~= 1 and button ~= 2 then
         return
+    end
+
+    if button == 1 and self.playOverlayMode == "debug" then
+        local overlayHit = ui.getPlayOverlayHit and ui.getPlayOverlayHit(self, viewportX, viewportY) or nil
+        if overlayHit and overlayHit.kind == "copy_debug_value" then
+            self:copyPlayDebugValue(overlayHit.copyText, overlayHit.copyLabel)
+            return
+        elseif overlayHit and overlayHit.kind == "overlay_blocked" then
+            return
+        end
     end
 
     if self.playGuide then

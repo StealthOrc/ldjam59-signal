@@ -405,6 +405,24 @@ function Game:closeLevelSelectUploadDialog()
     self.levelSelectUploadDialog = nil
 end
 
+local function copyTextToClipboard(text, emptyMessage, successMessage, failureMessage)
+    local resolvedText = tostring(text or "")
+    if resolvedText == "" then
+        return false, emptyMessage
+    end
+
+    if not (love and love.system and love.system.setClipboardText) then
+        return false, "Clipboard copy is not available here."
+    end
+
+    local ok, copyError = pcall(love.system.setClipboardText, resolvedText)
+    if not ok then
+        return false, tostring(copyError or failureMessage)
+    end
+
+    return true, successMessage
+end
+
 function Game:copyLevelSelectUploadDialogId()
     local dialog = self.levelSelectUploadDialog
     if type(dialog) ~= "table" then
@@ -412,40 +430,32 @@ function Game:copyLevelSelectUploadDialogId()
     end
 
     local mapId = tostring(dialog.mapId or "")
-    if mapId == "" then
-        dialog.copyStatus = {
-            status = LEVEL_SELECT_ACTION_STATUS_ERROR,
-            message = "No map ID was returned for this upload.",
-        }
-        self.levelSelectUploadDialog = dialog
-        return false, dialog.copyStatus.message
-    end
-
-    if not (love and love.system and love.system.setClipboardText) then
-        dialog.copyStatus = {
-            status = LEVEL_SELECT_ACTION_STATUS_ERROR,
-            message = "Clipboard copy is not available here.",
-        }
-        self.levelSelectUploadDialog = dialog
-        return false, dialog.copyStatus.message
-    end
-
-    local ok, copyError = pcall(love.system.setClipboardText, mapId)
-    if not ok then
-        dialog.copyStatus = {
-            status = LEVEL_SELECT_ACTION_STATUS_ERROR,
-            message = tostring(copyError or "The map ID could not be copied."),
-        }
-        self.levelSelectUploadDialog = dialog
-        return false, dialog.copyStatus.message
-    end
-
+    local ok, copyMessage = copyTextToClipboard(
+        mapId,
+        "No map ID was returned for this upload.",
+        "Map ID copied to clipboard.",
+        "The map ID could not be copied."
+    )
     dialog.copyStatus = {
-        status = LEVEL_SELECT_ACTION_STATUS_SUCCESS,
-        message = "Map ID copied to clipboard.",
+        status = ok and LEVEL_SELECT_ACTION_STATUS_SUCCESS or LEVEL_SELECT_ACTION_STATUS_ERROR,
+        message = copyMessage,
     }
     self.levelSelectUploadDialog = dialog
-    return true
+    return ok, copyMessage
+end
+
+function Game:copyPlayDebugValue(copyText, copyLabel)
+    local ok, copyMessage = copyTextToClipboard(
+        copyText,
+        string.format("No %s is available for this map.", tostring(copyLabel or "value")),
+        string.format("%s copied to clipboard.", tostring(copyLabel or "Value")),
+        string.format("The %s could not be copied.", tostring(copyLabel or "value"))
+    )
+    self.playOverlayCopyStatus = {
+        status = ok and "success" or "error",
+        message = copyMessage,
+    }
+    return ok, copyMessage
 end
 
 function Game:getMarketplaceScopeDetails(tabId, query)

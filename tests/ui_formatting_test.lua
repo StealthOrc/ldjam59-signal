@@ -140,6 +140,8 @@ assertEqual(
 
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
 assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
+assert(type(ui.getPlayOverlayHit) == "function", "ui.getPlayOverlayHit should exist")
+assert(type(ui.getPlayOverlayCopyTargets) == "function", "ui.getPlayOverlayCopyTargets should exist")
 assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
 assert(type(ui.getReplayHit) == "function", "ui.getReplayHit should exist")
 assert(type(ui.getReplayHoverInfoAt) == "function", "ui.getReplayHoverInfoAt should exist")
@@ -209,6 +211,59 @@ local function makeFont(widthPerCharacter, height)
         end,
     }
 end
+
+local playDebugOverlayGame = {
+    viewport = { w = 1280, h = 720 },
+    playOverlayMode = "debug",
+    currentMapDescriptor = {
+        mapUuid = "map-uuid-debug",
+        mapHash = "hash-debug",
+    },
+    world = {
+        elapsedTime = 0,
+        trains = {},
+        getRunSummary = function()
+            return {
+                interactionCount = 0,
+                finalScore = 0,
+            }
+        end,
+        countCompletedTrains = function()
+            return 0
+        end,
+        getNextQueuedTrain = function()
+            return nil
+        end,
+        getNearestPendingDeadline = function()
+            return nil
+        end,
+        getActiveRouteSummary = function()
+            return "No active routes"
+        end,
+        getInputEdgeGroups = function()
+            return {}
+        end,
+        junctionOrder = {},
+    },
+    fonts = {
+        title = makeFont(16, 34),
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+}
+
+local playOverlayCopyTargets = ui.getPlayOverlayCopyTargets(playDebugOverlayGame)
+assertEqual(#playOverlayCopyTargets, 2, "play debug overlay exposes copy targets for map uuid and map hash")
+assertEqual(playOverlayCopyTargets[1].copyLabel, "Map UUID", "first play debug copy target is the map uuid")
+assertEqual(playOverlayCopyTargets[2].copyLabel, "Map Hash", "second play debug copy target is the map hash")
+
+local playOverlayCopyHit = ui.getPlayOverlayHit(
+    playDebugOverlayGame,
+    playOverlayCopyTargets[1].x + 4,
+    playOverlayCopyTargets[1].y + 4
+)
+assertEqual(playOverlayCopyHit.kind, "copy_debug_value", "play debug overlay map uuid line is clickable")
+assertEqual(playOverlayCopyHit.copyText, "map-uuid-debug", "play debug overlay returns the map uuid copy payload")
 
 local startEdge = {
     id = "start_edge",
@@ -712,6 +767,58 @@ assertEqual(
     "Setup: Main Junction • Output East Switch • +1 more",
     "replay setup summary shows the pre-start preparation changes"
 )
+
+local function findButtonById(buttons, id)
+    for _, button in ipairs(buttons or {}) do
+        if button.id == id then
+            return button
+        end
+    end
+
+    return nil
+end
+
+local levelSelectButtonGame = {
+    viewport = { w = 1280, h = 720 },
+    levelSelectMode = "library",
+    levelSelectFilter = "campaign",
+    levelSelectSelectedId = "campaign:map-1",
+    levelSelectSelectedMapUuid = "map-uuid-1",
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "map-uuid-1",
+            mapHash = "hash-1",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    isUploadSelectedMapAvailable = function()
+        return true
+    end,
+}
+
+local levelSelectButtons = ui.getLevelSelectActionButtons(levelSelectButtonGame)
+local startButton = findButtonById(levelSelectButtons, "open_map")
+local replaysButton = findButtonById(levelSelectButtons, "open_replays")
+local uploadButton = findButtonById(levelSelectButtons, "upload_map")
+local editButton = findButtonById(levelSelectButtons, "edit_map")
+
+assert(startButton ~= nil, "level select should expose the Start button rect")
+assert(replaysButton ~= nil, "level select should expose the Replays button rect")
+assert(uploadButton ~= nil, "level select should expose the Upload button rect")
+assert(editButton ~= nil, "level select should expose the Edit button rect")
+assert(
+    startButton.x + startButton.w + 18 <= replaysButton.x,
+    "replays button should keep the configured gap from the start button"
+)
+assertEqual(uploadButton.x, replaysButton.x + replaysButton.w + 18, "upload button stays directly to the right of replays")
+assertEqual(editButton.x, uploadButton.x + uploadButton.w + 18, "edit button stays directly to the right of upload")
 
 local flippedLeaderboardGame = {
     viewport = { w = 1280, h = 720 },

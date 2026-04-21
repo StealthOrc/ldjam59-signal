@@ -630,6 +630,7 @@ getLevelSelectActionButtons = function(game)
     local buttonY = bottomBarRect.y + math.floor((bottomBarRect.h - LEVEL_SELECT_ACTION_LAYOUT.buttonH) * 0.5 + 0.5)
     local buttons = {}
     local sideInset = 24
+    local backButtonWidth = 120
     local primarySpec
     local rightButtonSpecs = {}
 
@@ -638,7 +639,7 @@ getLevelSelectActionButtons = function(game)
         label = "Back",
         x = bottomBarRect.x + sideInset,
         y = buttonY,
-        w = 120,
+        w = backButtonWidth,
         h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
     }
 
@@ -680,15 +681,6 @@ getLevelSelectActionButtons = function(game)
         }
     end
 
-    buttons[#buttons + 1] = {
-        id = primarySpec.id,
-        label = primarySpec.label,
-        x = math.floor(game.viewport.w * 0.5 - primarySpec.w * 0.5 + 0.5),
-        y = buttonY,
-        w = primarySpec.w,
-        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
-    }
-
     local totalRightWidth = 0
     for index, spec in ipairs(rightButtonSpecs) do
         totalRightWidth = totalRightWidth + spec.w
@@ -698,6 +690,23 @@ getLevelSelectActionButtons = function(game)
     end
 
     local currentX = bottomBarRect.x + bottomBarRect.w - sideInset - totalRightWidth
+    local rightButtonsStartX = currentX
+    local primaryPreferredX = math.floor(game.viewport.w * 0.5 - primarySpec.w * 0.5 + 0.5)
+    local primaryMinX = bottomBarRect.x + sideInset + backButtonWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+    local primaryMaxX = rightButtonsStartX > 0
+        and (rightButtonsStartX - LEVEL_SELECT_ACTION_LAYOUT.buttonGap - primarySpec.w)
+        or primaryPreferredX
+    local primaryX = math.max(primaryMinX, math.min(primaryPreferredX, primaryMaxX))
+
+    buttons[#buttons + 1] = {
+        id = primarySpec.id,
+        label = primarySpec.label,
+        x = primaryX,
+        y = buttonY,
+        w = primarySpec.w,
+        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
+    }
+
     for _, spec in ipairs(rightButtonSpecs) do
         buttons[#buttons + 1] = {
             id = spec.id,
@@ -712,6 +721,8 @@ getLevelSelectActionButtons = function(game)
 
     return buttons
 end
+
+ui.getLevelSelectActionButtons = getLevelSelectActionButtons
 
 function findLevelSelectActionButton(buttons, buttonId)
     for _, button in ipairs(buttons or {}) do
