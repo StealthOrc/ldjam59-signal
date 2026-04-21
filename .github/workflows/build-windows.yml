@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Optional build version override
+        description: Optional exact build label override
         required: false
         type: string
   push:
@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Validate required secrets
         shell: pwsh
@@ -47,36 +49,165 @@ jobs:
               }
           }
 
+      - name: Resolve build context
+        id: resolve_context
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          function Get-Slug {
+              param(
+                  [string]$Value,
+                  [string]$Fallback
+              )
+
+              $slug = ($Value ?? "").ToLowerInvariant()
+              $slug = [System.Text.RegularExpressions.Regex]::Replace($slug, "[^a-z0-9]+", "-")
+              $slug = $slug.Trim("-")
+
+              if ([string]::IsNullOrWhiteSpace($slug)) {
+                  return $Fallback
+              }
+
+              return $slug
+          }
+
+          function Find-OpenPullRequestNumber {
+              param(
+                  [string]$Repository,
+                  [string]$Owner,
+                  [string]$BranchName
+              )
+
+              $headRef = "${Owner}:$BranchName"
+              $headValue = [System.Uri]::EscapeDataString($headRef)
+              $uri = "https://api.github.com/repos/$Repository/pulls?state=open&head=$headValue&per_page=1"
+              $headers = @{
+                  Authorization = "Bearer $env:GITHUB_TOKEN"
+                  Accept = "application/vnd.github+json"
+                  "User-Agent" = "github-actions"
+                  "X-GitHub-Api-Version" = "2022-11-28"
+              }
+
+              $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+              if ($response -and $response.Count -gt 0) {
+                  return [string]$response[0].number
+              }
+
+              return ""
+          }
+
+          $eventName = '${{ github.event_name }}'
+          $gitRef = '${{ github.ref }}'
+          $refName = '${{ github.ref_name }}'
+          $repository = '${{ github.repository }}'
+          $repositoryOwner = '${{ github.repository_owner }}'
+          $pullRequestNumber = '${{ github.event.pull_request.number }}'
+          $buildKind = ""
+          $branchSlug = ""
+
+          if ($gitRef.StartsWith("refs/tags/v")) {
+              $buildKind = "release"
+          }
+          elseif ($gitRef -eq "refs/heads/main") {
+              $buildKind = "release"
+          }
+          elseif ($gitRef.StartsWith("refs/heads/")) {
+              $pullRequestNumber = Find-OpenPullRequestNumber -Repository $repository -Owner $repositoryOwner -BranchName $refName
+              if (-not [string]::IsNullOrWhiteSpace($pullRequestNumber)) {
+                  $buildKind = "pr"
+              }
+              else {
+                  $buildKind = "branch"
+                  $branchSlug = Get-Slug -Value $refName -Fallback "branch"
+              }
+          }
+          else {
+              $buildKind = "branch"
+              $branchSlug = Get-Slug -Value $refName -Fallback "branch"
+          }
+
+          "build_kind=$buildKind" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "pr_number=$pullRequestNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "branch_slug=$branchSlug" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Resolve build version
         id: resolve_version
         shell: pwsh
         run: |
+          function Get-NextSequence {
+              param(
+                  [string]$TagPattern
+              )
+
+              $lines = git ls-remote --tags --refs origin
+              $highestSequence = -1
+
+              foreach ($line in $lines) {
+                  if ([string]::IsNullOrWhiteSpace($line)) {
+                      continue
+                  }
+
+                  $parts = $line -split '\s+'
+                  if ($parts.Count -lt 2) {
+                      continue
+                  }
+
+                  $tagRef = $parts[1]
+                  if (-not $tagRef.StartsWith("refs/tags/")) {
+                      continue
+                  }
+
+                  $tagName = $tagRef.Substring("refs/tags/".Length)
+                  $match = [System.Text.RegularExpressions.Regex]::Match($tagName, $TagPattern)
+                  if (-not $match.Success) {
+                      continue
+                  }
+
+                  $sequenceValue = [int]$match.Groups[1].Value
+                  if ($sequenceValue -gt $highestSequence) {
+                      $highestSequence = $sequenceValue
+                  }
+              }
+
+              return $highestSequence + 1
+          }
+
           $manualVersion = '${{ github.event.inputs.version }}'
           $gitRef = '${{ github.ref }}'
           $defaultVersionPrefix = "0.1"
           $resolvedVersion = $null
           $releaseTag = $null
+          $buildKind = '${{ steps.resolve_context.outputs.build_kind }}'
+          $branchSlug = '${{ steps.resolve_context.outputs.branch_slug }}'
+          $pullRequestNumber = '${{ steps.resolve_context.outputs.pr_number }}'
 
           if (-not [string]::IsNullOrWhiteSpace($manualVersion)) {
-              $trimmedManualVersion = $manualVersion.Trim()
-              if ($trimmedManualVersion.StartsWith("v")) {
-                  $resolvedVersion = $trimmedManualVersion.Substring(1)
-              }
-              else {
-                  $resolvedVersion = $trimmedManualVersion
-              }
+              $resolvedVersion = $manualVersion.Trim()
           }
           elseif ($gitRef.StartsWith("refs/tags/v")) {
-              $resolvedVersion = $gitRef.Substring("refs/tags/v".Length)
+              $resolvedVersion = $gitRef.Substring("refs/tags/".Length)
+          }
+          elseif ($buildKind -eq "release") {
+              $pattern = "^v" + [System.Text.RegularExpressions.Regex]::Escape($defaultVersionPrefix) + "\.(\d+)$"
+              $nextSequence = Get-NextSequence -TagPattern $pattern
+              $resolvedVersion = "v$defaultVersionPrefix.$nextSequence"
+          }
+          elseif ($buildKind -eq "pr") {
+              $pattern = "^pr-" + [System.Text.RegularExpressions.Regex]::Escape($pullRequestNumber) + "\.(\d+)$"
+              $nextSequence = Get-NextSequence -TagPattern $pattern
+              $resolvedVersion = "pr-$pullRequestNumber.$nextSequence"
           }
           else {
-              $resolvedVersion = "$defaultVersionPrefix.${{ github.run_number }}"
+              $pattern = "^br-" + [System.Text.RegularExpressions.Regex]::Escape($branchSlug) + "\.(\d+)$"
+              $nextSequence = Get-NextSequence -TagPattern $pattern
+              $resolvedVersion = "br-$branchSlug.$nextSequence"
           }
 
-          $releaseTag = "v$resolvedVersion"
-
           "build_version=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "build_label=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_tag=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_name=$resolvedVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Download LÖVE runtime
         id: download_love
@@ -107,15 +238,15 @@ jobs:
           .\build.ps1 `
               -LoveRoot "${{ steps.download_love.outputs.love_root }}" `
               -ProjectName $env:PROJECT_NAME `
-              -Version "${{ steps.resolve_version.outputs.build_version }}" `
+              -Version "${{ steps.resolve_version.outputs.build_label }}" `
               -OutputRoot $env:OUTPUT_ROOT
 
       - name: Upload ZIP to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.resolve_version.outputs.release_tag }}
-          name: ${{ steps.resolve_version.outputs.release_tag }}
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          name: ${{ steps.resolve_version.outputs.release_name }}
+          prerelease: ${{ steps.resolve_context.outputs.build_kind != 'release' }}
           files: ${{ env.OUTPUT_ROOT }}\*_windows.zip
           generate_release_notes: true
 

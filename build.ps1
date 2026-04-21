@@ -29,7 +29,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $projectRoot "dist"
 }
 
-$buildName = "{0}_v{1}" -f $ProjectName, ($Version -replace "\.", "_")
+$buildName = "{0}_{1}" -f $ProjectName, ($Version -replace "\.", "_")
 $buildDir = Join-Path $OutputRoot $buildName
 $stageDir = Join-Path $buildDir "_stage"
 $loveFile = Join-Path $buildDir ($buildName + ".love")
