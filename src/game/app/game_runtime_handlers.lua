@@ -54,6 +54,10 @@ end
 function Game:draw()
     love.graphics.clear(0.02, 0.03, 0.04, 1)
 
+    if self.pixelPerfectText then
+        self.pixelPerfectText:beginFrame()
+    end
+
     love.graphics.push()
     love.graphics.translate(self.renderOffsetX, self.renderOffsetY)
     love.graphics.scale(self.renderScale, self.renderScale)
@@ -78,6 +82,10 @@ function Game:draw()
     end
 
     love.graphics.pop()
+
+    if self.pixelPerfectText then
+        self.pixelPerfectText:endFrame()
+    end
 end
 
 function Game:resize(w, h)
