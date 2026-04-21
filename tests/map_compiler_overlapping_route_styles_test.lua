@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local authoredMap = require("src.game.data.authored_map")
+local mapCompiler = require("src.game.map_compiler.map_compiler")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then
@@ -91,7 +91,7 @@ local editorData = {
     },
 }
 
-local level, errorText, errors, diagnostics = authoredMap.buildPlayableLevel("Overlapping Route Styles", editorData, nil)
+local level, errorText, errors, diagnostics = mapCompiler.buildPlayableLevel("Overlapping Route Styles", editorData, nil)
 
 if errorText ~= nil then
     error(string.format("expected overlapping routes with different styles to compile, got %s", tostring(errorText)), 2)

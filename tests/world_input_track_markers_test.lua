@@ -16,7 +16,7 @@ love.filesystem.getInfo = function()
     return false
 end
 
-local world = require("src.game.gameplay.world")
+local world = require("src.game.gameplay.railway_world")
 local trackSceneRenderer = require("src.game.rendering.track_scene_renderer")
 
 local function assertTrue(value, label)

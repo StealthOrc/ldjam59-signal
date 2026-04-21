@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local world = require("src.game.gameplay.world")
+local world = require("src.game.gameplay.railway_world")
 
 local function assertNear(actual, expected, tolerance, label)
     if math.abs(actual - expected) > tolerance then

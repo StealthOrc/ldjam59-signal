@@ -1,5 +1,5 @@
 local mapStorage = {}
-local authoredMap = require("src.game.data.authored_map")
+local mapCompiler = require("src.game.map_compiler.map_compiler")
 local toml = require("src.game.util.toml")
 local uuid = require("src.game.util.uuid")
 
@@ -353,7 +353,7 @@ function mapStorage.loadMap(fileNameOrDescriptor, source, mapKind, directory)
     data.validationErrorText = nil
     if data.editor then
         local existingLevel = data.level
-        local level, errorText, errors = authoredMap.buildPlayableLevel(
+        local level, errorText, errors = mapCompiler.buildPlayableLevel(
             data.name or stripFileExtension(fileName),
             data.editor,
             data.mapUuid

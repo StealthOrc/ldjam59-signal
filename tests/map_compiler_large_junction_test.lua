@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local authoredMap = require("src.game.data.authored_map")
+local mapCompiler = require("src.game.map_compiler.map_compiler")
 
 local function assertTrue(value, label)
     if not value then
@@ -50,7 +50,7 @@ local editorData = {
     trains = {},
 }
 
-local level, firstError, buildErrors = authoredMap.buildPlayableLevel("Large Junction", editorData, nil)
+local level, firstError, buildErrors = mapCompiler.buildPlayableLevel("Large Junction", editorData, nil)
 
 assertTrue(level ~= nil, "authored map should allow a junction with more than five inputs and outputs")
 assertTrue(firstError == nil, "large junction validation should not report a first error")

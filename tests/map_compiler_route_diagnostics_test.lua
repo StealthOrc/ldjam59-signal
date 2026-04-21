@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local authoredMap = require("src.game.data.authored_map")
+local mapCompiler = require("src.game.map_compiler.map_compiler")
 
 local editorData = {
     endpoints = {
@@ -55,7 +55,7 @@ local editorData = {
     },
 }
 
-local level, errorText, errors, diagnostics = authoredMap.buildPlayableLevel("Route Diagnostics", editorData, nil)
+local level, errorText, errors, diagnostics = mapCompiler.buildPlayableLevel("Route Diagnostics", editorData, nil)
 
 if level ~= nil then
     error("expected the authored map with near-overlapping junctions to fail validation", 2)

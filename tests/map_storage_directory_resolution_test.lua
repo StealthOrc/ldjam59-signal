@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local toml = require("src.game.util.toml")
 
-package.loaded["src.game.data.authored_map"] = {
+package.loaded["src.game.map_compiler.map_compiler"] = {
     buildPlayableLevel = function()
         return nil, nil, {}
     end,
