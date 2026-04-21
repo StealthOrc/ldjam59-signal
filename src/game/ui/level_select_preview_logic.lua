@@ -58,6 +58,7 @@ function previewLogic.getPayloadToPersistAfterFetch(payload, existingCacheEntry)
     end
 
     return {
+        map_hash = resolvedPayload.map_hash,
         top_entries = type(existingCacheEntry.top_entries) == "table" and existingCacheEntry.top_entries or {},
         player_entry = type(existingCacheEntry.player_entry) == "table" and existingCacheEntry.player_entry or nil,
         target_rank = tonumber(existingCacheEntry.target_rank) or nil,

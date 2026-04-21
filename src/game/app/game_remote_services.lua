@@ -287,6 +287,32 @@ function Game:updateLocalScoreboard(summary)
     return true, true
 end
 
+function Game:updateLocalReplayIndex(replayRecord, summary)
+    local updatedReplayIndex, replayOutcomeOrError = mapReplayIndexStorage.updateReplayIndex(
+        self.localReplayIndex or {},
+        replayRecord,
+        summary
+    )
+    if not updatedReplayIndex then
+        return false, nil, replayOutcomeOrError
+    end
+
+    local savedReplayIndex, saveError = mapReplayIndexStorage.save(updatedReplayIndex)
+    if not savedReplayIndex then
+        return false, nil, saveError
+    end
+
+    self.localReplayIndex = savedReplayIndex
+
+    for _, prunedEntry in ipairs(replayOutcomeOrError.prunedEntries or {}) do
+        if tostring(prunedEntry.replayFilePath or "") ~= "" then
+            replayStorage.delete(prunedEntry.replayFilePath)
+        end
+    end
+
+    return true, replayOutcomeOrError.keptReplay == true, replayOutcomeOrError
+end
+
 function Game:clearOnlineRequestState()
     self.activeLeaderboardRequestId = nil
     self.activeLeaderboardRequestStartedAt = nil
@@ -305,6 +331,12 @@ function Game:clearOnlineRequestState()
     self.activeUploadMapDescriptor = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeReplayDownloadRequestId = nil
+    self.activeReplayDownloadRequestStartedAt = nil
+    self.activeReplayDownloadMapDescriptor = nil
+    self.activeReplayDownloadEntry = nil
+    self.activeReplayDownloadRequestMapUuid = nil
+    self.activeReplayDownloadRequestMapHash = nil
 end
 
 function Game:setPlayMode(playMode)
@@ -517,10 +549,25 @@ function Game:isMarketplaceFetchAllowed(scopeKey)
     return getNowSeconds() >= (self.marketplaceNextFetchAtByScope[scopeKey] or 0)
 end
 
-function Game:setLevelSelectPreviewState(mapUuid, status, message, options)
+local function buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    if resolvedMapUuid == "" then
+        return ""
+    end
+    if resolvedMapHash == "" then
+        return resolvedMapUuid
+    end
+
+    return string.format("%s:%s", resolvedMapUuid, resolvedMapHash)
+end
+
+function Game:setLevelSelectPreviewState(cacheKey, status, message, options)
     local resolvedOptions = options or {}
     self.levelSelectPreviewState = {
-        mapUuid = mapUuid,
+        cacheKey = cacheKey,
+        mapUuid = resolvedOptions.mapUuid,
+        mapHash = resolvedOptions.mapHash,
         status = status or LEVEL_SELECT_PREVIEW_STATUS_IDLE,
         message = message,
         forceImmediateFetch = resolvedOptions.forceImmediateFetch or false,
@@ -533,9 +580,10 @@ function Game:setLevelSelectPreviewState(mapUuid, status, message, options)
     }
 end
 
-local function buildLevelSelectPreviewCacheEntry(mapUuid, payload, fetchedAt)
+local function buildLevelSelectPreviewCacheEntry(mapUuid, mapHash, payload, fetchedAt)
     return {
         map_uuid = mapUuid,
+        map_hash = tostring(mapHash or payload.map_hash or ""),
         top_entries = type(payload.top_entries) == "table" and payload.top_entries or {},
         player_entry = type(payload.player_entry) == "table" and payload.player_entry or nil,
         target_rank = tonumber(payload.target_rank) or nil,
@@ -551,35 +599,41 @@ local function levelSelectPreviewPayloadHasData(payload)
     return #(payload.top_entries or {}) > 0 or type(payload.player_entry) == "table"
 end
 
-function Game:getLevelSelectPreviewCacheEntry(mapUuid)
-    if not mapUuid or mapUuid == "" then
+function Game:getLevelSelectPreviewCacheEntry(mapUuid, mapHash)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    if cacheKey == "" then
         return nil
     end
 
-    local entry = self.levelSelectPreviewCacheByMap[mapUuid]
+    local entry = self.levelSelectPreviewCacheByMap[cacheKey]
     if type(entry) ~= "table" then
+        return nil
+    end
+
+    if tostring(entry.map_hash or "") ~= tostring(mapHash or "") then
         return nil
     end
 
     return entry
 end
 
-function Game:setLevelSelectPreviewCacheEntry(mapUuid, entry)
-    if not mapUuid or mapUuid == "" then
+function Game:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, entry)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    if cacheKey == "" then
         return
     end
 
     if type(entry) == "table" then
-        self.levelSelectPreviewCacheByMap[mapUuid] = entry
+        self.levelSelectPreviewCacheByMap[cacheKey] = entry
     else
-        self.levelSelectPreviewCacheByMap[mapUuid] = nil
+        self.levelSelectPreviewCacheByMap[cacheKey] = nil
     end
 
     leaderboardPreviewCache.save(self.levelSelectPreviewCacheByMap)
 end
 
-function Game:isLevelSelectPreviewCacheFresh(mapUuid)
-    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+function Game:isLevelSelectPreviewCacheFresh(mapUuid, mapHash)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid, mapHash)
     local fetchedAt = cacheEntry and tonumber(cacheEntry.fetched_at) or nil
     if not fetchedAt then
         return false
@@ -588,15 +642,16 @@ function Game:isLevelSelectPreviewCacheFresh(mapUuid)
     return (getNowUnixSeconds() - fetchedAt) < LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
 end
 
-function Game:isLevelSelectPreviewFetchAllowed(mapUuid)
-    if not mapUuid or mapUuid == "" then
+function Game:isLevelSelectPreviewFetchAllowed(mapUuid, mapHash)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    if cacheKey == "" then
         return false
     end
 
-    return getNowUnixSeconds() >= (self.levelSelectPreviewNextFetchAtByMap[mapUuid] or 0)
+    return getNowUnixSeconds() >= (self.levelSelectPreviewNextFetchAtByMap[cacheKey] or 0)
 end
 
-function Game:getActiveLevelSelectPreviewMapUuid()
+function Game:getActiveLevelSelectPreviewMapDescriptor()
     if self.screen ~= "level_select" then
         return nil
     end
@@ -604,7 +659,7 @@ function Game:getActiveLevelSelectPreviewMapUuid()
     local selectedMap = self:getSelectedLevelMap()
     local mapUuid = selectedMap and selectedMap.mapUuid or nil
     if mapUuid and mapUuid ~= "" and self.levelSelectLeaderboardFlipMapUuid == mapUuid then
-        return mapUuid
+        return selectedMap
     end
 
     return nil
@@ -615,14 +670,18 @@ function Game:clearLevelSelectLeaderboardFlip()
     self:setLevelSelectPreviewState(nil, LEVEL_SELECT_PREVIEW_STATUS_IDLE, nil)
 end
 
-function Game:getLevelSelectPreviewDisplayState(mapUuid)
+function Game:getLevelSelectPreviewDisplayState(mapDescriptor)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    local mapUuid = resolvedMapDescriptor and resolvedMapDescriptor.mapUuid or nil
+    local mapHash = resolvedMapDescriptor and resolvedMapDescriptor.mapHash or nil
     if self:isOfflineMode() then
         return self:getLocalLevelSelectPreviewDisplayState(mapUuid)
     end
 
-    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid, mapHash)
     local previewState = self.levelSelectPreviewState or {}
-    local shouldShowCachedEntries = levelSelectPreviewLogic.shouldShowCachedEntries(previewState, mapUuid, cacheEntry ~= nil)
+    local shouldShowCachedEntries = levelSelectPreviewLogic.shouldShowCachedEntries(previewState, cacheKey, cacheEntry ~= nil)
     local topEntries = normalizeLeaderboardEntries({
         entries = shouldShowCachedEntries and cacheEntry and cacheEntry.top_entries or {},
         map_uuid = mapUuid,
@@ -656,15 +715,15 @@ function Game:getLevelSelectPreviewDisplayState(mapUuid)
 
     local hasCache = cacheEntry ~= nil
     local hasVisibleEntries = #topEntries > 0 or pinnedPlayerEntry ~= nil
-    local isLoading = self.activeLevelSelectPreviewRequestId ~= nil and self.activeLevelSelectPreviewRequestMapUuid == mapUuid
-    local shouldShowSpinner = isLoading or (previewState.mapUuid == mapUuid and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_LOADING)
+    local isLoading = self.activeLevelSelectPreviewRequestId ~= nil and self.activeLevelSelectPreviewRequestCacheKey == cacheKey
+    local shouldShowSpinner = isLoading or (previewState.cacheKey == cacheKey and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_LOADING)
     local message = nil
 
     if shouldShowSpinner and not shouldShowCachedEntries then
         message = LEVEL_SELECT_PREVIEW_MESSAGE_LOADING
     elseif shouldShowCachedEntries and hasCache and not hasVisibleEntries and not playerEntry then
         message = LEVEL_SELECT_PREVIEW_MESSAGE_EMPTY
-    elseif previewState.mapUuid == mapUuid and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_ERROR and not shouldShowCachedEntries then
+    elseif previewState.cacheKey == cacheKey and previewState.status == LEVEL_SELECT_PREVIEW_STATUS_ERROR and not shouldShowCachedEntries then
         message = previewState.message or LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA
     end
 
@@ -677,7 +736,7 @@ function Game:getLevelSelectPreviewDisplayState(mapUuid)
         nextRefreshAt = refreshIndicatorLogic.getDisplayNextRefreshAtForVisibleData(
             hasVisibleEntries,
             shouldShowCachedEntries and tonumber(cacheEntry and cacheEntry.fetched_at) or nil,
-            self.levelSelectPreviewNextFetchAtByMap[mapUuid],
+            self.levelSelectPreviewNextFetchAtByMap[cacheKey],
             LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
         ),
         message = message,
@@ -692,6 +751,7 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     end
 
     local mapUuid = tostring(response.map_uuid or (self.resultsSummary and self.resultsSummary.mapUuid) or "")
+    local mapHash = tostring(response.map_hash or (self.currentMapDescriptor and self.currentMapDescriptor.mapHash) or "")
     if mapUuid == "" then
         return
     end
@@ -702,11 +762,14 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
         player_uuid = response.player_uuid or getProfilePlayerUuid(self.profile),
         rank = tonumber(response.rank) or nil,
         score = tonumber(response.score or 0) or 0,
+        replay_uuid = tostring(response.replay_uuid or response.replayUuid or ""),
+        duration_seconds = tonumber(response.duration_seconds or 0) or 0,
         updated_at = response.updated_at,
     }
 
-    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid) or {
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid, mapHash) or {
         map_uuid = mapUuid,
+        map_hash = mapHash,
         top_entries = {},
         player_entry = nil,
         target_rank = nil,
@@ -740,8 +803,9 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     cacheEntry.top_entries = topEntries
     cacheEntry.player_entry = submittedEntry
     cacheEntry.target_rank = submittedEntry.rank
+    cacheEntry.map_hash = mapHash
     cacheEntry.fetched_at = getNowUnixSeconds()
-    self:setLevelSelectPreviewCacheEntry(mapUuid, cacheEntry)
+    self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, cacheEntry)
 end
 
 function Game:ensureLeaderboardWorker()
@@ -787,25 +851,33 @@ function Game:beginLeaderboardFetch(onlineConfig)
     }))
 end
 
-function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
-    if self.activeLevelSelectPreviewRequestId ~= nil or not mapUuid or mapUuid == "" then
+function Game:beginLevelSelectPreviewFetch(onlineConfig, mapDescriptor)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    local mapUuid = resolvedMapDescriptor and tostring(resolvedMapDescriptor.mapUuid or "") or ""
+    local mapHash = resolvedMapDescriptor and tostring(resolvedMapDescriptor.mapHash or "") or ""
+    if self.activeLevelSelectPreviewRequestId ~= nil or mapUuid == "" or mapHash == "" then
         return
     end
 
     self:ensureLeaderboardWorker()
-    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid, mapHash)
     local previewState = self.levelSelectPreviewState or {}
-    local showCachedWhileLoading = previewState.mapUuid == mapUuid
+    local showCachedWhileLoading = previewState.cacheKey == cacheKey
         and previewState.hasResolvedInitialRemoteAttempt
         and cacheEntry ~= nil
     self.levelSelectPreviewRequestSequence = self.levelSelectPreviewRequestSequence + 1
     self.activeLevelSelectPreviewRequestId = self.levelSelectPreviewRequestSequence
     self.activeLevelSelectPreviewRequestStartedAt = getNowSeconds()
     self.activeLevelSelectPreviewRequestMapUuid = mapUuid
-    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil, {
+    self.activeLevelSelectPreviewRequestMapHash = mapHash
+    self.activeLevelSelectPreviewRequestCacheKey = cacheKey
+    self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil, {
+        mapUuid = mapUuid,
+        mapHash = mapHash,
         forceImmediateFetch = false,
         showCachedWhileLoading = showCachedWhileLoading,
-        hasResolvedInitialRemoteAttempt = previewState.mapUuid == mapUuid and previewState.hasResolvedInitialRemoteAttempt or false,
+        hasResolvedInitialRemoteAttempt = previewState.cacheKey == cacheKey and previewState.hasResolvedInitialRemoteAttempt or false,
     })
     self.leaderboardRequestChannel:push(json.encode({
         kind = "preview",
@@ -815,9 +887,171 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapUuid)
             apiBaseUrl = onlineConfig.apiBaseUrl,
             limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
             mapUuid = mapUuid,
+            mapHash = mapHash,
             player_uuid = getProfilePlayerUuid(self.profile),
         },
     }))
+end
+
+local function extractReplayRecordFromPayload(payload)
+    if type(payload) ~= "table" then
+        return nil
+    end
+
+    if type(payload.replay) == "table" then
+        return deepCopy(payload.replay)
+    end
+
+    if type(payload.replay_json) == "string" then
+        local decodedReplay = json.decode(payload.replay_json)
+        if type(decodedReplay) == "table" then
+            return decodedReplay
+        end
+    end
+
+    if type(payload.replayJson) == "string" then
+        local decodedReplay = json.decode(payload.replayJson)
+        if type(decodedReplay) == "table" then
+            return decodedReplay
+        end
+    end
+
+    if payload.cursorSamples or payload.timelineEvents or payload.initialJunctions or payload.interactions then
+        return deepCopy(payload)
+    end
+
+    return nil
+end
+
+function Game:getReplayLevelSourceForDescriptor(mapDescriptor)
+    if type(mapDescriptor) ~= "table" then
+        return nil, "The selected map could not be resolved for replay."
+    end
+
+    if type(mapDescriptor.previewLevel) == "table" then
+        return deepCopy(mapDescriptor.previewLevel)
+    end
+
+    local mapData, mapError = mapStorage.loadMap(mapDescriptor)
+    if not mapData or not mapData.level then
+        return nil, mapError or "The selected map could not be loaded for replay."
+    end
+
+    return deepCopy(mapData.level)
+end
+
+function Game:beginReplayDownloadRequest(onlineConfig, mapDescriptor, replayEntry)
+    if self.activeReplayDownloadRequestId ~= nil then
+        return false
+    end
+
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    local mapUuid = tostring(resolvedMapDescriptor and resolvedMapDescriptor.mapUuid or "")
+    local replayUuid = tostring(resolvedReplayEntry and resolvedReplayEntry.replayUuid or "")
+    if mapUuid == "" or replayUuid == "" then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeReplayDownloadRequestId = self.remoteWriteRequestSequence
+    self.activeReplayDownloadRequestStartedAt = getNowSeconds()
+    self.activeReplayDownloadMapDescriptor = resolvedMapDescriptor
+    self.activeReplayDownloadEntry = resolvedReplayEntry
+    self.activeReplayDownloadRequestMapUuid = mapUuid
+    self.activeReplayDownloadRequestMapHash = tostring(resolvedMapDescriptor.mapHash or "")
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_INFO, "Downloading replay...")
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = "replay_fetch",
+        requestId = self.activeReplayDownloadRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            mapUuid = mapUuid,
+            replayUuid = replayUuid,
+        },
+    }))
+    return true
+end
+
+function Game:applyReplayDownloadResult(response, mapDescriptor, replayEntry)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedMapDescriptor then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The replay target map is missing.")
+        return
+    end
+
+    if not response.ok or type(response.payload) ~= "table" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            response.error or "The replay could not be downloaded."
+        )
+        return
+    end
+
+    local replayRecord = extractReplayRecordFromPayload(response.payload)
+    if type(replayRecord) ~= "table" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The replay response did not include a valid replay payload."
+        )
+        return
+    end
+
+    replayRecord.replayId = replayRecord.replayId
+        or response.payload.replay_uuid
+        or response.payload.replayUuid
+        or (resolvedReplayEntry and resolvedReplayEntry.replayUuid)
+    replayRecord.mapUuid = replayRecord.mapUuid or resolvedMapDescriptor.mapUuid
+    replayRecord.mapHash = replayRecord.mapHash or resolvedMapDescriptor.mapHash
+    replayRecord.mapTitle = replayRecord.mapTitle or resolvedMapDescriptor.displayName or resolvedMapDescriptor.name
+    replayRecord.duration = tonumber(replayRecord.duration or response.payload.duration_seconds or (resolvedReplayEntry and resolvedReplayEntry.durationSeconds) or 0) or 0
+    replayRecord.createdAt = replayRecord.createdAt or response.payload.created_at or response.payload.updated_at
+    replayRecord.endReason = replayRecord.endReason or response.payload.end_reason or response.payload.endReason
+
+    if tostring(replayRecord.mapUuid or "") ~= tostring(resolvedMapDescriptor.mapUuid or "")
+        or tostring(replayRecord.mapHash or "") ~= tostring(resolvedMapDescriptor.mapHash or "") then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The downloaded replay does not match the selected map revision."
+        )
+        return
+    end
+
+    local savedReplayRecord, saveError = replayStorage.save(replayRecord)
+    local resolvedReplayRecord = savedReplayRecord or replayRecord
+    resolvedReplayRecord.localSaveError = saveError
+
+    local summary = {
+        mapUuid = resolvedMapDescriptor.mapUuid,
+        mapHash = resolvedMapDescriptor.mapHash,
+        finalScore = resolvedReplayEntry and resolvedReplayEntry.score or response.payload.score or 0,
+        recorded_at = resolvedReplayEntry and resolvedReplayEntry.createdAt or response.payload.created_at or response.payload.updated_at,
+        endReason = replayRecord.endReason or (resolvedReplayEntry and resolvedReplayEntry.endReason) or "",
+        mapTitle = resolvedMapDescriptor.displayName or resolvedMapDescriptor.name,
+    }
+    if savedReplayRecord then
+        self:updateLocalReplayIndex(resolvedReplayRecord, summary)
+    end
+
+    local replayLevelSource, levelError = self:getReplayLevelSourceForDescriptor(resolvedMapDescriptor)
+    if not replayLevelSource then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, levelError or "The replay map could not be loaded.")
+        return
+    end
+
+    self.currentMapDescriptor = resolvedMapDescriptor
+    self.currentRunOrigin = "level_select"
+    self.resultsSummary = nil
+    self.replayRecord = resolvedReplayRecord
+    self.replayLevelSource = replayLevelSource
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    self:clearLevelSelectActionState()
+    self:openReplay()
 end
 
 function Game:applyLeaderboardFetchResult(response)
@@ -845,27 +1079,32 @@ function Game:applyLeaderboardFetchResult(response)
     end
 end
 
-function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
+function Game:applyLevelSelectPreviewFetchResult(response, mapUuid, mapHash)
     if not mapUuid or mapUuid == "" then
         return
     end
 
-    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid)
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
+    local cacheEntry = self:getLevelSelectPreviewCacheEntry(mapUuid, mapHash)
     local previewState = self.levelSelectPreviewState or {}
     if response.ok and type(response.payload) == "table" then
         local fetchedAt = getNowUnixSeconds()
         local payloadToPersist = levelSelectPreviewLogic.getPayloadToPersistAfterFetch(response.payload, cacheEntry)
-        self.levelSelectPreviewNextFetchAtByMap[mapUuid] = fetchedAt + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+        self.levelSelectPreviewNextFetchAtByMap[cacheKey] = fetchedAt + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
         if not levelSelectPreviewPayloadHasData(response.payload) and cacheEntry ~= nil then
-            self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, payloadToPersist, fetchedAt))
-            self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+            self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, buildLevelSelectPreviewCacheEntry(mapUuid, mapHash, payloadToPersist, fetchedAt))
+            self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                mapUuid = mapUuid,
+                mapHash = mapHash,
                 hasResolvedInitialRemoteAttempt = true,
             })
             return
         end
 
-        if previewState.mapUuid == mapUuid and previewState.showCachedWhileLoading and cacheEntry ~= nil then
-            self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil, {
+        if previewState.cacheKey == cacheKey and previewState.showCachedWhileLoading and cacheEntry ~= nil then
+            self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_LOADING, nil, {
+                mapUuid = mapUuid,
+                mapHash = mapHash,
                 hasResolvedInitialRemoteAttempt = true,
                 clearVisibleEntries = true,
                 pendingPayload = response.payload,
@@ -875,22 +1114,28 @@ function Game:applyLevelSelectPreviewFetchResult(response, mapUuid)
             return
         end
 
-        self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, payloadToPersist, fetchedAt))
-        self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+        self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, buildLevelSelectPreviewCacheEntry(mapUuid, mapHash, payloadToPersist, fetchedAt))
+        self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+            mapUuid = mapUuid,
+            mapHash = mapHash,
             hasResolvedInitialRemoteAttempt = true,
         })
         return
     end
 
-    self.levelSelectPreviewNextFetchAtByMap[mapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+    self.levelSelectPreviewNextFetchAtByMap[cacheKey] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
     if cacheEntry then
-        self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+        self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+            mapUuid = mapUuid,
+            mapHash = mapHash,
             hasResolvedInitialRemoteAttempt = true,
         })
         return
     end
 
-    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+    self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+        mapUuid = mapUuid,
+        mapHash = mapHash,
         hasResolvedInitialRemoteAttempt = true,
     })
 end
@@ -981,7 +1226,7 @@ function Game:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
     return true
 end
 
-function Game:beginScoreSubmitRequest(onlineConfig, summary)
+function Game:beginReplaySubmitRequest(onlineConfig, summary, replayRecord)
     if self.activeScoreSubmitRequestId ~= nil then
         return false
     end
@@ -991,17 +1236,19 @@ function Game:beginScoreSubmitRequest(onlineConfig, summary)
     self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
     self.activeScoreSubmitRequestStartedAt = getNowSeconds()
     self.leaderboardRequestChannel:push(json.encode({
-        kind = "score_submit",
+        kind = "replay_submit",
         requestId = self.activeScoreSubmitRequestId,
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
             hmacSecret = onlineConfig.hmacSecret,
-            mapUuid = summary.mapUuid,
-            mode = "score_submit",
+            mapUuid = summary.mapUuid or (replayRecord and replayRecord.mapUuid) or nil,
+            mapHash = replayRecord and replayRecord.mapHash or nil,
+            mode = "replay_submit",
             playerDisplayName = self.profile.playerDisplayName,
             player_uuid = getProfilePlayerUuid(self.profile),
             score = summary.finalScore or 0,
+            replay = replayStorage.toJsonPayload(replayRecord or {}),
         },
     }))
     return true
@@ -1043,9 +1290,13 @@ function Game:applyPendingLevelSelectPreviewSwap()
     end
 
     local mapUuid = previewState.mapUuid
+    local mapHash = previewState.mapHash
+    local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
     local fetchedAt = tonumber(previewState.pendingFetchedAt) or getNowUnixSeconds()
-    self:setLevelSelectPreviewCacheEntry(mapUuid, buildLevelSelectPreviewCacheEntry(mapUuid, previewState.pendingPayload, fetchedAt))
-    self:setLevelSelectPreviewState(mapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+    self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, buildLevelSelectPreviewCacheEntry(mapUuid, mapHash, previewState.pendingPayload, fetchedAt))
+    self:setLevelSelectPreviewState(cacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+        mapUuid = mapUuid,
+        mapHash = mapHash,
         hasResolvedInitialRemoteAttempt = true,
     })
     return true
@@ -1057,7 +1308,8 @@ function Game:updateLeaderboardFetchState()
     local requestScopeKey = self.activeLeaderboardRequestScopeKey or getLeaderboardScopeKey(self.leaderboardMapUuid)
     local cacheEntry = self:getLeaderboardCacheEntry(requestScopeKey)
     local activePreviewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
-    local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid)
+    local activePreviewMapHash = self.activeLevelSelectPreviewRequestMapHash
+    local previewCacheEntry = self:getLevelSelectPreviewCacheEntry(activePreviewMapUuid, activePreviewMapHash)
     local marketplaceScopeKey = self.activeMarketplaceRequestScopeKey
     local activeFavoriteMapUuid = self.activeFavoriteMapMapUuid
 
@@ -1068,6 +1320,7 @@ function Game:updateLeaderboardFetchState()
         or self.activeFavoriteMapRequestId ~= nil
         or self.activeUploadMapRequestId ~= nil
         or self.activeScoreSubmitRequestId ~= nil
+        or self.activeReplayDownloadRequestId ~= nil
     ) then
         local threadError = self.leaderboardWorkerThread:getError()
         if threadError then
@@ -1090,18 +1343,25 @@ function Game:updateLeaderboardFetchState()
                 self.activeLevelSelectPreviewRequestId = nil
                 self.activeLevelSelectPreviewRequestStartedAt = nil
                 if activePreviewMapUuid and activePreviewMapUuid ~= "" then
-                    self.levelSelectPreviewNextFetchAtByMap[activePreviewMapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+                    local previewCacheKey = buildLevelSelectPreviewCacheKey(activePreviewMapUuid, activePreviewMapHash)
+                    self.levelSelectPreviewNextFetchAtByMap[previewCacheKey] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
                     if previewCacheEntry then
-                        self:setLevelSelectPreviewState(activePreviewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                        self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                            mapUuid = activePreviewMapUuid,
+                            mapHash = activePreviewMapHash,
                             hasResolvedInitialRemoteAttempt = true,
                         })
                     else
-                        self:setLevelSelectPreviewState(activePreviewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                        self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                            mapUuid = activePreviewMapUuid,
+                            mapHash = activePreviewMapHash,
                             hasResolvedInitialRemoteAttempt = true,
                         })
                     end
                 end
                 self.activeLevelSelectPreviewRequestMapUuid = nil
+                self.activeLevelSelectPreviewRequestMapHash = nil
+                self.activeLevelSelectPreviewRequestCacheKey = nil
             end
 
             if self.activeMarketplaceRequestId ~= nil then
@@ -1136,6 +1396,16 @@ function Game:updateLeaderboardFetchState()
                 }
             end
 
+            if self.activeReplayDownloadRequestId ~= nil then
+                self.activeReplayDownloadRequestId = nil
+                self.activeReplayDownloadRequestStartedAt = nil
+                self.activeReplayDownloadMapDescriptor = nil
+                self.activeReplayDownloadEntry = nil
+                self.activeReplayDownloadRequestMapUuid = nil
+                self.activeReplayDownloadRequestMapHash = nil
+                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, threadError)
+            end
+
             self.leaderboardWorkerThread = nil
             return
         end
@@ -1165,21 +1435,29 @@ function Game:updateLeaderboardFetchState()
         local elapsedSeconds = getNowSeconds() - self.activeLevelSelectPreviewRequestStartedAt
         if elapsedSeconds >= LEVEL_SELECT_PREVIEW_FETCH_TIMEOUT_SECONDS then
             local previewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
+            local previewMapHash = self.activeLevelSelectPreviewRequestMapHash
             self.activeLevelSelectPreviewRequestId = nil
             self.activeLevelSelectPreviewRequestStartedAt = nil
             if previewMapUuid and previewMapUuid ~= "" then
-                self.levelSelectPreviewNextFetchAtByMap[previewMapUuid] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
-                if self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
-                    self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                local previewCacheKey = buildLevelSelectPreviewCacheKey(previewMapUuid, previewMapHash)
+                self.levelSelectPreviewNextFetchAtByMap[previewCacheKey] = getNowUnixSeconds() + LEVEL_SELECT_PREVIEW_CACHE_DURATION_SECONDS
+                if self:getLevelSelectPreviewCacheEntry(previewMapUuid, previewMapHash) then
+                    self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                        mapUuid = previewMapUuid,
+                        mapHash = previewMapHash,
                         hasResolvedInitialRemoteAttempt = true,
                     })
                 else
-                    self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                    self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                        mapUuid = previewMapUuid,
+                        mapHash = previewMapHash,
                         hasResolvedInitialRemoteAttempt = true,
                     })
                 end
             end
             self.activeLevelSelectPreviewRequestMapUuid = nil
+            self.activeLevelSelectPreviewRequestMapHash = nil
+            self.activeLevelSelectPreviewRequestCacheKey = nil
         end
     end
 
@@ -1223,8 +1501,21 @@ function Game:updateLeaderboardFetchState()
             self.activeScoreSubmitRequestStartedAt = nil
             self.resultsOnlineState = {
                 status = "error",
-                message = "The score upload timed out.",
+                message = "The replay upload timed out.",
             }
+        end
+    end
+
+    if self.activeReplayDownloadRequestId ~= nil and self.activeReplayDownloadRequestStartedAt ~= nil then
+        local elapsedSeconds = getNowSeconds() - self.activeReplayDownloadRequestStartedAt
+        if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
+            self.activeReplayDownloadRequestId = nil
+            self.activeReplayDownloadRequestStartedAt = nil
+            self.activeReplayDownloadMapDescriptor = nil
+            self.activeReplayDownloadEntry = nil
+            self.activeReplayDownloadRequestMapUuid = nil
+            self.activeReplayDownloadRequestMapHash = nil
+            self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The replay download timed out.")
         end
     end
 
@@ -1242,10 +1533,13 @@ function Game:updateLeaderboardFetchState()
             self.activeLeaderboardRequestScopeKey = nil
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "preview" and decodedResponse.requestId == self.activeLevelSelectPreviewRequestId then
             local previewMapUuid = self.activeLevelSelectPreviewRequestMapUuid
+            local previewMapHash = self.activeLevelSelectPreviewRequestMapHash
             self.activeLevelSelectPreviewRequestId = nil
             self.activeLevelSelectPreviewRequestStartedAt = nil
             self.activeLevelSelectPreviewRequestMapUuid = nil
-            self:applyLevelSelectPreviewFetchResult(decodedResponse, previewMapUuid)
+            self.activeLevelSelectPreviewRequestMapHash = nil
+            self.activeLevelSelectPreviewRequestCacheKey = nil
+            self:applyLevelSelectPreviewFetchResult(decodedResponse, previewMapUuid, previewMapHash)
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "marketplace" and decodedResponse.requestId == self.activeMarketplaceRequestId then
             local responseScopeKey = self.activeMarketplaceRequestScopeKey
             self.activeMarketplaceRequestId = nil
@@ -1329,23 +1623,33 @@ function Game:updateLeaderboardFetchState()
                 end
                 self:showUploadFailureMessage(uploadOrigin, failureMessage)
             end
-        elseif type(decodedResponse) == "table" and decodedResponse.kind == "score_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
             self.activeScoreSubmitRequestId = nil
             self.activeScoreSubmitRequestStartedAt = nil
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
                 self.resultsOnlineState = {
                     status = decodedResponse.status == 202 and "kept" or "submitted",
                     message = decodedResponse.status == 202
-                        and "Score was valid, but your online best for this map is already higher."
-                        or "Score uploaded successfully.",
+                        and "Replay was valid, but it was outside the online top 10 for this map revision."
+                        or "Replay uploaded successfully.",
                 }
                 self:updateLevelSelectPreviewCacheFromSubmit(decodedResponse.payload)
             else
                 self.resultsOnlineState = {
                     status = "error",
-                    message = decodedResponse.error or "The score upload failed.",
+                    message = decodedResponse.error or "The replay upload failed.",
                 }
             end
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_fetch" and decodedResponse.requestId == self.activeReplayDownloadRequestId then
+            local replayMapDescriptor = self.activeReplayDownloadMapDescriptor
+            local replayEntry = self.activeReplayDownloadEntry
+            self.activeReplayDownloadRequestId = nil
+            self.activeReplayDownloadRequestStartedAt = nil
+            self.activeReplayDownloadMapDescriptor = nil
+            self.activeReplayDownloadEntry = nil
+            self.activeReplayDownloadRequestMapUuid = nil
+            self.activeReplayDownloadRequestMapHash = nil
+            self:applyReplayDownloadResult(decodedResponse, replayMapDescriptor, replayEntry)
         end
     end
 
@@ -1369,24 +1673,31 @@ function Game:updateLeaderboardFetchState()
         self:beginLeaderboardFetch(onlineConfig)
     end
 
-    local previewMapUuid = self:getActiveLevelSelectPreviewMapUuid()
+    local previewMapDescriptor = self:getActiveLevelSelectPreviewMapDescriptor()
+    local previewMapUuid = previewMapDescriptor and previewMapDescriptor.mapUuid or nil
+    local previewMapHash = previewMapDescriptor and previewMapDescriptor.mapHash or nil
+    local previewCacheKey = buildLevelSelectPreviewCacheKey(previewMapUuid, previewMapHash)
     if levelSelectPreviewLogic.shouldStartFetch(
         self.levelSelectPreviewState,
-        previewMapUuid,
+        previewCacheKey,
         self.activeLevelSelectPreviewRequestId ~= nil,
-        previewMapUuid and self:isLevelSelectPreviewCacheFresh(previewMapUuid) or false,
-        previewMapUuid and self:isLevelSelectPreviewFetchAllowed(previewMapUuid) or false
+        previewMapUuid and self:isLevelSelectPreviewCacheFresh(previewMapUuid, previewMapHash) or false,
+        previewMapUuid and self:isLevelSelectPreviewFetchAllowed(previewMapUuid, previewMapHash) or false
     ) then
         if self:isOnlineMode() then
             local onlineConfig = self:getActiveOnlineConfig()
             if onlineConfig.isConfigured then
-                self:beginLevelSelectPreviewFetch(onlineConfig, previewMapUuid)
-            elseif self:getLevelSelectPreviewCacheEntry(previewMapUuid) then
-                self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                self:beginLevelSelectPreviewFetch(onlineConfig, previewMapDescriptor)
+            elseif self:getLevelSelectPreviewCacheEntry(previewMapUuid, previewMapHash) then
+                self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_READY, nil, {
+                    mapUuid = previewMapUuid,
+                    mapHash = previewMapHash,
                     hasResolvedInitialRemoteAttempt = true,
                 })
             else
-                self:setLevelSelectPreviewState(previewMapUuid, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                self:setLevelSelectPreviewState(previewCacheKey, LEVEL_SELECT_PREVIEW_STATUS_ERROR, LEVEL_SELECT_PREVIEW_MESSAGE_NO_LOCAL_DATA, {
+                    mapUuid = previewMapUuid,
+                    mapHash = previewMapHash,
                     hasResolvedInitialRemoteAttempt = true,
                 })
             end

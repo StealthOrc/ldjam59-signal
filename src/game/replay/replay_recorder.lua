@@ -100,6 +100,7 @@ function replayRecorder.new(options)
     self.version = REPLAY_VERSION
     self.mapUuid = resolvedOptions.mapUuid
     self.mapTitle = resolvedOptions.mapTitle
+    self.mapHash = resolvedOptions.mapHash
     self.mapUpdatedAt = resolvedOptions.mapUpdatedAt
     self.createdAt = resolvedOptions.createdAt
     self.initialJunctions = deepCopy(resolvedOptions.initialJunctions or {})
@@ -202,6 +203,7 @@ function replayRecorder:buildRecord(extraFields)
         version = self.version,
         mapUuid = self.mapUuid,
         mapTitle = self.mapTitle,
+        mapHash = self.mapHash,
         mapUpdatedAt = self.mapUpdatedAt,
         createdAt = self.createdAt,
         duration = self.duration,

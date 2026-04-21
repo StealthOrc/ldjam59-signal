@@ -573,8 +573,16 @@ assert(
     marketplaceDescriptors[1].id ~= marketplaceDescriptors[2].id,
     "marketplace descriptors keep unique ids when entries share a map UUID"
 )
+local sharedMapDescriptor = nil
+for _, descriptor in ipairs(marketplaceDescriptors) do
+    if descriptor.name == "Shared Map" then
+        sharedMapDescriptor = descriptor
+        break
+    end
+end
+assert(sharedMapDescriptor ~= nil, "marketplace descriptors keep the original shared map entry")
 assertEqual(
-    marketplaceDescriptors[1].savedAt,
+    sharedMapDescriptor.savedAt,
     "2026-04-21T12:00:00Z",
     "marketplace descriptors keep the backend updated_at timestamp as savedAt"
 )
@@ -654,9 +662,15 @@ assertEqual(outsideHit.kind, "upload_dialog_close", "upload dialog closes when c
 local replayGame = {
     viewport = { w = 1280, h = 720 },
     replayRuntime = {
+        isPlaying = false,
         duration = 10,
         currentTime = 3,
         record = {
+            preparationInteractions = {
+                { junctionId = "junction_1", target = "junction" },
+                { junctionId = "junction_2", target = "selector" },
+                { junctionId = "junction_3", target = "junction" },
+            },
             timelineEvents = {
                 { time = 0, kind = "start" },
                 { time = 3, kind = "interaction", junctionId = "junction_1", target = "junction" },
@@ -667,8 +681,17 @@ local replayGame = {
                 junction_1 = {
                     label = "Main Junction",
                 },
+                junction_2 = {
+                    label = "East Switch",
+                },
+                junction_3 = {
+                    label = "North Junction",
+                },
             },
         },
+    },
+    fonts = {
+        small = makeFont(7, 14),
     },
 }
 
@@ -681,6 +704,79 @@ assertEqual(
     replayHover.text,
     "Triggered Main Junction",
     "replay hover formats interaction event copy"
+)
+
+local replayPreparationSummary = ui.getReplayPreparationSummary(replayGame, 2)
+assertEqual(
+    replayPreparationSummary,
+    "Setup: Main Junction • Output East Switch • +1 more",
+    "replay setup summary shows the pre-start preparation changes"
+)
+
+local flippedLeaderboardGame = {
+    viewport = { w = 1280, h = 720 },
+    fonts = {
+        title = makeFont(16, 34),
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+    levelSelectMode = "library",
+    levelSelectFilter = "campaign",
+    levelSelectSelectedId = "campaign:map-1",
+    levelSelectSelectedMapUuid = "map-uuid-1",
+    levelSelectLeaderboardFlipMapUuid = "map-uuid-1",
+    levelSelectUploadDialog = nil,
+    levelSelectReplayOverlay = nil,
+    levelSelectIssue = nil,
+    levelSelectHoverId = nil,
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "map-uuid-1",
+            mapHash = "hash-1",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    profile = {
+        player_uuid = "player-self",
+    },
+    getLevelSelectPreviewDisplayState = function()
+        return {
+            title = "Leaderboard",
+            topEntries = {
+                {
+                    rank = 1,
+                    playerDisplayName = "Runner",
+                    playerUuid = "player-1",
+                    score = 12.5,
+                    replayUuid = "replay-1",
+                },
+            },
+            pinnedPlayerEntry = nil,
+            isLoading = false,
+            message = nil,
+        }
+    end,
+    isUploadSelectedMapAvailable = function()
+        return false
+    end,
+}
+
+local leaderboardReplayHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 240, 1)
+assertEqual(leaderboardReplayHit.kind, "open_leaderboard_replay", "flipped leaderboard rows open replays when replay metadata exists")
+assertEqual(leaderboardReplayHit.replayEntry.replayUuid, "replay-1", "flipped leaderboard row hit returns the replay metadata entry")
+
+local leaderboardCardBackgroundHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 190, 1)
+assertEqual(
+    leaderboardCardBackgroundHit.kind,
+    "leaderboard_row_blocked",
+    "flipped leaderboard card clicks outside rows stay consumed and do not open the map"
 )
 
 print("ui formatting tests passed")

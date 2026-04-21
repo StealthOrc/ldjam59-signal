@@ -10,6 +10,7 @@ end
 
 local replayRecorder = require("src.game.replay.replay_recorder")
 local replayRuntime = require("src.game.replay.replay_runtime")
+local replayStorage = require("src.game.storage.replay_storage")
 local world = require("src.game.gameplay.railway_world")
 
 local function assertEqual(actual, expected, label)
@@ -74,6 +75,7 @@ local junction = sourceWorld.junctions.main
 local recorder = replayRecorder.new({
     mapUuid = "map-a",
     mapTitle = "Replay Test",
+    mapHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     mapUpdatedAt = "2026-04-21T10:00:00Z",
     initialJunctions = sourceWorld:getReplayJunctionStates(),
     initialCursor = {
@@ -93,6 +95,8 @@ recorder:recordInteraction({
 recorder:setDuration(1)
 
 local replayRecord = recorder:buildRecord()
+local serializedReplayRecord = replayStorage.toSerializableRecord(replayRecord)
+assertEqual(replayRecord.mapHash, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "replay recorder stores the map hash")
 assertEqual(replayRecord.mapUpdatedAt, "2026-04-21T10:00:00Z", "replay recorder stores the map update timestamp")
 assertEqual(replayRecord.cursorSamples.t[1], 0, "replay recorder stores compact cursor sample times")
 assertEqual(replayRecord.cursorSamples.x[2], junction.mergePoint.x, "replay recorder stores compact cursor sample x positions")
@@ -100,8 +104,9 @@ assertEqual(replayRecord.cursorSamples.y[2], junction.mergePoint.y, "replay reco
 assertEqual(replayRecord.interactions[1].txy[1], 0.25, "replay recorder stores compact interaction times")
 assertEqual(replayRecord.interactions[1].txy[2], junction.mergePoint.x, "replay recorder stores compact interaction x positions")
 assertEqual(replayRecord.interactions[1].txy[3], junction.mergePoint.y, "replay recorder stores compact interaction y positions")
+assertEqual(serializedReplayRecord.interactions[1].junctionRef, 1, "replay storage converts repeated ids into shared refs")
 
-local runtime = replayRuntime.new(sourceWorld:getLevel(), replayRecord, 1200, 800)
+local runtime = replayRuntime.new(sourceWorld:getLevel(), serializedReplayRecord, 1200, 800)
 assertEqual(runtime.playbackWorld.junctions.main.activeInputIndex, 1, "replay starts from the prepared junction state")
 
 runtime:seek(0.3)

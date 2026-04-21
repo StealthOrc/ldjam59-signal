@@ -657,6 +657,14 @@ getLevelSelectActionButtons = function(game)
 
         primarySpec = { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW }
 
+        if selectedMap and selectedMap.mapUuid and selectedMap.mapUuid ~= "" and selectedMap.mapHash and selectedMap.mapHash ~= "" then
+            rightButtonSpecs[#rightButtonSpecs + 1] = {
+                id = "open_replays",
+                label = "Replays",
+                w = LEVEL_SELECT_ACTION_LAYOUT.replaysW,
+            }
+        end
+
         if selectedMap and game:isUploadSelectedMapAvailable(selectedMap) then
             rightButtonSpecs[#rightButtonSpecs + 1] = {
                 id = "upload_map",
@@ -769,6 +777,50 @@ function ui.getLevelSelectUploadDialogRects(game)
             y = panel.y + panel.h - 66,
             w = LEVEL_SELECT.uploadDialog.buttonW,
             h = LEVEL_SELECT.uploadDialog.buttonH,
+        },
+    }
+end
+
+function ui.getLevelSelectReplayOverlayRects(game)
+    local panel = {
+        x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT.replayOverlay.panelW * 0.5 + 0.5),
+        y = math.floor(game.viewport.h * 0.5 - LEVEL_SELECT.replayOverlay.panelH * 0.5 + 0.5),
+        w = LEVEL_SELECT.replayOverlay.panelW,
+        h = LEVEL_SELECT.replayOverlay.panelH,
+    }
+    local entries = game:getLevelSelectReplayOverlayEntries()
+    local rowRects = {}
+    local rowY = panel.y + LEVEL_SELECT.replayOverlay.listTop
+    local rowW = panel.w - (LEVEL_SELECT.replayOverlay.listInsetX * 2)
+    local buttonGroupWidth = (LEVEL_SELECT.replayOverlay.buttonW * 2) + LEVEL_SELECT.replayOverlay.buttonGap
+    local buttonStartX = panel.x + math.floor((panel.w - buttonGroupWidth) * 0.5 + 0.5)
+    local footerY = panel.y + panel.h - LEVEL_SELECT.replayOverlay.footerBottomGap - LEVEL_SELECT.replayOverlay.buttonH
+
+    for index, entry in ipairs(entries) do
+        rowRects[index] = {
+            x = panel.x + LEVEL_SELECT.replayOverlay.listInsetX,
+            y = rowY,
+            w = rowW,
+            h = LEVEL_SELECT.replayOverlay.rowH,
+            entry = entry,
+        }
+        rowY = rowY + LEVEL_SELECT.replayOverlay.rowH + LEVEL_SELECT.replayOverlay.rowGap
+    end
+
+    return {
+        panel = panel,
+        rows = rowRects,
+        start = {
+            x = buttonStartX,
+            y = footerY,
+            w = LEVEL_SELECT.replayOverlay.buttonW,
+            h = LEVEL_SELECT.replayOverlay.buttonH,
+        },
+        close = {
+            x = buttonStartX + LEVEL_SELECT.replayOverlay.buttonW + LEVEL_SELECT.replayOverlay.buttonGap,
+            y = footerY,
+            w = LEVEL_SELECT.replayOverlay.buttonW,
+            h = LEVEL_SELECT.replayOverlay.buttonH,
         },
     }
 end

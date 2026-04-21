@@ -493,8 +493,14 @@ end
 
 function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
     local graphics = love.graphics
+    local hasReplay = tostring(entry and entry.replayUuid or "") ~= ""
     local fillColor = isHighlighted and { 0.16, 0.28, 0.38, 0.98 } or { 0.08, 0.11, 0.15, 0.96 }
     local lineColor = isHighlighted and { 0.48, 0.72, 0.92, 1 } or { 0.24, 0.32, 0.4, 1 }
+    local nameColor = hasReplay and { 0.84, 0.95, 1, 1 } or PANEL_COLORS.bodyText
+
+    if hasReplay and not isHighlighted then
+        lineColor = { 0.34, 0.56, 0.74, 1 }
+    end
 
     graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
     graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius, LEVEL_SELECT_LEADERBOARD_CARD.rowRadius)
@@ -513,6 +519,7 @@ function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
 
     local nameX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX + LEVEL_SELECT_LEADERBOARD_CARD.rankWidth
     local nameWidth = rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.rankWidth - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - (LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX * 2)
+    graphics.setColor(nameColor[1], nameColor[2], nameColor[3], nameColor[4])
     graphics.printf(
         formatLevelSelectLeaderboardPlayerName(entry.playerDisplayName or "Unknown"),
         nameX,
@@ -528,6 +535,47 @@ function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
         LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth,
         "right"
     )
+end
+
+function buildLevelSelectLeaderboardBackRows(game, rect)
+    local previewState = game:getLevelSelectPreviewDisplayState(rect.map)
+    local topEntries, pinnedPlayerEntry = getLevelSelectLeaderboardVisibleEntries(
+        previewState.topEntries or {},
+        previewState.pinnedPlayerEntry,
+        LEVEL_SELECT_LEADERBOARD_CARD.maxRows
+    )
+    local contentRect = {
+        x = rect.x + LEVEL_SELECT_LEADERBOARD_CARD.inset,
+        y = rect.y + LEVEL_SELECT_LEADERBOARD_CARD.inset,
+        w = rect.w - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
+        h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
+    }
+    local rowRects = {}
+    local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
+
+    for _, entry in ipairs(topEntries) do
+        rowRects[#rowRects + 1] = {
+            x = contentRect.x,
+            y = rowY,
+            w = contentRect.w,
+            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+            entry = entry,
+        }
+        rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
+    end
+
+    if pinnedPlayerEntry then
+        rowRects[#rowRects + 1] = {
+            x = contentRect.x,
+            y = getLevelSelectLeaderboardPinnedRowY(contentRect, #topEntries),
+            w = contentRect.w,
+            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
+            entry = pinnedPlayerEntry,
+            pinned = true,
+        }
+    end
+
+    return contentRect, previewState, topEntries, pinnedPlayerEntry, rowRects
 end
 
 function getLevelSelectLeaderboardVisibleEntries(topEntries, pinnedPlayerEntry, maxRows)
@@ -582,49 +630,23 @@ end
 
 function drawLevelSelectLeaderboardBack(game, rect)
     local graphics = love.graphics
-    local contentRect = {
-        x = rect.x + LEVEL_SELECT_LEADERBOARD_CARD.inset,
-        y = rect.y + LEVEL_SELECT_LEADERBOARD_CARD.inset,
-        w = rect.w - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
-        h = rect.h - (LEVEL_SELECT_LEADERBOARD_CARD.inset * 2),
-    }
-    local previewState = game:getLevelSelectPreviewDisplayState(rect.map.mapUuid)
-    local topEntries, pinnedPlayerEntry = getLevelSelectLeaderboardVisibleEntries(
-        previewState.topEntries or {},
-        previewState.pinnedPlayerEntry,
-        LEVEL_SELECT_LEADERBOARD_CARD.maxRows
-    )
-    local rowY = contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.rowTop
+    local contentRect, previewState, topEntries, pinnedPlayerEntry, rowRects = buildLevelSelectLeaderboardBackRows(game, rect)
 
     love.graphics.setFont(game.fonts.body)
     graphics.setColor(PANEL_COLORS.titleText[1], PANEL_COLORS.titleText[2], PANEL_COLORS.titleText[3], PANEL_COLORS.titleText[4])
     graphics.printf(previewState.title or "Leaderboard", contentRect.x, contentRect.y + LEVEL_SELECT_LEADERBOARD_CARD.titleTop, contentRect.w, "center")
 
-    for index, entry in ipairs(topEntries) do
-        local rowRect = {
-            x = contentRect.x,
-            y = rowY,
-            w = contentRect.w,
-            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
-        }
+    for index, rowRect in ipairs(rowRects) do
+        local entry = rowRect.entry
         local profilePlayerUuid = tostring(game.profile and game.profile.player_uuid or "")
         local isPlayerEntry = tostring(entry.playerUuid or "") == profilePlayerUuid
         drawLevelSelectLeaderboardRow(game, rowRect, entry, isPlayerEntry)
-        rowY = rowY + LEVEL_SELECT_LEADERBOARD_CARD.rowHeight + LEVEL_SELECT_LEADERBOARD_CARD.rowGap
-        if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows then
+        if index >= LEVEL_SELECT_LEADERBOARD_CARD.maxRows and not rowRect.pinned then
             break
         end
     end
 
-    if pinnedPlayerEntry then
-        local pinnedRowRect = {
-            x = contentRect.x,
-            y = getLevelSelectLeaderboardPinnedRowY(contentRect, #topEntries),
-            w = contentRect.w,
-            h = LEVEL_SELECT_LEADERBOARD_CARD.rowHeight,
-        }
-        drawLevelSelectLeaderboardRow(game, pinnedRowRect, pinnedPlayerEntry, true)
-    elseif previewState.isLoading and #topEntries == 0 then
+    if not pinnedPlayerEntry and previewState.isLoading and #topEntries == 0 then
         drawLoadingSpinner(
             contentRect.x + math.floor(contentRect.w * 0.5 + 0.5),
             contentRect.y + math.floor(contentRect.h * 0.56 + 0.5),
@@ -960,6 +982,28 @@ function ui.getLevelSelectHit(game, x, y, button)
         return { kind = "upload_dialog_blocked" }
     end
 
+    if game.levelSelectReplayOverlay then
+        local overlay = ui.getLevelSelectReplayOverlayRects(game)
+        for _, rowRect in ipairs(overlay.rows or {}) do
+            if pointInRect(x, y, rowRect) then
+                return {
+                    kind = "replay_overlay_select",
+                    replayUuid = rowRect.entry and rowRect.entry.replayUuid or nil,
+                }
+            end
+        end
+        if pointInRect(x, y, overlay.start) then
+            return { kind = "replay_overlay_open" }
+        end
+        if pointInRect(x, y, overlay.close) then
+            return { kind = "replay_overlay_close" }
+        end
+        if not pointInRect(x, y, overlay.panel) then
+            return { kind = "replay_overlay_close" }
+        end
+        return { kind = "replay_overlay_blocked" }
+    end
+
     if game.levelSelectIssue then
         local overlay = getLevelIssueOverlayRects(game)
         if pointInRect(x, y, overlay.edit) then
@@ -1016,6 +1060,24 @@ function ui.getLevelSelectHit(game, x, y, button)
             if rect.favoriteButtonRect and pointInRect(x, y, rect.favoriteButtonRect) then
                 return { kind = "favorite_map", map = rect.map }
             end
+            if rect.selected and isLevelSelectLeaderboardCardFlipped(game, rect) and button == 1 then
+                local _, _, _, _, rowRects = buildLevelSelectLeaderboardBackRows(game, rect)
+                for _, rowRect in ipairs(rowRects) do
+                    if pointInRect(x, y, rowRect) then
+                        if tostring(rowRect.entry and rowRect.entry.replayUuid or "") ~= "" then
+                            return {
+                                kind = "open_leaderboard_replay",
+                                map = rect.map,
+                                replayEntry = rowRect.entry,
+                            }
+                        end
+                        return { kind = "leaderboard_row_blocked" }
+                    end
+                end
+                if pointInRect(x, y, rect) then
+                    return { kind = "leaderboard_row_blocked" }
+                end
+            end
             if pointInRect(x, y, rect) then
                 return { kind = "select_map", map = rect.map }
             end
@@ -1047,6 +1109,24 @@ function ui.getLevelSelectHit(game, x, y, button)
     end
 
     for _, rect in ipairs(cardRects) do
+        if rect.selected and isLevelSelectLeaderboardCardFlipped(game, rect) and button == 1 then
+            local _, _, _, _, rowRects = buildLevelSelectLeaderboardBackRows(game, rect)
+            for _, rowRect in ipairs(rowRects) do
+                if pointInRect(x, y, rowRect) then
+                    if tostring(rowRect.entry and rowRect.entry.replayUuid or "") ~= "" then
+                        return {
+                            kind = "open_leaderboard_replay",
+                            map = rect.map,
+                            replayEntry = rowRect.entry,
+                        }
+                    end
+                    return { kind = "leaderboard_row_blocked" }
+                end
+            end
+            if pointInRect(x, y, rect) then
+                return { kind = "leaderboard_row_blocked" }
+            end
+        end
         if pointInRect(x, y, rect) then
             if button == 2 and rect.selected then
                 return { kind = "toggle_leaderboard_card", map = rect.map }
@@ -1062,7 +1142,7 @@ function ui.getLevelSelectHit(game, x, y, button)
 end
 
 function ui.getLevelSelectHoverId(game, x, y)
-    if game.levelSelectUploadDialog or game.levelSelectIssue then
+    if game.levelSelectUploadDialog or game.levelSelectReplayOverlay or game.levelSelectIssue then
         return nil
     end
 
@@ -1123,7 +1203,7 @@ function ui.getLevelSelectHoverId(game, x, y)
 end
 
 function ui.getLevelSelectHoverInfoAt(game, x, y)
-    if game.levelSelectUploadDialog or game.levelSelectIssue then
+    if game.levelSelectUploadDialog or game.levelSelectReplayOverlay or game.levelSelectIssue then
         return nil
     end
 

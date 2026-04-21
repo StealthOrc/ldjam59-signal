@@ -106,6 +106,8 @@ function Game:keypressed(key)
             self:returnFromLeaderboard()
         elseif self.screen == "level_select" and self.levelSelectUploadDialog then
             self:closeLevelSelectUploadDialog()
+        elseif self.screen == "level_select" and self.levelSelectReplayOverlay then
+            self:closeLevelSelectReplayOverlay()
         elseif self.screen == "level_select" and self.levelSelectIssue then
             self.levelSelectIssue = nil
         elseif self.screen == "editor" then
@@ -166,6 +168,16 @@ function Game:keypressed(key)
         if self.levelSelectUploadDialog then
             if key == "return" or key == "space" or key == "c" then
                 self:copyLevelSelectUploadDialogId()
+            end
+            return
+        end
+        if self.levelSelectReplayOverlay then
+            if key == "up" then
+                self:cycleLevelSelectReplaySelection(-1)
+            elseif key == "down" then
+                self:cycleLevelSelectReplaySelection(1)
+            elseif key == "return" or key == "space" then
+                self:openSelectedLevelSelectReplay()
             end
             return
         end
@@ -490,6 +502,16 @@ function Game:mousepressed(x, y, button)
             self:closeLevelSelectUploadDialog()
         elseif hit.kind == "upload_dialog_blocked" then
             return
+        elseif hit.kind == "replay_overlay_close" then
+            self:closeLevelSelectReplayOverlay()
+        elseif hit.kind == "replay_overlay_select" then
+            self:selectLevelSelectReplay(hit.replayUuid)
+        elseif hit.kind == "replay_overlay_open" then
+            self:openSelectedLevelSelectReplay()
+        elseif hit.kind == "replay_overlay_blocked" then
+            return
+        elseif hit.kind == "leaderboard_row_blocked" then
+            return
         elseif hit.kind == "select_map" then
             self:setLevelSelectSelection(hit.map)
         elseif hit.kind == "download_map" then
@@ -502,6 +524,22 @@ function Game:mousepressed(x, y, button)
         elseif hit.kind == "upload_map" then
             self:setLevelSelectSelection(hit.map)
             self:uploadSelectedMap()
+        elseif hit.kind == "open_leaderboard_replay" then
+            self:setLevelSelectSelection(hit.map)
+            if self:isOnlineMode() then
+                local onlineConfig = self:getActiveOnlineConfig()
+                if onlineConfig.isConfigured then
+                    self:beginReplayDownloadRequest(onlineConfig, hit.map, hit.replayEntry)
+                else
+                    self:setLevelSelectActionState(
+                        LEVEL_SELECT_ACTION_STATUS_ERROR,
+                        "Online replay playback is not configured."
+                    )
+                end
+            end
+        elseif hit.kind == "open_replays" then
+            self:setLevelSelectSelection(hit.map)
+            self:openLevelSelectReplayOverlay()
         elseif hit.kind == "toggle_leaderboard_card" then
             self:toggleLevelSelectLeaderboardFlip(hit.map)
         elseif hit.kind == "open_map" then
@@ -645,6 +683,11 @@ function Game:mousemoved(x, y, dx, dy)
     end
 
     if self.screen == "level_select" then
+        if self.levelSelectReplayOverlay then
+            self.levelSelectHoverId = nil
+            self.levelSelectHoverInfo = nil
+            return
+        end
         self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
         self.levelSelectHoverInfo = ui.getLevelSelectHoverInfoAt(self, viewportX, viewportY)
         return
@@ -703,7 +746,7 @@ function Game:wheelmoved(screenX, screenY)
     end
 
     local y = screenY
-    if self.screen == "level_select" and not self.levelSelectIssue and y ~= 0 then
+    if self.screen == "level_select" and not self.levelSelectIssue and not self.levelSelectReplayOverlay and y ~= 0 then
         local steps = math.max(1, math.floor(math.abs(y) + 0.5))
         local direction = y > 0 and -1 or 1
         self.levelSelectPendingScrollDirections = self.levelSelectPendingScrollDirections or {}

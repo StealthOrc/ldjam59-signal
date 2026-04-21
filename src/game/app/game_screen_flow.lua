@@ -135,6 +135,213 @@ function Game:getSelectedLevelMap()
     return selectedMap
 end
 
+function Game:getLevelSelectReplayEntriesForMap(mapDescriptor)
+    local resolvedMap = type(mapDescriptor) == "table" and mapDescriptor or nil
+    if not resolvedMap then
+        return {}
+    end
+
+    return mapReplayIndexStorage.listReplaysForMapRevision(
+        self.localReplayIndex,
+        resolvedMap.mapUuid,
+        resolvedMap.mapHash
+    )
+end
+
+function Game:getLevelSelectReplayOverlayEntries()
+    if not self.levelSelectReplayOverlay then
+        return {}
+    end
+
+    local selectedMap = self:getSelectedLevelMap()
+    if not selectedMap then
+        return {}
+    end
+
+    if selectedMap.mapUuid ~= self.levelSelectReplayOverlay.mapUuid
+        or selectedMap.mapHash ~= self.levelSelectReplayOverlay.mapHash then
+        return {}
+    end
+
+    return self:getLevelSelectReplayEntriesForMap(selectedMap)
+end
+
+function Game:getSelectedLevelSelectReplayEntry()
+    local overlayState = self.levelSelectReplayOverlay
+    if not overlayState then
+        return nil
+    end
+
+    local entries = self:getLevelSelectReplayOverlayEntries()
+    if #entries == 0 then
+        return nil
+    end
+
+    local selectedReplayUuid = tostring(overlayState.selectedReplayUuid or "")
+    for _, entry in ipairs(entries) do
+        if entry.replayUuid == selectedReplayUuid then
+            return entry
+        end
+    end
+
+    overlayState.selectedReplayUuid = entries[1].replayUuid
+    return entries[1]
+end
+
+function Game:closeLevelSelectReplayOverlay()
+    self.levelSelectReplayOverlay = nil
+end
+
+function Game:openLevelSelectReplayOverlay()
+    local selectedMap = self:getSelectedLevelMap()
+    if not selectedMap then
+        return false
+    end
+
+    local mapUuid = tostring(selectedMap.mapUuid or "")
+    local mapHash = tostring(selectedMap.mapHash or "")
+    if mapUuid == "" or mapHash == "" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "This map cannot open replays because its revision data is missing."
+        )
+        return false
+    end
+
+    local entries = self:getLevelSelectReplayEntriesForMap(selectedMap)
+    self.levelSelectReplayOverlay = {
+        mapUuid = mapUuid,
+        mapHash = mapHash,
+        selectedReplayUuid = entries[1] and entries[1].replayUuid or nil,
+    }
+    self.levelSelectHoverInfo = nil
+    self.levelSelectHoverId = nil
+    return true
+end
+
+function Game:selectLevelSelectReplay(replayUuid)
+    local overlayState = self.levelSelectReplayOverlay
+    if not overlayState then
+        return false
+    end
+
+    local resolvedReplayUuid = tostring(replayUuid or "")
+    if resolvedReplayUuid == "" then
+        return false
+    end
+
+    for _, entry in ipairs(self:getLevelSelectReplayOverlayEntries()) do
+        if entry.replayUuid == resolvedReplayUuid then
+            overlayState.selectedReplayUuid = resolvedReplayUuid
+            return true
+        end
+    end
+
+    return false
+end
+
+function Game:cycleLevelSelectReplaySelection(direction)
+    local overlayState = self.levelSelectReplayOverlay
+    if not overlayState then
+        return false
+    end
+
+    local entries = self:getLevelSelectReplayOverlayEntries()
+    if #entries == 0 then
+        overlayState.selectedReplayUuid = nil
+        return false
+    end
+
+    local selectedIndex = 1
+    local selectedReplayUuid = tostring(overlayState.selectedReplayUuid or "")
+    for index, entry in ipairs(entries) do
+        if entry.replayUuid == selectedReplayUuid then
+            selectedIndex = index
+            break
+        end
+    end
+
+    local nextIndex = selectedIndex + direction
+    if nextIndex < 1 then
+        nextIndex = #entries
+    elseif nextIndex > #entries then
+        nextIndex = 1
+    end
+
+    overlayState.selectedReplayUuid = entries[nextIndex].replayUuid
+    return true
+end
+
+function Game:openSelectedLevelSelectReplay()
+    local overlayState = self.levelSelectReplayOverlay
+    if not overlayState then
+        return false
+    end
+
+    local selectedMap = self:getSelectedLevelMap()
+    if not selectedMap then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "Select a map before opening a replay.")
+        return false
+    end
+
+    if tostring(selectedMap.mapUuid or "") ~= tostring(overlayState.mapUuid or "")
+        or tostring(selectedMap.mapHash or "") ~= tostring(overlayState.mapHash or "") then
+        self:closeLevelSelectReplayOverlay()
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected map changed. Reopen the replay list for the current revision."
+        )
+        return false
+    end
+
+    local replayEntry = self:getSelectedLevelSelectReplayEntry()
+    if not replayEntry then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "No local replays are stored for this map revision yet."
+        )
+        return false
+    end
+
+    local replayRecord, replayError = replayStorage.load(replayEntry.replayFilePath)
+    if not replayRecord then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            replayError or "The selected replay file could not be loaded."
+        )
+        return false
+    end
+
+    if tostring(replayRecord.mapUuid or "") ~= tostring(selectedMap.mapUuid or "")
+        or tostring(replayRecord.mapHash or "") ~= tostring(selectedMap.mapHash or "") then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected replay no longer matches this map revision."
+        )
+        return false
+    end
+
+    local mapData, mapError = mapStorage.loadMap(selectedMap)
+    if not mapData or not mapData.level then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            mapError or "The selected map could not be loaded for replay."
+        )
+        return false
+    end
+
+    self.currentMapDescriptor = selectedMap
+    self.currentRunOrigin = "level_select"
+    self.resultsSummary = nil
+    self.replayRecord = replayRecord
+    self.replayLevelSource = deepCopy(mapData.level or {})
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    self:closeLevelSelectReplayOverlay()
+    return self:openReplay()
+end
+
 function Game:isLevelSelectMarketplaceMode()
     return self.levelSelectMode == LEVEL_SELECT_MODE_MARKETPLACE
 end
@@ -158,6 +365,7 @@ function Game:setLevelSelectSelection(mapDescriptor)
     self.levelSelectSelectedMapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
     self.levelSelectScroll = 0
     self.levelSelectPendingScrollDirections = {}
+    self:closeLevelSelectReplayOverlay()
 
     local maps = self:getLevelSelectMaps()
     local targetIndex = findLevelSelectIndex(self, maps)
@@ -185,6 +393,7 @@ end
 
 function Game:setLevelSelectFilter(filterId)
     self.levelSelectFilter = filterId or "campaign"
+    self:closeLevelSelectReplayOverlay()
     self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
     self:resetLevelSelectVisualIndex()
@@ -210,6 +419,7 @@ function Game:setLevelSelectMode(mode)
     self.levelSelectHoverId = nil
     self.levelSelectHoverInfo = nil
     self.levelSelectIssue = nil
+    self:closeLevelSelectReplayOverlay()
     self:clearLevelSelectActionState()
     self:getSelectedLevelMap()
     self:resetLevelSelectVisualIndex()
@@ -236,6 +446,7 @@ function Game:setLevelSelectMarketplaceTab(tabId)
             self.levelSelectMarketplaceTab = tabId
             self.levelSelectHoverId = nil
             self.levelSelectHoverInfo = nil
+            self:closeLevelSelectReplayOverlay()
             self:clearLevelSelectActionState()
             self:getSelectedLevelMap()
             self:resetLevelSelectVisualIndex()
@@ -380,6 +591,7 @@ end
 
 function Game:toggleLevelSelectLeaderboardFlip(mapDescriptor)
     local mapUuid = mapDescriptor and mapDescriptor.mapUuid or nil
+    local mapHash = mapDescriptor and mapDescriptor.mapHash or nil
     if not mapUuid or mapUuid == "" then
         return
     end
@@ -393,8 +605,13 @@ function Game:toggleLevelSelectLeaderboardFlip(mapDescriptor)
     self.levelSelectSelectedMapUuid = mapDescriptor.mapUuid
     self.levelSelectScroll = 0
     self.levelSelectLeaderboardFlipMapUuid = mapUuid
-    local openStateOptions = levelSelectPreviewLogic.buildOpenStateOptions(self:isLevelSelectPreviewCacheFresh(mapUuid))
-    self:setLevelSelectPreviewState(mapUuid, openStateOptions.status, nil, {
+    local openStateOptions = levelSelectPreviewLogic.buildOpenStateOptions(self:isLevelSelectPreviewCacheFresh(mapUuid, mapHash))
+    local previewCacheKey = (type(mapHash) == "string" and mapHash ~= "")
+        and string.format("%s:%s", mapUuid, mapHash)
+        or mapUuid
+    self:setLevelSelectPreviewState(previewCacheKey, openStateOptions.status, nil, {
+        mapUuid = mapUuid,
+        mapHash = mapHash,
         forceImmediateFetch = openStateOptions.forceImmediateFetch,
         hasResolvedInitialRemoteAttempt = openStateOptions.hasResolvedInitialRemoteAttempt,
     })
@@ -426,6 +643,7 @@ function Game:openMenu()
 
     self.screen = "menu"
     self.levelSelectIssue = nil
+    self:closeLevelSelectReplayOverlay()
     self.levelSelectHoverId = nil
     self.levelSelectHoverInfo = nil
     self:clearLevelSelectActionState()
@@ -444,6 +662,7 @@ end
 function Game:openLevelSelect()
     self.screen = "level_select"
     self.levelSelectIssue = nil
+    self:closeLevelSelectReplayOverlay()
     self.levelSelectFilter = "campaign"
     self.levelSelectHoverId = nil
     self.levelSelectHoverInfo = nil
@@ -547,6 +766,7 @@ function Game:startMap(mapDescriptor, options)
     self.currentMapDescriptor = mapDescriptor
     self.currentRunOrigin = startOptions.origin
     self.levelSelectIssue = nil
+    self:closeLevelSelectReplayOverlay()
     self.resultsSummary = nil
     self.resultsOnlineState = nil
     self.playOverlayMode = nil
@@ -633,6 +853,7 @@ function Game:startPlayPhase()
     self.replayRecorder = replayRecorder.new({
         mapUuid = self.currentMapDescriptor and self.currentMapDescriptor.mapUuid or nil,
         mapTitle = self.currentMapDescriptor and self.currentMapDescriptor.displayName or nil,
+        mapHash = self.currentMapDescriptor and self.currentMapDescriptor.mapHash or nil,
         mapUpdatedAt = self.currentMapDescriptor and self.currentMapDescriptor.savedAt or nil,
         createdAt = getNowUnixSeconds(),
         initialJunctions = self.world:getReplayJunctionStates(),
@@ -688,13 +909,18 @@ function Game:openReplay()
         return false
     end
 
+    local currentMapHash = self.currentMapDescriptor and self.currentMapDescriptor.mapHash or nil
+    local recordedMapHash = self.replayRecord.mapHash
     local currentMapUpdatedAt = self.currentMapDescriptor and self.currentMapDescriptor.savedAt or nil
     local recordedMapUpdatedAt = self.replayRecord.mapUpdatedAt
-    if recordedMapUpdatedAt and recordedMapUpdatedAt ~= "" and currentMapUpdatedAt and currentMapUpdatedAt ~= "" then
+    if recordedMapHash and recordedMapHash ~= "" and currentMapHash and currentMapHash ~= "" then
+        self.replayRecord.mapCompatibility = recordedMapHash == currentMapHash and "matching" or "stale"
+    elseif recordedMapUpdatedAt and recordedMapUpdatedAt ~= "" and currentMapUpdatedAt and currentMapUpdatedAt ~= "" then
         self.replayRecord.mapCompatibility = recordedMapUpdatedAt == currentMapUpdatedAt and "matching" or "stale"
     else
         self.replayRecord.mapCompatibility = "unknown"
     end
+    self.replayRecord.currentMapHash = currentMapHash
     self.replayRecord.currentMapUpdatedAt = currentMapUpdatedAt
 
     self.replayRuntime = replayRuntime.new(

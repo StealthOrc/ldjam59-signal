@@ -71,7 +71,20 @@ local function normalizeCursorSamples(cursorSamples)
     return normalizedSamples
 end
 
-local function normalizeInteraction(interaction)
+local function resolveId(idPool, literalValue, refValue, fallbackValue)
+    if type(literalValue) == "string" and literalValue ~= "" then
+        return literalValue
+    end
+
+    local resolvedRef = tonumber(refValue)
+    if resolvedRef and type(idPool) == "table" and type(idPool[resolvedRef]) == "string" then
+        return idPool[resolvedRef]
+    end
+
+    return fallbackValue
+end
+
+local function normalizeInteraction(interaction, idPool)
     local packedTime = interaction and interaction.txy and interaction.txy[1] or nil
     local packedX = interaction and interaction.txy and interaction.txy[2] or nil
     local packedY = interaction and interaction.txy and interaction.txy[3] or nil
@@ -80,20 +93,87 @@ local function normalizeInteraction(interaction)
         time = tonumber(packedTime ~= nil and packedTime or (interaction and interaction.time)) or 0,
         x = tonumber(packedX ~= nil and packedX or (interaction and interaction.x)) or 0,
         y = tonumber(packedY ~= nil and packedY or (interaction and interaction.y)) or 0,
-        target = interaction and interaction.target or "junction",
-        junctionId = interaction and interaction.junctionId or "",
+        target = resolveId(idPool, interaction and interaction.target, interaction and interaction.targetRef, "junction"),
+        junctionId = resolveId(idPool, interaction and interaction.junctionId, interaction and interaction.junctionRef, ""),
         button = tonumber(interaction and interaction.button) or 1,
     }
 end
 
-local function normalizeInteractions(interactions)
+local function normalizeInteractions(interactions, idPool)
     local normalizedInteractions = {}
 
     for index, interaction in ipairs(interactions or {}) do
-        normalizedInteractions[index] = normalizeInteraction(interaction)
+        normalizedInteractions[index] = normalizeInteraction(interaction, idPool)
     end
 
     return normalizedInteractions
+end
+
+local function normalizeInitialJunctions(junctionStates, idPool)
+    local normalizedStates = {}
+
+    for index, junctionState in ipairs(junctionStates or {}) do
+        normalizedStates[index] = {
+            id = resolveId(idPool, junctionState and junctionState.id, junctionState and junctionState.junctionRef, ""),
+            activeInputIndex = tonumber(junctionState and junctionState.activeInputIndex) or 1,
+            activeOutputIndex = tonumber(junctionState and junctionState.activeOutputIndex) or 1,
+        }
+    end
+
+    return normalizedStates
+end
+
+local function normalizeTimelineEvents(events, idPool)
+    local normalizedEvents = {}
+
+    for index, event in ipairs(events or {}) do
+        local normalizedEvent = {}
+
+        for key, value in pairs(event or {}) do
+            if key ~= "kindRef"
+                and key ~= "junctionRef"
+                and key ~= "trainRef"
+                and key ~= "edgeRef"
+                and key ~= "reasonRef"
+                and key ~= "endReasonRef"
+                and key ~= "targetRef" then
+                normalizedEvent[key] = value
+            end
+        end
+
+        normalizedEvent.kind = resolveId(idPool, event and event.kind, event and event.kindRef, "unknown")
+        normalizedEvent.junctionId = resolveId(idPool, event and event.junctionId, event and event.junctionRef, nil)
+        normalizedEvent.trainId = resolveId(idPool, event and event.trainId, event and event.trainRef, nil)
+        normalizedEvent.edgeId = resolveId(idPool, event and event.edgeId, event and event.edgeRef, nil)
+        normalizedEvent.reason = resolveId(idPool, event and event.reason, event and event.reasonRef, nil)
+        normalizedEvent.endReason = resolveId(idPool, event and event.endReason, event and event.endReasonRef, nil)
+        normalizedEvent.target = resolveId(idPool, event and event.target, event and event.targetRef, nil)
+        normalizedEvents[index] = normalizedEvent
+    end
+
+    return normalizedEvents
+end
+
+local function normalizeRecord(record)
+    local resolvedRecord = record or {}
+    local idPool = resolvedRecord.idPool or {}
+
+    return {
+        version = resolvedRecord.version,
+        replayId = resolvedRecord.replayId,
+        mapUuid = resolvedRecord.mapUuid,
+        mapTitle = resolvedRecord.mapTitle,
+        mapHash = resolvedRecord.mapHash,
+        mapUpdatedAt = resolvedRecord.mapUpdatedAt,
+        createdAt = resolvedRecord.createdAt,
+        duration = resolvedRecord.duration,
+        endReason = resolvedRecord.endReason,
+        cursorSamples = normalizeCursorSamples(resolvedRecord.cursorSamples),
+        initialJunctions = normalizeInitialJunctions(resolvedRecord.initialJunctions, idPool),
+        preparationInteractions = normalizeInteractions(resolvedRecord.preparationInteractions, idPool),
+        interactions = normalizeInteractions(resolvedRecord.interactions, idPool),
+        timelineEvents = normalizeTimelineEvents(resolvedRecord.timelineEvents, idPool),
+    }
 end
 
 local function advanceWorld(playbackWorld, duration)
@@ -109,9 +189,9 @@ end
 function replayRuntime.new(levelSource, replayRecord, viewportW, viewportH)
     local self = setmetatable({}, { __index = replayRuntime })
     self.levelSource = levelSource or {}
-    self.record = replayRecord or {}
-    self.cursorSamples = normalizeCursorSamples(self.record.cursorSamples)
-    self.interactions = normalizeInteractions(self.record.interactions)
+    self.record = normalizeRecord(replayRecord)
+    self.cursorSamples = self.record.cursorSamples or {}
+    self.interactions = self.record.interactions or {}
     self.viewport = {
         w = viewportW or 1280,
         h = viewportH or 720,

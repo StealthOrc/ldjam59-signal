@@ -27,6 +27,13 @@ local function postJson(config, endpointPath, payload)
     })
 end
 
+local function getJson(config, endpointPath)
+    return httpTransport.getJson({
+        url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
+        apiKey = config.apiKey,
+    })
+end
+
 function leaderboardClient.getConfig()
     return envLoader.load()
 end
@@ -50,6 +57,88 @@ function leaderboardClient.submitScore(submission, config)
     }
 
     return postJson(resolvedConfig, endpointPath, payload)
+end
+
+function leaderboardClient.submitReplay(submission, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mapUuid = tostring(submission.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The replay could not be uploaded because the map UUID is missing."
+    end
+
+    local playerUuid = tostring(submission.player_uuid or "")
+    if playerUuid == "" then
+        return nil, "The replay could not be uploaded because the player UUID is missing."
+    end
+
+    local displayName = tostring(submission.playerDisplayName or "")
+    if displayName == "" then
+        return nil, "The replay could not be uploaded because the player display name is missing."
+    end
+
+    local mapHash = tostring(submission.mapHash or submission.map_hash or "")
+    if mapHash == "" then
+        return nil, "The replay could not be uploaded because the map hash is missing."
+    end
+
+    if type(submission.replay) ~= "table" then
+        return nil, "The replay could not be uploaded because the replay payload is missing."
+    end
+
+    local endpointPath = string.format("/api/maps/%s/replays", mapUuid)
+    local payload = {
+        player_uuid = playerUuid,
+        display_name = displayName,
+        score = tonumber(submission.score or 0) or 0,
+        map_hash = mapHash,
+        replay = submission.replay,
+    }
+
+    return postJson(resolvedConfig, endpointPath, payload)
+end
+
+function leaderboardClient.fetchReplayMetadata(requestOptions, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mapUuid = tostring(requestOptions.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "Replay metadata could not be loaded because the map UUID is missing."
+    end
+
+    local mapHash = tostring(requestOptions.mapHash or requestOptions.map_hash or "")
+    if mapHash == "" then
+        return nil, "Replay metadata could not be loaded because the map hash is missing."
+    end
+
+    local limit = math.max(1, tonumber(requestOptions.limit or 5) or 5)
+    local endpointPath = string.format("/api/maps/%s/replays?map_hash=%s&limit=%d", mapUuid, mapHash, limit)
+    return getJson(resolvedConfig, endpointPath)
+end
+
+function leaderboardClient.fetchReplay(replayUuid, mapUuid, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local resolvedReplayUuid = tostring(replayUuid or "")
+    local resolvedMapUuid = tostring(mapUuid or "")
+    if resolvedMapUuid == "" then
+        return nil, "Replay download could not start because the map UUID is missing."
+    end
+    if resolvedReplayUuid == "" then
+        return nil, "Replay download could not start because the replay UUID is missing."
+    end
+
+    local endpointPath = string.format("/api/maps/%s/replays/%s", resolvedMapUuid, resolvedReplayUuid)
+    return getJson(resolvedConfig, endpointPath)
 end
 
 function leaderboardClient.uploadMap(submission, config)

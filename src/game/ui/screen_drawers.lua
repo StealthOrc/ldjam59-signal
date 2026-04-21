@@ -310,6 +310,164 @@ function ui.drawLeaderboard(game)
     drawLeaderboardTooltip(game, game.leaderboardHoverInfo)
 end
 
+local function drawLevelSelectReplayOverlay(game, selectedMap)
+    local graphics = love.graphics
+    local overlay = ui.getLevelSelectReplayOverlayRects(game)
+    local entries = game:getLevelSelectReplayOverlayEntries()
+    local selectedEntry = game:getSelectedLevelSelectReplayEntry()
+    local panel = overlay.panel
+    local layout = LEVEL_SELECT.replayOverlay
+    local listInsetX = layout.listInsetX
+    local contentX = panel.x + listInsetX
+    local contentW = panel.w - (listInsetX * 2)
+    local tableHeader = {
+        x = contentX,
+        y = panel.y + layout.tableHeaderTop,
+        w = contentW,
+        h = layout.tableHeaderH,
+    }
+    local scoreColumnWidth = 108
+    local durationColumnWidth = 88
+    local endReasonColumnWidth = 156
+    local rowTextInsetX = 14
+    local recordedColumnWidth = contentW - durationColumnWidth - scoreColumnWidth - endReasonColumnWidth - 36
+    local durationColumnX = contentX + contentW - endReasonColumnWidth - durationColumnWidth - scoreColumnWidth - 36
+    local scoreColumnX = contentX + contentW - endReasonColumnWidth - scoreColumnWidth - 18
+    local endReasonColumnX = contentX + contentW - endReasonColumnWidth - 16
+    local recordedColumnX = contentX + rowTextInsetX
+    local mapName = selectedMap and getMapDisplayName(selectedMap) or "Selected Map"
+    local mapUuid = safeUiText(selectedMap and selectedMap.mapUuid, "n/a")
+    local uuidLabel = "Map UUID"
+    local metaBox = {
+        x = 0,
+        y = panel.y + layout.metaBoxTop,
+        w = 0,
+        h = layout.metaBoxH,
+    }
+
+    graphics.setColor(0, 0, 0, 0.68)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+
+    graphics.setColor(0.09, 0.11, 0.15, 0.98)
+    graphics.rectangle("fill", panel.x, panel.y, panel.w, panel.h, 18, 18)
+    graphics.setColor(0.3, 0.42, 0.56, 1)
+    graphics.rectangle("line", panel.x, panel.y, panel.w, panel.h, 18, 18)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.printf("Local Replays", panel.x + 28, panel.y + layout.titleTop, panel.w - 56, "center")
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.56, 0.72, 0.98, 1)
+    graphics.printf(
+        string.format("%s  |  %d stored for this revision", safeUiText(mapName, "Untitled Map"), #entries),
+        panel.x + 40,
+        panel.y + layout.subtitleTop,
+        panel.w - 80,
+        "center"
+    )
+
+    love.graphics.setFont(game.fonts.small)
+    local metaContentWidth = math.max(
+        game.fonts.small:getWidth(uuidLabel),
+        game.fonts.small:getWidth(mapUuid)
+    )
+    metaBox.w = math.max(layout.metaBoxMinW, metaContentWidth + (layout.metaBoxPaddingX * 2))
+    metaBox.x = math.floor(panel.x + (panel.w - metaBox.w) * 0.5 + 0.5)
+
+    graphics.setColor(0.06, 0.08, 0.12, 0.96)
+    graphics.rectangle("fill", metaBox.x, metaBox.y, metaBox.w, metaBox.h, 14, 14)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", metaBox.x, metaBox.y, metaBox.w, metaBox.h, 14, 14)
+
+    graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+    graphics.printf(uuidLabel, metaBox.x, metaBox.y + layout.metaLabelTop, metaBox.w, "center")
+
+    graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+    graphics.printf(mapUuid, metaBox.x, metaBox.y + layout.metaValueTop, metaBox.w, "center")
+
+    graphics.setColor(0.08, 0.1, 0.14, 0.98)
+    graphics.rectangle("fill", tableHeader.x, tableHeader.y, tableHeader.w, tableHeader.h, 12, 12)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", tableHeader.x, tableHeader.y, tableHeader.w, tableHeader.h, 12, 12)
+
+    graphics.setColor(PANEL_COLORS.mutedText[1], PANEL_COLORS.mutedText[2], PANEL_COLORS.mutedText[3], PANEL_COLORS.mutedText[4])
+    graphics.printf("Recorded", recordedColumnX, tableHeader.y + 6, recordedColumnWidth, "left")
+    graphics.printf("Duration", durationColumnX, tableHeader.y + 6, durationColumnWidth, "center")
+    graphics.printf("Score", scoreColumnX, tableHeader.y + 6, scoreColumnWidth, "center")
+    graphics.printf("Result", endReasonColumnX, tableHeader.y + 6, endReasonColumnWidth, "left")
+
+    if #entries == 0 then
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
+        graphics.printf(
+            "No local replays match this exact map revision yet.",
+            contentX,
+            panel.y + LEVEL_SELECT.replayOverlay.emptyTop,
+            contentW,
+            "center"
+        )
+    else
+        for _, rowRect in ipairs(overlay.rows or {}) do
+            local entry = rowRect.entry or {}
+            local isSelected = selectedEntry and selectedEntry.replayUuid == entry.replayUuid
+            local fillColor = isSelected and { 0.16, 0.28, 0.38, 0.98 } or { 0.08, 0.11, 0.15, 0.96 }
+            local lineColor = isSelected and { 0.48, 0.72, 0.92, 1 } or { 0.24, 0.32, 0.4, 1 }
+
+            graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
+            graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 12, 12)
+            graphics.setColor(lineColor[1], lineColor[2], lineColor[3], lineColor[4])
+            graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, 12, 12)
+
+            graphics.setColor(0.97, 0.98, 1, 1)
+            graphics.printf(
+                formatLeaderboardEntryTimestamp(entry.recordedAt),
+                recordedColumnX,
+                rowRect.y + 10,
+                recordedColumnWidth,
+                "left"
+            )
+            graphics.printf(
+                formatSecondsLabel(entry.duration or 0),
+                durationColumnX,
+                rowRect.y + 10,
+                durationColumnWidth,
+                "center"
+            )
+            graphics.printf(
+                formatScore(entry.score or 0),
+                scoreColumnX,
+                rowRect.y + 10,
+                scoreColumnWidth,
+                "center"
+            )
+            graphics.printf(
+                safeUiText(entry.endReason, "unknown"),
+                endReasonColumnX,
+                rowRect.y + 10,
+                endReasonColumnWidth,
+                "left"
+            )
+        end
+    end
+
+    drawButton(
+        overlay.start,
+        "Start Replay",
+        { 0.1, 0.14, 0.18, 0.98 },
+        { 0.48, 0.92, 0.62, 1 },
+        game.fonts.small,
+        selectedEntry == nil
+    )
+    drawButton(
+        overlay.close,
+        "Close",
+        { 0.1, 0.14, 0.18, 0.98 },
+        { 0.3, 0.36, 0.42, 1 },
+        game.fonts.small
+    )
+end
+
 function ui.drawLevelSelect(game)
     local graphics = love.graphics
     local maps = getLevelSelectMaps(game)
@@ -399,6 +557,9 @@ function ui.drawLevelSelect(game)
         elseif buttonRect.id == "upload_map" then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.48, 0.72, 0.92, 1 }
+        elseif buttonRect.id == "open_replays" then
+            fillColor = { 0.12, 0.17, 0.2, 0.98 }
+            strokeColor = { 0.56, 0.72, 0.98, 1 }
         elseif buttonRect.id == "download_map" and selectedMap then
             fillColor = { 0.12, 0.17, 0.2, 0.98 }
             strokeColor = { 0.48, 0.92, 0.62, 1 }
@@ -473,7 +634,11 @@ function ui.drawLevelSelect(game)
         ui.drawLevelSelectUploadDialog(game)
     end
 
-    if game.levelSelectHoverInfo and not game.levelSelectIssue and not game.levelSelectUploadDialog then
+    if game.levelSelectReplayOverlay then
+        drawLevelSelectReplayOverlay(game, selectedMap)
+    end
+
+    if game.levelSelectHoverInfo and not game.levelSelectIssue and not game.levelSelectUploadDialog and not game.levelSelectReplayOverlay then
         drawPlayTooltip(game, game.levelSelectHoverInfo)
     end
 end
@@ -708,6 +873,41 @@ local function drawReplayCursor(game)
     graphics.setLineWidth(1)
 end
 
+local function formatReplayPreparationSummaryEntry(game, interaction)
+    local junctionLabel = getReplayJunctionLabel(game, interaction and interaction.junctionId)
+    if interaction and interaction.target == "selector" then
+        return "Output " .. junctionLabel
+    end
+
+    return junctionLabel
+end
+
+local function getReplayPreparationSummary(game, maxItems)
+    local runtime = game and game.replayRuntime or nil
+    local interactions = runtime and runtime.record and runtime.record.preparationInteractions or {}
+    if type(interactions) ~= "table" or #interactions == 0 then
+        return "Setup: none"
+    end
+
+    local resolvedMaxItems = math.max(1, tonumber(maxItems) or 2)
+    local labels = {}
+    for index, interaction in ipairs(interactions) do
+        if index > resolvedMaxItems then
+            break
+        end
+
+        labels[#labels + 1] = formatReplayPreparationSummaryEntry(game, interaction)
+    end
+
+    local remainingCount = math.max(0, #interactions - #labels)
+    local summary = "Setup: " .. table.concat(labels, " • ")
+    if remainingCount > 0 then
+        summary = summary .. string.format(" • +%d more", remainingCount)
+    end
+
+    return summary
+end
+
 function ui.drawReplay(game)
     local runtime = game and game.replayRuntime or nil
     if not runtime then
@@ -734,6 +934,7 @@ function ui.drawReplay(game)
     local currentTimeLabel = formatSecondsLabel(runtime.currentTime or 0)
     local totalTimeLabel = formatSecondsLabel(runtime.duration or 0)
     local compatibilityStatus = game.replayRecord and game.replayRecord.mapCompatibility or "unknown"
+    local showPreparationSummary = (runtime.currentTime or 0) <= 0.0005 and runtime.isPlaying ~= true
     local timelineMidY = layout.timeline.y + layout.timeline.h * 0.5
     local playheadX = getReplayTimelineX(game, runtime.currentTime or 0)
 
@@ -761,19 +962,43 @@ function ui.drawReplay(game)
         "right"
     )
 
+    local compatibilityLabel = "Replay Unverified"
+    local compatibilityColor = { 0.72, 0.78, 0.84, 1 }
     if compatibilityStatus == "stale" then
-        graphics.setColor(0.99, 0.78, 0.32, 1)
-        graphics.print("Map changed since this replay was recorded", layout.panel.x + 22, layout.panel.y + 42)
+        compatibilityLabel = "Replay Outdated"
+        compatibilityColor = { 0.99, 0.78, 0.32, 1 }
     elseif compatibilityStatus == "matching" then
-        graphics.setColor(0.48, 0.92, 0.62, 1)
-        graphics.print("Replay matches the current map revision", layout.panel.x + 22, layout.panel.y + 42)
-    else
-        graphics.setColor(0.72, 0.78, 0.84, 1)
-        graphics.print("Map revision could not be verified", layout.panel.x + 22, layout.panel.y + 42)
+        compatibilityLabel = "Replay Valid"
+        compatibilityColor = { 0.48, 0.92, 0.62, 1 }
     end
+
+    local compatibilityWidth = game.fonts.small:getWidth(compatibilityLabel)
+    local preparationSummary = showPreparationSummary and getReplayPreparationSummary(game, 2) or nil
+    local preparationSummaryGap = preparationSummary and 18 or 0
+    local preparationSummaryWidth = preparationSummary
+        and math.max(0, layout.timeline.w - compatibilityWidth - preparationSummaryGap)
+        or 0
 
     graphics.setColor(0.16, 0.2, 0.25, 1)
     graphics.rectangle("fill", layout.timeline.x, layout.timeline.y, layout.timeline.w, layout.timeline.h, 8, 8)
+    if preparationSummary then
+        graphics.setColor(0.72, 0.78, 0.84, 1)
+        graphics.printf(
+            preparationSummary,
+            layout.timeline.x,
+            layout.timeline.y - 18,
+            preparationSummaryWidth,
+            "left"
+        )
+    end
+    graphics.setColor(compatibilityColor[1], compatibilityColor[2], compatibilityColor[3], compatibilityColor[4])
+    graphics.printf(
+        compatibilityLabel,
+        preparationSummary and (layout.timeline.x + preparationSummaryWidth + preparationSummaryGap) or layout.timeline.x,
+        layout.timeline.y - 18,
+        preparationSummary and compatibilityWidth or layout.timeline.w,
+        "right"
+    )
     graphics.setColor(0.48, 0.92, 0.62, 0.26)
     graphics.rectangle(
         "fill",
@@ -828,6 +1053,7 @@ ui.formatLeaderboardRefreshLabel = formatLeaderboardRefreshLabel
 ui.formatLevelSelectLeaderboardRefreshLabel = formatLevelSelectLeaderboardRefreshLabel
 ui.getLevelSelectLeaderboardVisibleEntries = getLevelSelectLeaderboardVisibleEntries
 ui.getLevelSelectLeaderboardPinnedRowY = getLevelSelectLeaderboardPinnedRowY
+ui.getReplayPreparationSummary = getReplayPreparationSummary
 ui.formatMarketplaceFavoriteLabel = formatMarketplaceFavoriteLabel
 ui.getLevelSelectBadges = buildLevelSelectBadges
 
