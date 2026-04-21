@@ -106,6 +106,9 @@ local wheelIntersection = editor.intersections[1]
 local wheelScreenX, wheelScreenY = editor:mapToScreen(wheelIntersection.x, wheelIntersection.y)
 editor:mousepressed(wheelScreenX, wheelScreenY, 2)
 assertTrue(editor.colorPicker ~= nil and editor.colorPicker.mode == "junction", "right-clicking a junction should open the radial menu")
+local zoomBeforePickerScroll = editor.camera.zoom
+assertTrue(editor:wheelmoved(wheelScreenX, wheelScreenY, 0, 1), "wheel input should be handled while the junction radial menu is open")
+assertEqual(editor.camera.zoom, zoomBeforePickerScroll, "wheel zoom should stay locked while the junction radial menu is open")
 
 local rootScale = editor:getJunctionPickerPopupScale()
 local rootClickX = wheelScreenX + 12 * rootScale
@@ -150,6 +153,9 @@ local dragStartScreenX, dragStartScreenY = reloadedEditor:mapToScreen(beforeX, b
 local dragEndScreenX, dragEndScreenY = reloadedEditor:mapToScreen(beforeX + 16, beforeY + 8)
 
 reloadedEditor:mousepressed(dragStartScreenX, dragStartScreenY, 1)
+local zoomBeforeDragScroll = reloadedEditor.camera.zoom
+assertTrue(reloadedEditor:wheelmoved(dragStartScreenX, dragStartScreenY, 0, 1), "wheel input should be handled while dragging a junction")
+assertEqual(reloadedEditor.camera.zoom, zoomBeforeDragScroll, "wheel zoom should stay locked while dragging a junction")
 reloadedEditor:mousemoved(dragEndScreenX, dragEndScreenY, dragEndScreenX - dragStartScreenX, dragEndScreenY - dragStartScreenY)
 reloadedEditor:mousereleased(dragEndScreenX, dragEndScreenY, 1)
 
