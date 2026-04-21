@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local marketplaceFavoriteLogic = require("src.game.marketplace_favorite_logic")
+local marketplaceFavoriteLogic = require("src.game.network.marketplace_favorite_logic")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

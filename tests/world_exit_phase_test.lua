@@ -8,7 +8,7 @@ love.filesystem.getInfo = function()
     return false
 end
 
-local world = require("src.game.world")
+local world = require("src.game.gameplay.world")
 
 local function assertTrue(value, label)
     if not value then

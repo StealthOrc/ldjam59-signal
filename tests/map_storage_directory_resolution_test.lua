@@ -1,14 +1,14 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local toml = require("src.game.toml")
+local toml = require("src.game.util.toml")
 
-package.loaded["src.game.authored_map"] = {
+package.loaded["src.game.data.authored_map"] = {
     buildPlayableLevel = function()
         return nil, nil, {}
     end,
 }
 
-package.loaded["src.game.uuid"] = {
+package.loaded["src.game.util.uuid"] = {
     generateV4 = function()
         return "generated-map-uuid"
     end,
@@ -68,7 +68,7 @@ love.filesystem.createDirectory = function()
     return true
 end
 
-local mapStorage = require("src.game.map_storage")
+local mapStorage = require("src.game.storage.map_storage")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

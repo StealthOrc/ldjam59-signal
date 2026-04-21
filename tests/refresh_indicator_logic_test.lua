@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local refreshIndicatorLogic = require("src.game.refresh_indicator_logic")
+local refreshIndicatorLogic = require("src.game.ui.refresh_indicator_logic")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

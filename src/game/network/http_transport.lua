@@ -1,5 +1,5 @@
-local json = require("src.game.json")
-local nativeLoader = require("src.game.native_loader")
+local json = require("src.game.util.json")
+local nativeLoader = require("src.game.util.native_loader")
 
 local httpTransport = {}
 

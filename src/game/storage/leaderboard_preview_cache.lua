@@ -1,5 +1,5 @@
-local toml = require("src.game.toml")
-local storagePaths = require("src.game.storage_paths")
+local toml = require("src.game.util.toml")
+local storagePaths = require("src.game.storage.storage_paths")
 
 local leaderboardPreviewCache = {}
 

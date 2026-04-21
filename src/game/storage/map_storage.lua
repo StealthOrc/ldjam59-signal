@@ -1,11 +1,11 @@
 local mapStorage = {}
-local authoredMap = require("src.game.authored_map")
-local toml = require("src.game.toml")
-local uuid = require("src.game.uuid")
+local authoredMap = require("src.game.data.authored_map")
+local toml = require("src.game.util.toml")
+local uuid = require("src.game.util.uuid")
 
 local USER_MAP_DIR = "maps/user"
 local DOWNLOADED_MAP_DIR = "maps/downloaded"
-local BUILTIN_MAP_DIR = "src/game/maps"
+local BUILTIN_MAP_DIR = "src/game/data/maps"
 local BUILTIN_TUTORIAL_DIR = BUILTIN_MAP_DIR .. "/tutorial"
 local BUILTIN_CAMPAIGN_DIR = BUILTIN_MAP_DIR .. "/campaign"
 local IMPORT_DUPLICATE_START_INDEX = 2

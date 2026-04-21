@@ -1,6 +1,6 @@
 local profileStorage = {}
-local toml = require("src.game.toml")
-local uuid = require("src.game.uuid")
+local toml = require("src.game.util.toml")
+local uuid = require("src.game.util.uuid")
 
 local PROFILE_FILE = "profile.toml"
 local PROFILE_VERSION = 3

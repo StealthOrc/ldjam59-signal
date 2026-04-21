@@ -3,7 +3,7 @@ local DEFAULT_WAGON_COUNT = 4
 local LEGACY_TRAIN_SPACING = 110
 local LEGACY_TRAIN_OFFSET = 70
 local LEGACY_TRAIN_SPEED = 168
-local roadTypes = require("src.game.road_types")
+local roadTypes = require("src.game.data.road_types")
 
 local COLOR_LOOKUP = {
     blue = { 0.33, 0.80, 0.98 },

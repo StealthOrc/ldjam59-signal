@@ -1,11 +1,11 @@
-local mapStorage = require("src.game.map_storage")
-local authoredMap = require("src.game.authored_map")
-local json = require("src.game.json")
-local roadTypes = require("src.game.road_types")
-local uuid = require("src.game.uuid")
-local world = require("src.game.world")
-local trackSceneRenderer = require("src.game.track_scene_renderer")
-local uiControls = require("src.game.ui_controls")
+local mapStorage = require("src.game.storage.map_storage")
+local authoredMap = require("src.game.data.authored_map")
+local json = require("src.game.util.json")
+local roadTypes = require("src.game.data.road_types")
+local uuid = require("src.game.util.uuid")
+local world = require("src.game.gameplay.world")
+local trackSceneRenderer = require("src.game.rendering.track_scene_renderer")
+local uiControls = require("src.game.ui.ui_controls")
 
 local mapEditor = {}
 mapEditor.__index = mapEditor

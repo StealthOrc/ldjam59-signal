@@ -514,7 +514,9 @@ function toml.parseFile(path)
 
     if love and love.filesystem and love.filesystem.read then
         data, readError = love.filesystem.read(path)
-    else
+    end
+
+    if not data then
         local handle = io.open(path, "rb")
         if handle then
             data = handle:read("*a")

@@ -1,8 +1,8 @@
 local ui = {}
-local uiControls = require("src.game.ui_controls")
-local roadTypes = require("src.game.road_types")
-local trackSceneRenderer = require("src.game.track_scene_renderer")
-local levelSelectSelection = require("src.game.level_select_selection")
+local uiControls = require("src.game.ui.ui_controls")
+local roadTypes = require("src.game.data.road_types")
+local trackSceneRenderer = require("src.game.rendering.track_scene_renderer")
+local levelSelectSelection = require("src.game.ui.level_select_selection")
 
 local LEVEL_SELECT = {
     titleBarY = 28,

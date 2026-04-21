@@ -8,7 +8,7 @@ love.timer = love.timer or {
 }
 love.filesystem = love.filesystem or {}
 
-local mapEditor = require("src.game.map_editor")
+local mapEditor = require("src.game.editor.map_editor")
 
 local function assertTrue(value, label)
     if not value then

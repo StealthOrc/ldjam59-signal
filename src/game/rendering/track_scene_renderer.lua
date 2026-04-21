@@ -1,4 +1,4 @@
-local roadTypes = require("src.game.road_types")
+local roadTypes = require("src.game.data.road_types")
 
 local renderer = {}
 

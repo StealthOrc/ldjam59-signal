@@ -11,7 +11,7 @@ local capturedDeleteRequest
 local postRequestCount = 0
 local deleteRequestCount = 0
 
-package.loaded["src.game.http_transport"] = {
+package.loaded["src.game.network.http_transport"] = {
     postJson = function(request)
         capturedPostRequest = request
         postRequestCount = postRequestCount + 1
@@ -31,9 +31,9 @@ package.loaded["src.game.http_transport"] = {
     end,
 }
 
-package.loaded["src.game.marketplace_favorite_logic"] = nil
-package.loaded["src.game.leaderboard_client"] = nil
-local leaderboardClient = require("src.game.leaderboard_client")
+package.loaded["src.game.network.marketplace_favorite_logic"] = nil
+package.loaded["src.game.network.leaderboard_client"] = nil
+local leaderboardClient = require("src.game.network.leaderboard_client")
 
 local config = {
     isConfigured = true,

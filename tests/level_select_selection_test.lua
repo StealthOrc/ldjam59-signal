@@ -1,6 +1,6 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
-local levelSelectSelection = require("src.game.level_select_selection")
+local levelSelectSelection = require("src.game.ui.level_select_selection")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then
