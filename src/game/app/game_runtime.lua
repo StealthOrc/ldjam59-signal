@@ -12,6 +12,7 @@ local refreshIndicatorLogic = require("src.game.ui.refresh_indicator_logic")
 local world = require("src.game.gameplay.railway_world")
 local ui = require("src.game.ui.game_screens")
 local json = require("src.game.util.json")
+local pixelPerfectText = require("src.game.rendering.pixel_perfect_text")
 
 local Game = {}
 Game.__index = Game
@@ -373,6 +374,11 @@ function Game.new()
         body = love.graphics.newFont(18),
         small = love.graphics.newFont(14),
     }
+    self.pixelPerfectText = pixelPerfectText.new(love.graphics)
+    self.pixelPerfectText:registerFont(self.fonts.title, { size = 34 })
+    self.pixelPerfectText:registerFont(self.fonts.body, { size = 18 })
+    self.pixelPerfectText:registerFont(self.fonts.small, { size = 14 })
+    self.pixelPerfectText:install()
 
     self.profile = profile
     self.localScoreboard = localScoreStorage.load()
