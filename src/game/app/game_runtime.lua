@@ -531,6 +531,7 @@ function Game.new()
     self.playPhase = nil
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
+    self.screenOverlayHoverId = nil
 
     self:updateRenderTransform()
     self:refreshMaps()

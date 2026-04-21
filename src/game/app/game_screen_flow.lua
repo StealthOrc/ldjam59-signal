@@ -91,6 +91,38 @@ function Game:updateRenderTransform()
     self.renderOffsetY = math.floor((self.window.h - self.viewport.h * self.renderScale) * 0.5 + 0.5)
 end
 
+function Game:isFullscreenActive()
+    if not love or not love.window or not love.window.getFullscreen then
+        return false
+    end
+
+    local isFullscreen = love.window.getFullscreen()
+    return isFullscreen == true
+end
+
+function Game:toggleFullscreen()
+    if not love or not love.window or not love.window.setFullscreen or not love.window.getFullscreen then
+        return false
+    end
+
+    local isFullscreen, fullscreenType = love.window.getFullscreen()
+    local targetFullscreen = not isFullscreen
+    local ok = pcall(love.window.setFullscreen, targetFullscreen, fullscreenType or "desktop")
+
+    if not ok then
+        ok = pcall(love.window.setFullscreen, targetFullscreen)
+    end
+
+    if not ok then
+        return false
+    end
+
+    self.window.w = love.graphics.getWidth()
+    self.window.h = love.graphics.getHeight()
+    self:updateRenderTransform()
+    return true
+end
+
 function Game:toViewportPosition(screenX, screenY)
     return (screenX - self.renderOffsetX) / self.renderScale,
         (screenY - self.renderOffsetY) / self.renderScale

@@ -144,6 +144,30 @@ assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
+assert(type(ui.getFullscreenButtonRect) == "function", "ui.getFullscreenButtonRect should exist")
+assert(type(ui.getScreenOverlayActionAt) == "function", "ui.getScreenOverlayActionAt should exist")
+assert(type(ui.getScreenOverlayHoverId) == "function", "ui.getScreenOverlayHoverId should exist")
+
+local fullscreenButtonRect = ui.getFullscreenButtonRect({
+    window = {
+        w = 1920,
+        h = 1080,
+    },
+})
+assertEqual(fullscreenButtonRect.x, 1854, "fullscreen button anchors to the bottom-right corner")
+assertEqual(fullscreenButtonRect.y, 1014, "fullscreen button keeps its bottom margin")
+assertEqual(fullscreenButtonRect.w, 48, "fullscreen button keeps a fixed width")
+assertEqual(fullscreenButtonRect.h, 48, "fullscreen button keeps a fixed height")
+assertEqual(
+    ui.getScreenOverlayHoverId({ window = { w = 1920, h = 1080 } }, 1860, 1020),
+    "toggle_fullscreen",
+    "fullscreen button reports hover inside the icon button"
+)
+assertEqual(
+    ui.getScreenOverlayActionAt({ window = { w = 1920, h = 1080 } }, 1200, 700),
+    nil,
+    "fullscreen button keeps clicks outside the overlay available to the game"
+)
 
 local levelSelectMaps = {
     { id = "tutorial-1", mapKind = "tutorial", source = "builtin", displayName = "Guide 1" },

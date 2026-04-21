@@ -13,6 +13,16 @@ return function(ui, shared)
 
     setfenv(1, moduleEnvironment)
 
+local FULLSCREEN_BUTTON_LAYOUT = {
+    size = 48,
+    margin = 18,
+    cornerRadius = 14,
+    iconInset = 12,
+    iconArmLength = 9,
+    iconGap = 4,
+    outlineWidth = 2,
+}
+
 function pointInRect(x, y, rect)
     return x >= rect.x
         and x <= rect.x + rect.w
@@ -109,6 +119,84 @@ function drawButton(rect, label, fillColor, strokeColor, font, isDisabled, label
         graphics.setColor(0.97, 0.98, 1, textAlpha)
     end
     graphics.printf(label, rect.x, rect.y + math.floor((rect.h - font:getHeight()) * 0.5 + 0.5), rect.w, "center")
+    graphics.setLineWidth(1)
+end
+
+function ui.getFullscreenButtonRect(game)
+    local size = FULLSCREEN_BUTTON_LAYOUT.size
+    local margin = FULLSCREEN_BUTTON_LAYOUT.margin
+
+    return {
+        x = game.window.w - size - margin,
+        y = game.window.h - size - margin,
+        w = size,
+        h = size,
+    }
+end
+
+local function drawExpandFullscreenIcon(rect)
+    local graphics = love.graphics
+    local left = rect.x + FULLSCREEN_BUTTON_LAYOUT.iconInset
+    local top = rect.y + FULLSCREEN_BUTTON_LAYOUT.iconInset
+    local right = rect.x + rect.w - FULLSCREEN_BUTTON_LAYOUT.iconInset
+    local bottom = rect.y + rect.h - FULLSCREEN_BUTTON_LAYOUT.iconInset
+    local arm = FULLSCREEN_BUTTON_LAYOUT.iconArmLength
+
+    graphics.line(left + arm, top, left, top, left, top + arm)
+    graphics.line(right - arm, top, right, top, right, top + arm)
+    graphics.line(left, bottom - arm, left, bottom, left + arm, bottom)
+    graphics.line(right - arm, bottom, right, bottom, right, bottom - arm)
+end
+
+local function drawCollapseFullscreenIcon(rect)
+    local graphics = love.graphics
+    local left = rect.x + FULLSCREEN_BUTTON_LAYOUT.iconInset + FULLSCREEN_BUTTON_LAYOUT.iconGap
+    local top = rect.y + FULLSCREEN_BUTTON_LAYOUT.iconInset + FULLSCREEN_BUTTON_LAYOUT.iconGap
+    local right = rect.x + rect.w - FULLSCREEN_BUTTON_LAYOUT.iconInset - FULLSCREEN_BUTTON_LAYOUT.iconGap
+    local bottom = rect.y + rect.h - FULLSCREEN_BUTTON_LAYOUT.iconInset - FULLSCREEN_BUTTON_LAYOUT.iconGap
+    local arm = FULLSCREEN_BUTTON_LAYOUT.iconArmLength
+
+    graphics.line(left + arm, top, left + arm, top + arm, left, top + arm)
+    graphics.line(right - arm, top, right - arm, top + arm, right, top + arm)
+    graphics.line(left, bottom - arm, left + arm, bottom - arm, left + arm, bottom)
+    graphics.line(right - arm, bottom, right - arm, bottom - arm, right, bottom - arm)
+end
+
+function ui.getScreenOverlayHoverId(game, screenX, screenY)
+    if pointInRect(screenX, screenY, ui.getFullscreenButtonRect(game)) then
+        return "toggle_fullscreen"
+    end
+
+    return nil
+end
+
+function ui.getScreenOverlayActionAt(game, screenX, screenY)
+    return ui.getScreenOverlayHoverId(game, screenX, screenY)
+end
+
+function ui.drawScreenOverlay(game)
+    local graphics = love.graphics
+    local rect = ui.getFullscreenButtonRect(game)
+    local isHovered = game.screenOverlayHoverId == "toggle_fullscreen"
+    local isFullscreen = game.isFullscreenActive and game:isFullscreenActive() or false
+    local fillColor = isHovered and { 0.14, 0.18, 0.24, 0.98 } or { 0.09, 0.11, 0.15, 0.96 }
+    local strokeColor = isHovered and { 0.78, 0.88, 0.98, 1 } or { 0.44, 0.62, 0.78, 1 }
+    local iconColor = isHovered and { 0.96, 0.98, 1, 1 } or { 0.86, 0.92, 0.98, 1 }
+
+    graphics.setColor(fillColor[1], fillColor[2], fillColor[3], fillColor[4])
+    graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h, FULLSCREEN_BUTTON_LAYOUT.cornerRadius, FULLSCREEN_BUTTON_LAYOUT.cornerRadius)
+    graphics.setColor(strokeColor[1], strokeColor[2], strokeColor[3], strokeColor[4])
+    graphics.setLineWidth(FULLSCREEN_BUTTON_LAYOUT.outlineWidth)
+    graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, FULLSCREEN_BUTTON_LAYOUT.cornerRadius, FULLSCREEN_BUTTON_LAYOUT.cornerRadius)
+    graphics.setColor(iconColor[1], iconColor[2], iconColor[3], iconColor[4])
+    graphics.setLineWidth(3)
+
+    if isFullscreen then
+        drawCollapseFullscreenIcon(rect)
+    else
+        drawExpandFullscreenIcon(rect)
+    end
+
     graphics.setLineWidth(1)
 end
 

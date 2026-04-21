@@ -86,6 +86,8 @@ function Game:draw()
     if self.pixelPerfectText then
         self.pixelPerfectText:endFrame()
     end
+
+    ui.drawScreenOverlay(self)
 end
 
 function Game:resize(w, h)
@@ -95,6 +97,11 @@ function Game:resize(w, h)
 end
 
 function Game:keypressed(key)
+    if key == "f11" then
+        self:toggleFullscreen()
+        return
+    end
+
     if key == "escape" then
         if self.screen == "profile_setup" or self.screen == "profile_mode_setup" or self.screen == "menu" then
             love.event.quit()
@@ -360,6 +367,14 @@ function Game:textinput(text)
 end
 
 function Game:mousepressed(x, y, button)
+    local screenOverlayAction = ui.getScreenOverlayActionAt(self, x, y)
+    if screenOverlayAction == "toggle_fullscreen" then
+        if button == 1 then
+            self:toggleFullscreen()
+        end
+        return
+    end
+
     local viewportX, viewportY = self:toViewportPosition(x, y)
 
     if self.screen == "profile_setup" then
@@ -540,6 +555,7 @@ function Game:mousepressed(x, y, button)
 end
 
 function Game:mousemoved(x, y, dx, dy)
+    self.screenOverlayHoverId = ui.getScreenOverlayHoverId(self, x, y)
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
     self.levelSelectHoverInfo = nil
