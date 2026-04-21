@@ -102,6 +102,26 @@ previewJunction = editor.previewWorld.junctionOrder[1]
 assertEqual(intersection.activeOutputIndex, 2, "clicking the output selector cycles the saved starting output")
 assertEqual(previewJunction.activeOutputIndex, 2, "preview world reflects the cycled starting output")
 
+editor:openJunctionPicker(intersection, centerScreenX, centerScreenY)
+assertEqual(editor:getJunctionPickerPopupScale(), 1, "junction wheel should keep a constant size when opened")
+
+local zoomBeforeWheel = editor.camera.zoom
+editor:wheelmoved(centerScreenX, centerScreenY, 0, 1)
+assertEqual(editor.camera.zoom, zoomBeforeWheel, "scrolling while the junction wheel is open should not zoom the editor camera")
+assertEqual(editor:getJunctionPickerPopupScale(), 1, "junction wheel should keep a constant size while scrolling")
+
+editor:closeColorPicker()
+
+local sideScreenX, sideScreenY = editor:mapToScreen(intersection.x + 28, intersection.y)
+editor:mousepressed(sideScreenX, sideScreenY, 1)
+editor:mousereleased(sideScreenX, sideScreenY, 1)
+
+intersection = editor.intersections[1]
+previewJunction = editor.previewWorld.junctionOrder[1]
+
+assertEqual(intersection.activeInputIndex, 1, "clicking a visible junction side should still cycle the saved starting input")
+assertEqual(previewJunction.activeInputIndex, 1, "preview world reflects side clicks on the visible junction bubble")
+
 local exported = editor:getExportData()
 local reloadedEditor = mapEditor.new(1280, 720, nil)
 reloadedEditor:loadEditorData(exported, "Junction State Reloaded", nil, nil)

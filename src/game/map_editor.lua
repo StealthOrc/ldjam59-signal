@@ -52,6 +52,15 @@ local DRAG_START_DISTANCE_SQUARED = 25
 local INTERSECTION_SELECTOR_OFFSET_Y = 36
 local INTERSECTION_SELECTOR_CLICK_RADIUS = 16
 local INTERSECTION_SELECTOR_DRAW_RADIUS = 15
+local UNSUPPORTED_INTERSECTION_HIT_RADIUS = 18
+local SUPPORTED_INTERSECTION_MIN_RADIUS = 34
+local SUPPORTED_INTERSECTION_RADIUS_SCALE = 0.045
+local SUPPORTED_INTERSECTION_HIT_PADDING = 6
+local BEND_POINT_HIT_RADIUS = 24
+local ROAD_SEGMENT_HIT_RADIUS = 32
+local ROAD_SEGMENT_ENDPOINT_MARGIN = 20
+local ROUTE_CREATION_GUARD_PADDING = 8
+local ROUTE_CREATION_ENDPOINT_GUARD_RADIUS = 18
 local INTERSECTION_POINT_TOLERANCE_SQUARED = 9
 local INTERNAL_POINT_MATCH_DISTANCE_SQUARED = 1
 local INTERSECTION_SHARED_POINT_DISTANCE_SQUARED = 12 * 12
@@ -179,6 +188,15 @@ local function pointInRect(x, y, rect)
         and x <= rect.x + rect.w
         and y >= rect.y
         and y <= rect.y + rect.h
+end
+
+local function expandRect(rect, padding)
+    return {
+        x = rect.x - padding,
+        y = rect.y - padding,
+        w = rect.w + padding * 2,
+        h = rect.h + padding * 2,
+    }
 end
 
 local function loadOptionalImage(path)
@@ -1902,17 +1920,7 @@ function mapEditor:restartJunctionPickerPopup(originX, originY)
 end
 
 function mapEditor:getJunctionPickerPopupScale()
-    if not self.colorPicker or self.colorPicker.mode ~= "junction" then
-        return 1
-    end
-
-    local timer = self.colorPicker.popupTimer
-    if timer == nil then
-        return 1
-    end
-
-    local progress = clamp(timer / JUNCTION_MENU_POP_DURATION, 0, 1)
-    return math.max(0.06, easeOutBack(progress))
+    return 1
 end
 
 function mapEditor:getJunctionPickerPopupOrigin()
@@ -1924,13 +1932,7 @@ function mapEditor:getJunctionPickerPopupOrigin()
 end
 
 function mapEditor:screenToJunctionPickerSpace(x, y)
-    local scale = self:getJunctionPickerPopupScale()
-    if scale == 1 then
-        return x, y
-    end
-
-    local originX, originY = self:getJunctionPickerPopupOrigin()
-    return originX + (x - originX) / scale, originY + (y - originY) / scale
+    return x, y
 end
 
 function mapEditor:openColorPicker(route, magnetKind)
@@ -3185,9 +3187,8 @@ function mapEditor:update(dt)
 end
 
 function mapEditor:findIntersectionHit(x, y)
-    local radiusScale = 1 / math.max(self.camera.zoom, 0.0001)
     for _, intersection in ipairs(self.intersections) do
-        local radius = (intersection.unsupported and 18 or 22) * radiusScale
+        local radius = self:getIntersectionInteractionRadius(intersection)
         if distanceSquared(x, y, intersection.x, intersection.y) <= radius * radius then
             return intersection
         end
@@ -3229,7 +3230,7 @@ function mapEditor:findPointHit(x, y)
                 if isMagnet then
                     hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
                 else
-                    local radius = 12 * radiusScale
+                    local radius = BEND_POINT_HIT_RADIUS * radiusScale
                     hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
                 end
 
@@ -3461,7 +3462,10 @@ end
 
 function mapEditor:findSegmentHit(x, y)
     local bestHit = nil
-    local segmentRadius = 16 / math.max(self.camera.zoom, 0.0001)
+    local zoomScale = math.max(self.camera.zoom, 0.0001)
+    local segmentRadius = ROAD_SEGMENT_HIT_RADIUS / zoomScale
+    local endpointMargin = ROAD_SEGMENT_ENDPOINT_MARGIN / zoomScale
+    local endpointMarginSquared = endpointMargin * endpointMargin
     local bestDistance = segmentRadius * segmentRadius
 
     for routeIndex = #self.routes, 1, -1 do
@@ -3469,9 +3473,11 @@ function mapEditor:findSegmentHit(x, y)
         for pointIndex = 1, #route.points - 1 do
             local a = route.points[pointIndex]
             local b = route.points[pointIndex + 1]
-            local closestX, closestY, t, distance = closestPointOnSegment(x, y, a, b)
+            local closestX, closestY, _, distance = closestPointOnSegment(x, y, a, b)
+            local isTooCloseToStart = distanceSquared(closestX, closestY, a.x, a.y) <= endpointMarginSquared
+            local isTooCloseToEnd = distanceSquared(closestX, closestY, b.x, b.y) <= endpointMarginSquared
 
-            if distance < bestDistance and t > 0.08 and t < 0.92 then
+            if distance < bestDistance and not isTooCloseToStart and not isTooCloseToEnd then
                 bestDistance = distance
                 bestHit = {
                     route = route,
@@ -3484,6 +3490,85 @@ function mapEditor:findSegmentHit(x, y)
     end
 
     return bestHit
+end
+
+function mapEditor:getIntersectionInteractionRadius(intersection)
+    if intersection and intersection.unsupported then
+        return UNSUPPORTED_INTERSECTION_HIT_RADIUS / math.max(self.camera.zoom, 0.0001)
+    end
+
+    local mapSize = self.mapSize or { w = 0, h = 0 }
+    local renderedRadius = math.max(
+        SUPPORTED_INTERSECTION_MIN_RADIUS,
+        math.min(mapSize.w or 0, mapSize.h or 0) * SUPPORTED_INTERSECTION_RADIUS_SCALE
+    )
+    return renderedRadius + SUPPORTED_INTERSECTION_HIT_PADDING
+end
+
+function mapEditor:isNearRouteCreationGuard(x, y)
+    local zoomScale = math.max(self.camera.zoom, 0.0001)
+    local guardPadding = ROUTE_CREATION_GUARD_PADDING / zoomScale
+    local bendPointGuardRadius = (BEND_POINT_HIT_RADIUS + ROUTE_CREATION_GUARD_PADDING) / zoomScale
+    local endpointGuardRadius = ROUTE_CREATION_ENDPOINT_GUARD_RADIUS / zoomScale
+    local segmentGuardRadius = (ROAD_SEGMENT_HIT_RADIUS + ROUTE_CREATION_GUARD_PADDING) / zoomScale
+    local segmentEndpointMargin = ROAD_SEGMENT_ENDPOINT_MARGIN / zoomScale
+    local segmentEndpointMarginSquared = segmentEndpointMargin * segmentEndpointMargin
+    local selectorGuardRadius = INTERSECTION_SELECTOR_CLICK_RADIUS + guardPadding
+
+    for routeIndex = #self.routes, 1, -1 do
+        local route = self.routes[routeIndex]
+        for pointIndex = #route.points, 1, -1 do
+            local point = route.points[pointIndex]
+            local isMagnet = pointIndex == 1 or pointIndex == #route.points
+            local isSharedJunctionPoint = not isMagnet and point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
+
+            if not isSharedJunctionPoint then
+                if isMagnet then
+                    local magnetKind = pointIndex == 1 and "start" or "end"
+                    if pointInRect(x, y, expandRect(self:getMagnetHitRect(point, magnetKind), guardPadding)) then
+                        return true
+                    end
+                elseif distanceSquared(x, y, point.x, point.y) <= bendPointGuardRadius * bendPointGuardRadius then
+                    return true
+                end
+            end
+        end
+    end
+
+    for _, endpoint in ipairs(self.endpoints) do
+        if distanceSquared(x, y, endpoint.x, endpoint.y) <= endpointGuardRadius * endpointGuardRadius then
+            return true
+        end
+    end
+
+    for _, intersection in ipairs(self.intersections) do
+        local intersectionGuardRadius = self:getIntersectionInteractionRadius(intersection) + guardPadding
+        if distanceSquared(x, y, intersection.x, intersection.y) <= intersectionGuardRadius * intersectionGuardRadius then
+            return true
+        end
+
+        if #intersection.outputEndpointIds > 1
+            and distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y) <= selectorGuardRadius * selectorGuardRadius then
+            return true
+        end
+    end
+
+    for routeIndex = #self.routes, 1, -1 do
+        local route = self.routes[routeIndex]
+        for pointIndex = 1, #route.points - 1 do
+            local a = route.points[pointIndex]
+            local b = route.points[pointIndex + 1]
+            local closestX, closestY, _, distance = closestPointOnSegment(x, y, a, b)
+            local isTooCloseToStart = distanceSquared(closestX, closestY, a.x, a.y) <= segmentEndpointMarginSquared
+            local isTooCloseToEnd = distanceSquared(closestX, closestY, b.x, b.y) <= segmentEndpointMarginSquared
+
+            if distance <= segmentGuardRadius * segmentGuardRadius and not isTooCloseToStart and not isTooCloseToEnd then
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
 function mapEditor:deleteSelection()
@@ -4567,7 +4652,7 @@ function mapEditor:handleColorPickerClick(x, y, button)
             end
         end
 
-        self:updateJunctionPickerHover(x, y)
+        self:updateJunctionPickerHover(rawX, rawY)
         return true
     end
 
@@ -5228,6 +5313,12 @@ function mapEditor:mousepressed(screenX, screenY, button)
         return true
     end
 
+    if self:isNearRouteCreationGuard(x, y) then
+        self:closeColorPicker()
+        self:closeRouteTypePicker()
+        return true
+    end
+
     if pointInRect(x, y, self.canvas) then
         self:beginRoute(x, y)
         return true
@@ -5255,6 +5346,11 @@ function mapEditor:wheelmoved(screenX, screenY, _, y)
             return true
         end
         return false
+    end
+
+    if self.colorPicker and (self.colorPicker.mode == "junction" or self.colorPicker.mode == "route_end") then
+        self:updateJunctionPickerHover(screenX, screenY)
+        return true
     end
 
     if pointInRect(screenX, screenY, self.sidePanel) then
