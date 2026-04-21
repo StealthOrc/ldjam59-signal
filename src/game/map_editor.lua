@@ -4200,7 +4200,6 @@ function mapEditor:rebuildIntersections()
         return a.x < b.x
     end)
 
-    self:materializeIntersectionPoints()
     self:refreshValidation()
 end
 
@@ -4320,13 +4319,13 @@ end
 
 function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
     if not route or not route.points or #route.points < 2 then
-        return nil, nil, false
+        return nil, nil
     end
 
     for pointIndex = 2, #route.points - 1 do
         local point = route.points[pointIndex]
         if distanceSquared(point.x, point.y, intersectionPoint.x, intersectionPoint.y) <= INTERSECTION_POINT_TOLERANCE_SQUARED then
-            return pointIndex, point, false
+            return pointIndex, point
         end
     end
 
@@ -4336,61 +4335,21 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
         local hitPoint = pointOnSegment(intersectionPoint, pointA, pointB, INTERSECTION_POINT_TOLERANCE_SQUARED)
         if hitPoint then
             if distanceSquared(hitPoint.x, hitPoint.y, pointA.x, pointA.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED and segmentIndex > 1 then
-                return segmentIndex, pointA, false
+                return segmentIndex, pointA
             end
             if distanceSquared(hitPoint.x, hitPoint.y, pointB.x, pointB.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED
                 and (segmentIndex + 1) < #route.points then
-                return segmentIndex + 1, pointB, false
+                return segmentIndex + 1, pointB
             end
 
             local insertIndex = segmentIndex + 1
             table.insert(route.points, insertIndex, hitPoint)
             self:splitRouteSegmentStyle(route, segmentIndex)
-            return insertIndex, route.points[insertIndex], true
+            return insertIndex, route.points[insertIndex]
         end
     end
 
-    return nil, nil, false
-end
-
-function mapEditor:materializeIntersectionPoints()
-    for _, intersection in ipairs(self.intersections or {}) do
-        local members = {}
-        local sharedPointId = nil
-
-        for _, routeId in ipairs(intersection.routeIds or {}) do
-            local route = self:getRouteById(routeId)
-            local pointIndex, point = self:ensureRoutePointAtIntersection(route, intersection)
-            if route and pointIndex and point then
-                members[#members + 1] = {
-                    route = route,
-                    pointIndex = pointIndex,
-                    point = point,
-                }
-                if point.sharedPointId and not sharedPointId then
-                    sharedPointId = point.sharedPointId
-                end
-            end
-        end
-
-        if #members >= 2 then
-            if not sharedPointId then
-                sharedPointId = self.nextSharedPointId
-                self.nextSharedPointId = self.nextSharedPointId + 1
-            end
-
-            for _, member in ipairs(members) do
-                if member.point.sharedPointId and member.point.sharedPointId ~= sharedPointId then
-                    self:reassignSharedPointGroup(member.point.sharedPointId, sharedPointId)
-                end
-                if member.point.sharedPointId ~= sharedPointId then
-                    member.point.sharedPointId = sharedPointId
-                end
-            end
-
-            self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
-        end
-    end
+    return nil, nil
 end
 
 function mapEditor:prepareIntersectionForDrag(intersection)
@@ -5968,7 +5927,7 @@ function mapEditor:drawRoutePatternStroke(pointA, pointB, roadTypeId, alpha)
     local normalY = directionX
     local markerSpacing = roadTypeConfig.markerSpacing
     local markerSize = roadTypeConfig.markerSize
-    local markerDistance = length <= markerSpacing and length * 0.5 or markerSpacing * 0.5
+    local markerDistance = markerSpacing * 0.5
     local outlineWidth = roadTypeConfig.markerWidth + 2
     local fillWidth = roadTypeConfig.markerWidth
 
