@@ -102,6 +102,39 @@ previewJunction = editor.previewWorld.junctionOrder[1]
 assertEqual(intersection.activeOutputIndex, 2, "clicking the output selector cycles the saved starting output")
 assertEqual(previewJunction.activeOutputIndex, 2, "preview world reflects the cycled starting output")
 
+local wheelIntersection = editor.intersections[1]
+local wheelScreenX, wheelScreenY = editor:mapToScreen(wheelIntersection.x, wheelIntersection.y)
+editor:mousepressed(wheelScreenX, wheelScreenY, 2)
+assertTrue(editor.colorPicker ~= nil and editor.colorPicker.mode == "junction", "right-clicking a junction should open the radial menu")
+
+local rootScale = editor:getJunctionPickerPopupScale()
+local rootClickX = wheelScreenX + 12 * rootScale
+local rootClickY = wheelScreenY
+
+-- Click the visible right half of the scaled root to open the control-type branch.
+assertTrue(editor:handleColorPickerClick(rootClickX, rootClickY, 2), "junction radial root click should be handled during popup scaling")
+assertEqual(editor.colorPicker.branch, "junctions", "junction radial root click should open the control branch")
+
+editor:update(0.08)
+local submenuScale = editor:getJunctionPickerPopupScale()
+local wheelLayout = editor:getJunctionPickerLayout()
+local currentControlType = editor.intersections[1].controlType
+local targetEntry
+for _, entry in ipairs(wheelLayout.submenu.entries or {}) do
+    if entry.option.controlType ~= currentControlType then
+        targetEntry = entry
+        break
+    end
+end
+
+assertTrue(targetEntry ~= nil, "junction radial menu should expose an alternative control type")
+
+local originX, originY = editor:getJunctionPickerPopupOrigin()
+local submenuClickX = originX + (targetEntry.centerX - originX) * submenuScale
+local submenuClickY = originY + (targetEntry.centerY - originY) * submenuScale
+assertTrue(editor:handleColorPickerClick(submenuClickX, submenuClickY, 2), "junction radial submenu click should be handled during popup scaling")
+assertEqual(editor.intersections[1].controlType, targetEntry.option.controlType, "junction radial submenu click should apply the chosen control type")
+
 local exported = editor:getExportData()
 local reloadedEditor = mapEditor.new(1280, 720, nil)
 reloadedEditor:loadEditorData(exported, "Junction State Reloaded", nil, nil)

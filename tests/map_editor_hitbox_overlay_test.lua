@@ -32,6 +32,31 @@ local function assertTrue(value, label)
     end
 end
 
+local function assertNear(actual, expected, tolerance, label)
+    if math.abs(actual - expected) > tolerance then
+        error(string.format("%s expected %.4f but got %.4f", label, expected, actual), 2)
+    end
+end
+
+local function findOverlayEntry(entries, label)
+    for _, entry in ipairs(entries or {}) do
+        if entry.label == label then
+            return entry
+        end
+    end
+    return nil
+end
+
+local function polygonEdgeLength(points, startIndex, endIndex)
+    local startX = points[startIndex]
+    local startY = points[startIndex + 1]
+    local endX = points[endIndex]
+    local endY = points[endIndex + 1]
+    local dx = endX - startX
+    local dy = endY - startY
+    return math.sqrt(dx * dx + dy * dy)
+end
+
 local editorData = {
     endpoints = {
         { id = "input_a", kind = "input", x = 636 / 1280, y = 400 / 720, colors = { "blue" } },
@@ -101,6 +126,40 @@ end
 
 assertTrue(sawSegment, "overlay should include segment hitboxes")
 assertTrue(sawIntersection, "overlay should include junction hitboxes")
+
+local defaultBendEntry = findOverlayEntry(entries, "route_b bend 2")
+local defaultSegmentEntry = findOverlayEntry(entries, "route_b segment 1")
+assertTrue(defaultBendEntry ~= nil, "overlay should expose bend hitboxes by label")
+assertTrue(defaultSegmentEntry ~= nil, "overlay should expose segment hitboxes by label")
+
+local defaultBendWidth = defaultBendEntry.rect.w
+local defaultSegmentThickness = polygonEdgeLength(defaultSegmentEntry.points, 1, 7)
+
+editor.camera.zoom = 0.5
+local zoomedOutEntries = editor:getHitboxOverlayEntries()
+local zoomedOutBendEntry = findOverlayEntry(zoomedOutEntries, "route_b bend 2")
+local zoomedOutSegmentEntry = findOverlayEntry(zoomedOutEntries, "route_b segment 1")
+assertNear(zoomedOutBendEntry.rect.w, defaultBendWidth, 0.0001, "bend hitbox width should stay stable when zooming out")
+assertNear(
+    polygonEdgeLength(zoomedOutSegmentEntry.points, 1, 7),
+    defaultSegmentThickness,
+    0.0001,
+    "segment hitbox thickness should stay stable when zooming out"
+)
+
+editor.camera.zoom = 2
+local zoomedInEntries = editor:getHitboxOverlayEntries()
+local zoomedInBendEntry = findOverlayEntry(zoomedInEntries, "route_b bend 2")
+local zoomedInSegmentEntry = findOverlayEntry(zoomedInEntries, "route_b segment 1")
+assertNear(zoomedInBendEntry.rect.w, defaultBendWidth, 0.0001, "bend hitbox width should stay stable when zooming in")
+assertNear(
+    polygonEdgeLength(zoomedInSegmentEntry.points, 1, 7),
+    defaultSegmentThickness,
+    0.0001,
+    "segment hitbox thickness should stay stable when zooming in"
+)
+
+editor.camera.zoom = 1
 
 assertTrue(editor:keypressed("f3"), "f3 should also disable the hitbox overlay")
 assertEqual(editor.hitboxOverlayVisible, false, "f3 disables the hitbox overlay")

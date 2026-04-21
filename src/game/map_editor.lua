@@ -3342,9 +3342,8 @@ function mapEditor:update(dt)
 end
 
 function mapEditor:findIntersectionHit(x, y)
-    local radiusScale = 1 / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
     for _, intersection in ipairs(self.intersections) do
-        local radius = (intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS) * radiusScale
+        local radius = self:getIntersectionHitRadius(intersection)
         if distanceSquared(x, y, intersection.x, intersection.y) <= radius * radius then
             return intersection
         end
@@ -3367,7 +3366,6 @@ function mapEditor:getMagnetHitRect(point, magnetKind)
 end
 
 function mapEditor:findPointHit(x, y)
-    local radiusScale = 1 / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
     for routeIndex = #self.routes, 1, -1 do
         local route = self.routes[routeIndex]
         for pointIndex = #route.points, 1, -1 do
@@ -3386,7 +3384,7 @@ function mapEditor:findPointHit(x, y)
                 if isMagnet then
                     hit = pointInRect(x, y, self:getMagnetHitRect(point, magnetKind))
                 else
-                    local radius = POINT_HIT_RADIUS * radiusScale
+                    local radius = self:getPointHitRadius()
                     hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
                 end
 
@@ -3618,7 +3616,7 @@ end
 
 function mapEditor:findSegmentHit(x, y)
     local bestHit = nil
-    local segmentRadius = SEGMENT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    local segmentRadius = SEGMENT_HIT_RADIUS
     local bestDistance = segmentRadius * segmentRadius
 
     for routeIndex = #self.routes, 1, -1 do
@@ -3644,12 +3642,12 @@ function mapEditor:findSegmentHit(x, y)
 end
 
 function mapEditor:getPointHitRadius()
-    return POINT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    return POINT_HIT_RADIUS
 end
 
 function mapEditor:getIntersectionHitRadius(intersection)
     local baseRadius = intersection and intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS
-    return baseRadius / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    return baseRadius
 end
 
 function mapEditor:getOutputSelectorHitRect(intersection)
@@ -3689,7 +3687,7 @@ function mapEditor:buildSegmentHitboxPolygon(pointA, pointB)
     local endY = lerp(pointA.y, pointB.y, SEGMENT_HIT_MAX_T)
     local normalX = -dy / length
     local normalY = dx / length
-    local halfWidth = SEGMENT_HIT_RADIUS / math.max(self.camera.zoom, HITBOX_OVERLAY_EPSILON)
+    local halfWidth = SEGMENT_HIT_RADIUS
 
     return {
         points = {
@@ -4926,7 +4924,7 @@ function mapEditor:handleColorPickerClick(x, y, button)
             end
         end
 
-        self:updateJunctionPickerHover(x, y)
+        self:updateJunctionPickerHover(rawX, rawY)
         return true
     end
 
