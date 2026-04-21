@@ -2,7 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 love = love or {}
 
-local ui = require("src.game.ui.screens")
+local ui = require("src.game.ui.game_screens")
 
 local function assertEqual(actual, expected, label)
     if actual ~= expected then

@@ -1,4 +1,4 @@
-local Game = require("src.game.app.game")
+local Game = require("src.game.app.game_runtime")
 
 local game
 
