@@ -1,5 +1,6 @@
 local mapStorage = require("src.game.map_storage")
 local authoredMap = require("src.game.authored_map")
+local json = require("src.game.json")
 local roadTypes = require("src.game.road_types")
 local uuid = require("src.game.uuid")
 local world = require("src.game.world")
@@ -68,6 +69,7 @@ local JUNCTION_MENU_TYPE_ICON_SIZE = 18 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_SWATCH_RADIUS = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local JUNCTION_MENU_EDGE_MARGIN = 8 * JUNCTION_MENU_SIZE_MULTIPLIER
 local EMPTY_MAP_VALIDATION_TEXT = "Draw at least one route before starting this map."
+local UPLOAD_UNAVAILABLE_MESSAGE = "Uploading is currently not possible."
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local CONTROL_LABELS = {
@@ -255,6 +257,27 @@ local function buildRouteKey(routeIds)
 
     table.sort(sortedIds)
     return table.concat(sortedIds, "|"), sortedIds
+end
+
+local function buildBlankEditorData()
+    return {
+        mapSize = {
+            w = DEFAULT_NEW_MAP_WIDTH,
+            h = DEFAULT_NEW_MAP_HEIGHT,
+        },
+        timeLimit = nil,
+        endpoints = {},
+        routes = {},
+        junctions = {},
+        trains = {},
+    }
+end
+
+local function isLocalSavedMapDescriptor(descriptor)
+    return descriptor ~= nil
+        and descriptor.source == "user"
+        and descriptor.isRemoteImport ~= true
+        and descriptor.hasLevel == true
 end
 
 local function segmentLength(a, b)
@@ -796,8 +819,12 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.sourceInfo = nil
     self.lastSavedDescriptor = nil
     self.pendingPlaytestDescriptor = nil
+    self.pendingUploadDescriptor = nil
     self.pendingOpenBlankMap = false
     self.loadedMapPayload = nil
+    self.savedStateSnapshotJson = nil
+    self.savedMapUploadAvailable = false
+    self.savedMapUploadPending = false
     self.lastValidationError = nil
     self.validationErrors = {}
     self.previewWorld = nil
@@ -1578,17 +1605,65 @@ function mapEditor:refreshValidation(mapName)
     return level, buildError, self.validationErrors
 end
 
+function mapEditor:getSavedMapDescriptor()
+    if not isLocalSavedMapDescriptor(self.lastSavedDescriptor) then
+        return nil
+    end
+
+    return self.lastSavedDescriptor
+end
+
+function mapEditor:buildDirtyStateSnapshot()
+    return {
+        name = self.currentMapName,
+        mapUuid = self.editingMapUuid,
+        editor = self:getExportData(),
+    }
+end
+
+function mapEditor:updateSavedStateSnapshot()
+    self.savedStateSnapshotJson = json.encode(self:buildDirtyStateSnapshot())
+end
+
+function mapEditor:hasUnsavedChanges()
+    local savedSnapshotJson = self.savedStateSnapshotJson
+    if not savedSnapshotJson then
+        savedSnapshotJson = json.encode({
+            editor = buildBlankEditorData(),
+        })
+    end
+
+    return json.encode(self:buildDirtyStateSnapshot()) ~= savedSnapshotJson
+end
+
 function mapEditor:canPlaySavedMap()
-    return self.lastSavedDescriptor ~= nil and self.lastSavedDescriptor.hasLevel == true
+    return self:getSavedMapDescriptor() ~= nil and not self:hasUnsavedChanges()
+end
+
+function mapEditor:setSavedMapUploadState(isAvailable, isPending)
+    self.savedMapUploadAvailable = isAvailable == true
+    self.savedMapUploadPending = isPending == true
+end
+
+function mapEditor:canUploadSavedMap()
+    return self:getSavedMapDescriptor() ~= nil
+        and not self:hasUnsavedChanges()
+        and self.savedMapUploadAvailable == true
+        and self.savedMapUploadPending ~= true
 end
 
 function mapEditor:requestPlaytestFromSavedMap()
-    if not self:canPlaySavedMap() then
+    if self:getSavedMapDescriptor() == nil then
         self:showStatus("Save a playable map first, then test it from here.")
         return false
     end
 
-    self.pendingPlaytestDescriptor = self.lastSavedDescriptor
+    if self:hasUnsavedChanges() then
+        self:showStatus("Save the map again before starting the saved version.")
+        return false
+    end
+
+    self.pendingPlaytestDescriptor = self:getSavedMapDescriptor()
     self:showStatus("Starting test run from the saved map...")
     return true
 end
@@ -1596,6 +1671,38 @@ end
 function mapEditor:consumePlaytestRequest()
     local descriptor = self.pendingPlaytestDescriptor
     self.pendingPlaytestDescriptor = nil
+    return descriptor
+end
+
+function mapEditor:requestUploadFromSavedMap()
+    if self:getSavedMapDescriptor() == nil then
+        self:showStatus("Save a playable local map before uploading it.")
+        return false
+    end
+
+    if self:hasUnsavedChanges() then
+        self:showStatus("Save the map again before uploading it.")
+        return false
+    end
+
+    if self.savedMapUploadPending == true then
+        self:showStatus("This map is already uploading.")
+        return false
+    end
+
+    if self.savedMapUploadAvailable ~= true then
+        self:showStatus(UPLOAD_UNAVAILABLE_MESSAGE)
+        return false
+    end
+
+    self.pendingUploadDescriptor = self:getSavedMapDescriptor()
+    self:showStatus("Uploading the saved map...")
+    return true
+end
+
+function mapEditor:consumeUploadRequest()
+    local descriptor = self.pendingUploadDescriptor
+    self.pendingUploadDescriptor = nil
     return descriptor
 end
 
@@ -1675,8 +1782,18 @@ function mapEditor:getPlayTestButtonRect()
     return {
         x = self.sidePanel.x + PANEL_BUTTON_SIDE_MARGIN,
         y = self.sidePanel.y + self.sidePanel.h - (PANEL_BUTTON_BOTTOM_MARGIN + PANEL_BUTTON_HEIGHT * 5 + PANEL_BUTTON_GAP * 4),
-        w = self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2,
+        w = (self.sidePanel.w - PANEL_BUTTON_SIDE_MARGIN * 2 - PANEL_BUTTON_GAP) * 0.5,
         h = PANEL_BUTTON_HEIGHT,
+    }
+end
+
+function mapEditor:getUploadMapButtonRect()
+    local playRect = self:getPlayTestButtonRect()
+    return {
+        x = playRect.x + playRect.w + PANEL_BUTTON_GAP,
+        y = playRect.y,
+        w = playRect.w,
+        h = playRect.h,
     }
 end
 
@@ -2799,6 +2916,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     end
 
     self:rebuildIntersections()
+    self:updateSavedStateSnapshot()
     self:showStatus("Map loaded into the editor.")
 end
 
@@ -2942,10 +3060,12 @@ function mapEditor:saveMap(name)
     self.sourceInfo = record
     self.lastSavedDescriptor = record.hasLevel and record or nil
     self.loadedMapPayload = payload
+    self.pendingUploadDescriptor = nil
     self.hoveredValidationIndex = nil
+    self:updateSavedStateSnapshot()
     self:closeDialog()
     if level then
-        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ". Press Play Saved Map (P) to test.")
+        self:showStatus((wasBuiltinTemplate and "Saved copy: " or "Saved map: ") .. trimmedName .. " to " .. mapStorage.getSaveDirectory() .. ".")
     else
         self:showStatus("Saved map: " .. trimmedName .. ". Remaining issues: " .. buildError)
     end
@@ -2958,6 +3078,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
     self.editingMapUuid = mapData and mapData.mapUuid or nil
     self.lastSavedDescriptor = sourceInfo and sourceInfo.hasLevel and sourceInfo or nil
     self.pendingPlaytestDescriptor = nil
+    self.pendingUploadDescriptor = nil
 
     if not mapData then
         self.level = nil
@@ -2988,6 +3109,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self:updateLayout()
         self:resetCameraToFit()
         self:rebuildIntersections()
+        self:updateSavedStateSnapshot()
         return
     end
 
@@ -3002,6 +3124,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
     self:resetFromLevel(mapData.level)
     self.sourceInfo = sourceInfo
     self.loadedMapPayload = mapData
+    self:updateSavedStateSnapshot()
 end
 
 function mapEditor:resetFromLevel(level)
@@ -5013,6 +5136,12 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if key == "u" then
+        self:commitTextField()
+        self:requestUploadFromSavedMap()
+        return true
+    end
+
     if key == "c" then
         self:commitTextField()
         self.sidePanelMode = self.sidePanelMode == "sequencer" and "default" or "sequencer"
@@ -5083,6 +5212,11 @@ function mapEditor:mousepressed(screenX, screenY, button)
 
         if pointInRect(screenX, screenY, self:getPlayTestButtonRect()) then
             self:requestPlaytestFromSavedMap()
+            return true
+        end
+
+        if pointInRect(screenX, screenY, self:getUploadMapButtonRect()) then
+            self:requestUploadFromSavedMap()
             return true
         end
 
@@ -6723,7 +6857,8 @@ function mapEditor:drawDefaultSidePanel(game)
     end
 
     love.graphics.setFont(game.fonts.small)
-    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Saved Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
+    self:drawPanelButton(self:getPlayTestButtonRect(), "Play Map (P)", { 0.64, 0.86, 0.98 }, not self:canPlaySavedMap())
+    self:drawPanelButton(self:getUploadMapButtonRect(), "Upload Map (U)", { 0.99, 0.78, 0.32 }, not self:canUploadSavedMap())
     self:drawPanelButton(self:getSaveButtonRect(), "Save Map (S)", { 0.48, 0.92, 0.62 })
     self:drawPanelButton(self:getOpenButtonRect(), "Open Map (O)", { 0.33, 0.8, 0.98 })
     self:drawPanelButton(self:getSequencerButtonRect(), "Train Sequencer (C)", { 0.48, 0.92, 0.62 })

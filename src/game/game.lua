@@ -451,6 +451,7 @@ function Game.new()
     self.activeUploadMapRequestId = nil
     self.activeUploadMapRequestStartedAt = nil
     self.activeUploadMapDescriptor = nil
+    self.activeUploadMapOrigin = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
     self.resultsSummary = nil
@@ -1602,10 +1603,12 @@ function Game:updateLeaderboardFetchState()
             end
 
             if self.activeUploadMapRequestId ~= nil then
+                local uploadOrigin = self.activeUploadMapOrigin
                 self.activeUploadMapRequestId = nil
                 self.activeUploadMapRequestStartedAt = nil
                 self.activeUploadMapDescriptor = nil
-                self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, threadError, "Upload failed")
+                self.activeUploadMapOrigin = nil
+                self:showUploadFailureMessage(uploadOrigin, threadError)
             end
 
             if self.activeScoreSubmitRequestId ~= nil then
@@ -1688,10 +1691,12 @@ function Game:updateLeaderboardFetchState()
     if self.activeUploadMapRequestId ~= nil and self.activeUploadMapRequestStartedAt ~= nil then
         local elapsedSeconds = getNowSeconds() - self.activeUploadMapRequestStartedAt
         if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
+            local uploadOrigin = self.activeUploadMapOrigin
             self.activeUploadMapRequestId = nil
             self.activeUploadMapRequestStartedAt = nil
             self.activeUploadMapDescriptor = nil
-            self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The map upload timed out.", "Upload failed")
+            self.activeUploadMapOrigin = nil
+            self:showUploadFailureMessage(uploadOrigin, "The map upload timed out.")
         end
     end
 
@@ -1793,23 +1798,20 @@ function Game:updateLeaderboardFetchState()
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "upload_map" and decodedResponse.requestId == self.activeUploadMapRequestId then
             local uploadedMapDescriptor = self.activeUploadMapDescriptor
+            local uploadOrigin = self.activeUploadMapOrigin
             self.activeUploadMapRequestId = nil
             self.activeUploadMapRequestStartedAt = nil
             self.activeUploadMapDescriptor = nil
+            self.activeUploadMapOrigin = nil
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
-                self:clearLevelSelectActionState()
-                self:openLevelSelectUploadDialog(decodedResponse.payload, uploadedMapDescriptor)
+                self:showUploadSuccessMessage(uploadOrigin, decodedResponse.payload, uploadedMapDescriptor)
             else
                 local statusCode = tonumber(decodedResponse.status)
                 local failureMessage = decodedResponse.error or "The map upload failed."
                 if statusCode then
                     failureMessage = string.format("Map upload failed (HTTP %d): %s", statusCode, tostring(failureMessage))
                 end
-                self:setLevelSelectActionState(
-                    LEVEL_SELECT_ACTION_STATUS_ERROR,
-                    failureMessage,
-                    "Upload failed"
-                )
+                self:showUploadFailureMessage(uploadOrigin, failureMessage)
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "score_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
             self.activeScoreSubmitRequestId = nil
@@ -2268,6 +2270,106 @@ function Game:isUploadSelectedMapAvailable(mapDescriptor)
         and self:canUploadMapDescriptor(mapDescriptor or self:getSelectedLevelMap())
 end
 
+function Game:updateEditorSavedMapActionState()
+    local savedMapDescriptor = self.editor:getSavedMapDescriptor()
+    local canUploadSavedMap = false
+    if self:canUploadMapDescriptor(savedMapDescriptor) then
+        canUploadSavedMap = self:getUploadConfig().isConfigured
+    end
+
+    self.editor:setSavedMapUploadState(
+        canUploadSavedMap,
+        self.activeUploadMapRequestId ~= nil and self.activeUploadMapOrigin == "editor"
+    )
+end
+
+function Game:showUploadUnavailableMessage(origin, message, title)
+    if origin == "editor" then
+        self.editor:showStatus("Uploading is currently not possible.")
+        return
+    end
+
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, message, title or "Upload unavailable")
+end
+
+function Game:showUploadStartedMessage(origin)
+    if origin == "editor" then
+        self.editor:showStatus("Uploading the saved map...")
+        return
+    end
+
+    self:closeLevelSelectUploadDialog()
+    self:setLevelSelectActionState(
+        LEVEL_SELECT_ACTION_STATUS_INFO,
+        "Sending your map to the online library.",
+        "Uploading map"
+    )
+end
+
+function Game:showUploadSuccessMessage(origin, payload, mapDescriptor)
+    if origin == "editor" then
+        local resolvedPayload = type(payload) == "table" and payload or {}
+        local uploadedMapId = tostring(
+            resolvedPayload.internal_identifier
+                or resolvedPayload.internalIdentifier
+                or resolvedPayload.map_uuid
+                or resolvedPayload.mapUuid
+                or ""
+        )
+        if uploadedMapId ~= "" then
+            self.editor:showStatus("Map uploaded. ID: " .. uploadedMapId)
+        else
+            self.editor:showStatus("Map uploaded successfully.")
+        end
+        return
+    end
+
+    self:clearLevelSelectActionState()
+    self:openLevelSelectUploadDialog(payload, mapDescriptor)
+end
+
+function Game:showUploadFailureMessage(origin, message)
+    if origin == "editor" then
+        self.editor:showStatus(message)
+        return
+    end
+
+    self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, message, "Upload failed")
+end
+
+function Game:uploadMapDescriptor(mapDescriptor, origin)
+    local uploadOrigin = origin or "level_select"
+    local selectedMap = mapDescriptor or self:getSelectedLevelMap()
+    if not self:canUploadMapDescriptor(selectedMap) then
+        self:showUploadUnavailableMessage(uploadOrigin, "Only your own local user maps can be uploaded.")
+        return false
+    end
+
+    local onlineConfig = self:getUploadConfig()
+    if not onlineConfig.isConfigured then
+        self:showUploadUnavailableMessage(
+            uploadOrigin,
+            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " ")
+        )
+        return false
+    end
+
+    local mapData, loadError = mapStorage.loadMap(selectedMap)
+    if not mapData or type(mapData.level) ~= "table" then
+        self:showUploadFailureMessage(uploadOrigin, loadError or "The selected map could not be uploaded.")
+        return false
+    end
+
+    if not self:beginUploadMapRequest(onlineConfig, mapData, selectedMap) then
+        self:showUploadFailureMessage(uploadOrigin, "A map upload is already in progress.")
+        return false
+    end
+
+    self.activeUploadMapOrigin = uploadOrigin
+    self:showUploadStartedMessage(uploadOrigin)
+    return true
+end
+
 function Game:canCloneMapDescriptor(mapDescriptor)
     return mapDescriptor ~= nil
         and mapDescriptor.source == "user"
@@ -2330,43 +2432,7 @@ function Game:cloneMapForEditing(mapDescriptor)
 end
 
 function Game:uploadSelectedMap()
-    local selectedMap = self:getSelectedLevelMap()
-    if not self:canUploadMapDescriptor(selectedMap) then
-        self:setLevelSelectActionState(
-            LEVEL_SELECT_ACTION_STATUS_ERROR,
-            "Only your own local user maps can be uploaded.",
-            "Upload unavailable"
-        )
-        return
-    end
-
-    local onlineConfig = self:getUploadConfig()
-    if not onlineConfig.isConfigured then
-        self:setLevelSelectActionState(
-            LEVEL_SELECT_ACTION_STATUS_ERROR,
-            table.concat(onlineConfig.errors or { "The online marketplace is not configured." }, " "),
-            "Upload unavailable"
-        )
-        return
-    end
-
-    local mapData, loadError = mapStorage.loadMap(selectedMap)
-    if not mapData or type(mapData.level) ~= "table" then
-        self:setLevelSelectActionState(
-            LEVEL_SELECT_ACTION_STATUS_ERROR,
-            loadError or "The selected map could not be uploaded.",
-            "Upload failed"
-        )
-        return
-    end
-
-    self:closeLevelSelectUploadDialog()
-    self:setLevelSelectActionState(
-        LEVEL_SELECT_ACTION_STATUS_INFO,
-        "Sending your map to the online library.",
-        "Uploading map"
-    )
-    self:beginUploadMapRequest(onlineConfig, mapData, selectedMap)
+    self:uploadMapDescriptor(self:getSelectedLevelMap(), "level_select")
 end
 
 function Game:downloadMarketplaceMap(mapDescriptor)
@@ -3272,6 +3338,15 @@ function Game:processEditorPlaytestRequest()
     end
 end
 
+function Game:processEditorUploadRequest()
+    local descriptor = self.editor:consumeUploadRequest()
+    if not descriptor then
+        return
+    end
+
+    self:uploadMapDescriptor(descriptor, "editor")
+end
+
 function Game:processEditorOpenBlankRequest()
     if not self.editor:consumeOpenBlankMapRequest() then
         return false
@@ -3340,11 +3415,13 @@ function Game:update(dt)
     end
 
     if self.screen == "editor" then
+        self:updateEditorSavedMapActionState()
         self.editor:update(dt)
         if self:processEditorOpenBlankRequest() then
             return
         end
         self:processEditorPlaytestRequest()
+        self:processEditorUploadRequest()
         return
     end
 
