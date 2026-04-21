@@ -35,6 +35,30 @@ local LEVEL_SELECT = {
         buttonH = 42,
         buttonGap = 18,
     },
+    replayOverlay = {
+        panelW = 860,
+        panelH = 560,
+        listInsetX = 28,
+        titleTop = 22,
+        subtitleTop = 70,
+        metaBoxTop = 108,
+        metaBoxH = 58,
+        metaBoxInsetX = 44,
+        metaBoxPaddingX = 26,
+        metaBoxMinW = 360,
+        metaLabelTop = 10,
+        metaValueTop = 30,
+        tableHeaderTop = 184,
+        tableHeaderH = 28,
+        listTop = 220,
+        rowH = 38,
+        rowGap = 8,
+        buttonW = 184,
+        buttonH = 42,
+        buttonGap = 18,
+        footerBottomGap = 28,
+        emptyTop = 284,
+    },
 }
 
 local LEVEL_SELECT_ACTION_LAYOUT = {
@@ -44,6 +68,7 @@ local LEVEL_SELECT_ACTION_LAYOUT = {
     editW = 148,
     toggleW = 188,
     uploadW = 170,
+    replaysW = 170,
     downloadW = 170,
     refreshW = 148,
 }

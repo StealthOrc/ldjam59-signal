@@ -2,9 +2,13 @@ local input = require("src.game.ui.shortcut_input")
 local mapEditor = require("src.game.editor.map_editor")
 local mapStorage = require("src.game.storage.map_storage")
 local localScoreStorage = require("src.game.storage.local_score_storage")
+local mapReplayIndexStorage = require("src.game.storage.map_replay_index_storage")
 local profileStorage = require("src.game.storage.profile_storage")
 local leaderboardClient = require("src.game.network.leaderboard_client")
 local leaderboardPreviewCache = require("src.game.storage.leaderboard_preview_cache")
+local replayStorage = require("src.game.storage.replay_storage")
+local replayRecorder = require("src.game.replay.replay_recorder")
+local replayRuntime = require("src.game.replay.replay_runtime")
 local levelSelectPreviewLogic = require("src.game.ui.level_select_preview_logic")
 local levelSelectSelection = require("src.game.ui.level_select_selection")
 local marketplaceFavoriteLogic = require("src.game.network.marketplace_favorite_logic")
@@ -277,14 +281,18 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
     end
 
     return {
-        playerDisplayName = entry.display_name or "Unknown",
+        playerDisplayName = entry.display_name or entry.player_display_name or "Unknown",
         playerUuid = entry.player_uuid or "",
         mapCount = tonumber(entry.map_count) or 0,
         score = tonumber(entry.score or 0) or 0,
         rank = tonumber(entry.rank) or fallbackRank or 0,
         mapUuid = entry.map_uuid or entry.last_map_uuid or fallbackMapUuid,
         recordedAt = entry.recorded_at or entry.updated_at,
+        createdAt = entry.created_at,
         updatedAt = entry.updated_at,
+        replayUuid = entry.replay_uuid or entry.replayUuid or "",
+        durationSeconds = tonumber(entry.duration_seconds or entry.durationSeconds or 0) or 0,
+        hasReplay = tostring(entry.replay_uuid or entry.replayUuid or "") ~= "",
     }
 end
 
@@ -382,6 +390,7 @@ function Game.new()
 
     self.profile = profile
     self.localScoreboard = localScoreStorage.load()
+    self.localReplayIndex = mapReplayIndexStorage.load()
     self.onlineConfig = leaderboardClient.getConfig()
     logOnlineConfig(self.onlineConfig)
     self.screen = "profile_setup"
@@ -421,6 +430,7 @@ function Game.new()
     self.levelSelectMarketplaceSearchQuery = ""
     self.levelSelectActionState = nil
     self.levelSelectUploadDialog = nil
+    self.levelSelectReplayOverlay = nil
     self.levelSelectLeaderboardFlipMapUuid = nil
     self.levelSelectPreviewCacheByMap = leaderboardPreviewCache.load()
     self.levelSelectPreviewNextFetchAtByMap = {}
@@ -440,6 +450,8 @@ function Game.new()
     self.activeLevelSelectPreviewRequestId = nil
     self.activeLevelSelectPreviewRequestStartedAt = nil
     self.activeLevelSelectPreviewRequestMapUuid = nil
+    self.activeLevelSelectPreviewRequestMapHash = nil
+    self.activeLevelSelectPreviewRequestCacheKey = nil
     self.marketplaceCacheByScope = {}
     self.marketplaceNextFetchAtByScope = {}
     self.marketplaceStateByScope = {}
@@ -460,6 +472,12 @@ function Game.new()
     self.activeUploadMapOrigin = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeReplayDownloadRequestId = nil
+    self.activeReplayDownloadRequestStartedAt = nil
+    self.activeReplayDownloadMapDescriptor = nil
+    self.activeReplayDownloadEntry = nil
+    self.activeReplayDownloadRequestMapUuid = nil
+    self.activeReplayDownloadRequestMapHash = nil
     self.resultsSummary = nil
     self.resultsOnlineState = nil
     self.profileSetupNameBuffer = profile.playerDisplayName or ""
@@ -470,6 +488,16 @@ function Game.new()
     self.playOverlayMode = nil
     self.playGuide = nil
     self.playGuideTransition = nil
+    self.pendingReplayPreparationInteractions = {}
+    self.replayRecorder = nil
+    self.replayRecord = nil
+    self.replayRuntime = nil
+    self.replayLevelSource = nil
+    self.replayHoverInfo = nil
+    self.replayDragActive = false
+    self.replayDragTime = nil
+    self.mouseViewportX = self.viewport.w * 0.5
+    self.mouseViewportY = self.viewport.h * 0.5
     self.leaderboardState = {
         status = LEADERBOARD_STATUS_IDLE,
         message = nil,
@@ -508,9 +536,13 @@ local shared = {
     mapEditor = mapEditor,
     mapStorage = mapStorage,
     localScoreStorage = localScoreStorage,
+    mapReplayIndexStorage = mapReplayIndexStorage,
     profileStorage = profileStorage,
     leaderboardClient = leaderboardClient,
     leaderboardPreviewCache = leaderboardPreviewCache,
+    replayStorage = replayStorage,
+    replayRecorder = replayRecorder,
+    replayRuntime = replayRuntime,
     levelSelectPreviewLogic = levelSelectPreviewLogic,
     levelSelectSelection = levelSelectSelection,
     marketplaceFavoriteLogic = marketplaceFavoriteLogic,

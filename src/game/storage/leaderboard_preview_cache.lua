@@ -11,12 +11,14 @@ local function sanitizePreviewEntry(mapUuid, entry)
     end
 
     local resolvedMapUuid = tostring(entry.map_uuid or mapUuid or "")
+    local resolvedMapHash = tostring(entry.map_hash or "")
     if resolvedMapUuid == "" then
         return nil
     end
 
     return {
         map_uuid = resolvedMapUuid,
+        map_hash = resolvedMapHash,
         top_entries = type(entry.top_entries) == "table" and entry.top_entries or {},
         player_entry = type(entry.player_entry) == "table" and entry.player_entry or nil,
         target_rank = tonumber(entry.target_rank) or nil,

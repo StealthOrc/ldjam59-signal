@@ -11,12 +11,21 @@ return function(Game, shared)
         end,
     }))
 
+local REPLAY_SEEK_STEP_SECONDS = 1
+
 function Game:update(dt)
     self:updateLeaderboardFetchState()
     self:updatePlayGuideTransition(dt)
 
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
+        return
+    end
+
+    if self.screen == "replay" then
+        if self.replayRuntime then
+            self.replayRuntime:update(dt)
+        end
         return
     end
 
@@ -76,6 +85,9 @@ function Game:draw()
         self.editor:draw(self)
     elseif self.screen == "results" then
         ui.drawResults(self)
+    elseif self.screen == "replay" and self.replayRuntime and self.replayRuntime.playbackWorld then
+        self.replayRuntime.playbackWorld:draw()
+        ui.drawReplay(self)
     elseif self.screen == "play" and self.world then
         self.world:draw()
         ui.drawPlay(self)
@@ -102,12 +114,16 @@ function Game:keypressed(key)
             self:returnFromLeaderboard()
         elseif self.screen == "level_select" and self.levelSelectUploadDialog then
             self:closeLevelSelectUploadDialog()
+        elseif self.screen == "level_select" and self.levelSelectReplayOverlay then
+            self:closeLevelSelectReplayOverlay()
         elseif self.screen == "level_select" and self.levelSelectIssue then
             self.levelSelectIssue = nil
         elseif self.screen == "editor" then
             if not self.editor:keypressed(key) then
                 self:openMenu()
             end
+        elseif self.screen == "replay" then
+            self:returnFromReplay()
         elseif self.screen == "play" or self.screen == "results" then
             self:navigateBackFromRun()
         else
@@ -160,6 +176,16 @@ function Game:keypressed(key)
         if self.levelSelectUploadDialog then
             if key == "return" or key == "space" or key == "c" then
                 self:copyLevelSelectUploadDialogId()
+            end
+            return
+        end
+        if self.levelSelectReplayOverlay then
+            if key == "up" then
+                self:cycleLevelSelectReplaySelection(-1)
+            elseif key == "down" then
+                self:cycleLevelSelectReplaySelection(1)
+            elseif key == "return" or key == "space" then
+                self:openSelectedLevelSelectReplay()
             end
             return
         end
@@ -265,6 +291,10 @@ function Game:keypressed(key)
     end
 
     if self.screen == "results" then
+        if key == "p" then
+            self:openReplay()
+            return
+        end
         if key == "m" then
             self:navigateBackFromRun()
             return
@@ -286,11 +316,49 @@ function Game:keypressed(key)
         return
     end
 
+    if self.screen == "replay" then
+        if not self.replayRuntime then
+            self:returnFromReplay()
+            return
+        end
+
+        if key == "m" then
+            self:returnFromReplay()
+            return
+        end
+        if key == "r" then
+            self:restart()
+            return
+        end
+        if key == "space" then
+            self.replayRuntime:togglePlaying()
+            return
+        end
+        if key == "left" then
+            self.replayRuntime:seek((self.replayRuntime.currentTime or 0) - REPLAY_SEEK_STEP_SECONDS)
+            return
+        end
+        if key == "right" then
+            self.replayRuntime:seek((self.replayRuntime.currentTime or 0) + REPLAY_SEEK_STEP_SECONDS)
+            return
+        end
+        if key == "home" then
+            self.replayRuntime:seek(0)
+            return
+        end
+        if key == "end" then
+            self.replayRuntime:seek(self.replayRuntime.duration or 0)
+            return
+        end
+        return
+    end
+
     if self.screen ~= "play" or not self.world then
         return
     end
 
     if key == "f2" then
+        self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "help" then
             self.playOverlayMode = nil
         else
@@ -300,6 +368,7 @@ function Game:keypressed(key)
     end
 
     if key == "f3" then
+        self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "debug" then
             self.playOverlayMode = nil
         else
@@ -361,6 +430,8 @@ end
 
 function Game:mousepressed(x, y, button)
     local viewportX, viewportY = self:toViewportPosition(x, y)
+    self.mouseViewportX = viewportX
+    self.mouseViewportY = viewportY
 
     if self.screen == "profile_setup" then
         local action = ui.getProfileSetupActionAt(self, viewportX, viewportY)
@@ -441,6 +512,16 @@ function Game:mousepressed(x, y, button)
             self:closeLevelSelectUploadDialog()
         elseif hit.kind == "upload_dialog_blocked" then
             return
+        elseif hit.kind == "replay_overlay_close" then
+            self:closeLevelSelectReplayOverlay()
+        elseif hit.kind == "replay_overlay_select" then
+            self:selectLevelSelectReplay(hit.replayUuid)
+        elseif hit.kind == "replay_overlay_open" then
+            self:openSelectedLevelSelectReplay()
+        elseif hit.kind == "replay_overlay_blocked" then
+            return
+        elseif hit.kind == "leaderboard_row_blocked" then
+            return
         elseif hit.kind == "select_map" then
             self:setLevelSelectSelection(hit.map)
         elseif hit.kind == "download_map" then
@@ -453,6 +534,22 @@ function Game:mousepressed(x, y, button)
         elseif hit.kind == "upload_map" then
             self:setLevelSelectSelection(hit.map)
             self:uploadSelectedMap()
+        elseif hit.kind == "open_leaderboard_replay" then
+            self:setLevelSelectSelection(hit.map)
+            if self:isOnlineMode() then
+                local onlineConfig = self:getActiveOnlineConfig()
+                if onlineConfig.isConfigured then
+                    self:beginReplayDownloadRequest(onlineConfig, hit.map, hit.replayEntry)
+                else
+                    self:setLevelSelectActionState(
+                        LEVEL_SELECT_ACTION_STATUS_ERROR,
+                        "Online replay playback is not configured."
+                    )
+                end
+            end
+        elseif hit.kind == "open_replays" then
+            self:setLevelSelectSelection(hit.map)
+            self:openLevelSelectReplayOverlay()
         elseif hit.kind == "toggle_leaderboard_card" then
             self:toggleLevelSelectLeaderboardFlip(hit.map)
         elseif hit.kind == "open_map" then
@@ -477,6 +574,28 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self.screen == "replay" then
+        if button ~= 1 or not self.replayRuntime then
+            return
+        end
+
+        local hit = ui.getReplayHit(self, viewportX, viewportY)
+        if hit == "back" then
+            self:returnFromReplay()
+        elseif hit == "retry" then
+            self:restart()
+        elseif hit == "toggle_playback" then
+            self.replayRuntime:togglePlaying()
+        elseif hit == "timeline" then
+            self.replayDragActive = true
+            local timelineTime = ui.getReplayTimelineTimeAt(self, viewportX, viewportY)
+            self.replayDragTime = timelineTime
+            self.replayRuntime:setPlaying(false)
+            self.replayRuntime:seek(timelineTime)
+        end
+        return
+    end
+
     if self.screen == "results" then
         if button ~= 1 then
             return
@@ -488,6 +607,8 @@ function Game:mousepressed(x, y, button)
         end
 
         if hit == "replay" then
+            self:openReplay()
+        elseif hit == "retry" then
             self:restart()
         elseif hit == "leaderboard" then
             self:openLeaderboard({
@@ -508,6 +629,16 @@ function Game:mousepressed(x, y, button)
 
     if button ~= 1 and button ~= 2 then
         return
+    end
+
+    if button == 1 and self.playOverlayMode == "debug" then
+        local overlayHit = ui.getPlayOverlayHit and ui.getPlayOverlayHit(self, viewportX, viewportY) or nil
+        if overlayHit and overlayHit.kind == "copy_debug_value" then
+            self:copyPlayDebugValue(overlayHit.copyText, overlayHit.copyLabel)
+            return
+        elseif overlayHit and overlayHit.kind == "overlay_blocked" then
+            return
+        end
     end
 
     if self.playGuide then
@@ -536,51 +667,87 @@ function Game:mousepressed(x, y, button)
         return
     end
 
-    self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+    local consumed, interaction = self.world:handleClick(viewportX, viewportY, button, self.playPhase == "prepare")
+    if consumed and interaction then
+        if self.playPhase == "prepare" then
+            self.pendingReplayPreparationInteractions[#self.pendingReplayPreparationInteractions + 1] = interaction
+        elseif self.playPhase == "play" and self.replayRecorder then
+            self.replayRecorder:recordInteraction({
+                time = self.world.elapsedTime or 0,
+                junctionId = interaction.junctionId,
+                target = interaction.target,
+                button = interaction.button,
+                x = interaction.x,
+                y = interaction.y,
+            })
+        end
+    end
 end
 
 function Game:mousemoved(x, y, dx, dy)
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
     self.levelSelectHoverInfo = nil
+    self.replayHoverInfo = nil
+    local viewportX, viewportY = self:toViewportPosition(x, y)
+    self.mouseViewportX = viewportX
+    self.mouseViewportY = viewportY
     if self.screen == "leaderboard" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.leaderboardHoverInfo = ui.getLeaderboardHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "profile_mode_setup" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.profileModeHoverId = ui.getProfileModeSetupActionAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "level_select" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
+        if self.levelSelectReplayOverlay then
+            self.levelSelectHoverId = nil
+            self.levelSelectHoverInfo = nil
+            return
+        end
         self.levelSelectHoverId = ui.getLevelSelectHoverId(self, viewportX, viewportY)
         self.levelSelectHoverInfo = ui.getLevelSelectHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
     if self.screen == "editor" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
         return
     end
 
     if self.screen == "results" then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
         self.resultsHoverInfo = ui.getResultsHoverInfoAt(self, viewportX, viewportY)
         return
     end
 
+    if self.screen == "replay" then
+        if self.replayDragActive and self.replayRuntime then
+            local timelineTime = ui.getReplayTimelineTimeAt(self, viewportX, viewportY)
+            self.replayDragTime = timelineTime
+            self.replayRuntime:seek(timelineTime)
+        end
+        self.replayHoverInfo = ui.getReplayHoverInfoAt(self, viewportX, viewportY)
+        return
+    end
+
     if self.screen == "play" and self.world then
-        local viewportX, viewportY = self:toViewportPosition(x, y)
+        if self.playPhase == "play" and self.replayRecorder then
+            self.replayRecorder:recordCursor(self.world.elapsedTime or 0, viewportX, viewportY, false)
+        end
         self.playHoverInfo = ui.getPlayHoverInfoAt(self, viewportX, viewportY)
     end
 end
 
 function Game:mousereleased(x, y, button)
+    if self.screen == "replay" and button == 1 then
+        self.replayDragActive = false
+        self.replayDragTime = nil
+        return
+    end
+
     if self.screen == "editor" then
         local viewportX, viewportY = self:toViewportPosition(x, y)
         self.editor:mousereleased(viewportX, viewportY, button)
@@ -599,7 +766,7 @@ function Game:wheelmoved(screenX, screenY)
     end
 
     local y = screenY
-    if self.screen == "level_select" and not self.levelSelectIssue and y ~= 0 then
+    if self.screen == "level_select" and not self.levelSelectIssue and not self.levelSelectReplayOverlay and y ~= 0 then
         local steps = math.max(1, math.floor(math.abs(y) + 0.5))
         local direction = y > 0 and -1 or 1
         self.levelSelectPendingScrollDirections = self.levelSelectPendingScrollDirections or {}

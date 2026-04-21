@@ -281,27 +281,36 @@ end
 function Game:submitResultsScore()
     self.resultsOnlineState = nil
 
-    if not self.levelComplete then
+    local summary = self.resultsSummary or {}
+    local localReplaySaved, keptLocalReplay, localReplayError = self:updateLocalReplayIndex(self.replayRecord, summary)
+    if not localReplaySaved then
         self.resultsOnlineState = {
-            status = "skipped",
-            message = "Scores are uploaded only after a successful level clear.",
+            status = "error",
+            message = localReplayError or "The replay could not be saved in the local replay index.",
         }
         return
     end
 
-    local localScoreSaved, isNewLocalBest, localSaveError = self:updateLocalScoreboard(self.resultsSummary or {})
-    if not localScoreSaved then
-        self.resultsOnlineState = {
-            status = "error",
-            message = localSaveError or RESULTS_MESSAGE_LOCAL_SAVE_FAILED,
-        }
-        return
+    local localScoreSaved = true
+    local localSaveError = nil
+    if self.levelComplete then
+        local isNewLocalBest
+        localScoreSaved, isNewLocalBest, localSaveError = self:updateLocalScoreboard(summary)
+        if not localScoreSaved then
+            self.resultsOnlineState = {
+                status = "error",
+                message = localSaveError or RESULTS_MESSAGE_LOCAL_SAVE_FAILED,
+            }
+            return
+        end
     end
 
     if self:isOfflineMode() then
         self.resultsOnlineState = {
-            status = isNewLocalBest and "submitted" or "kept",
-            message = isNewLocalBest and RESULTS_MESSAGE_LOCAL_BEST_SAVED or RESULTS_MESSAGE_LOCAL_BEST_KEPT,
+            status = keptLocalReplay and "submitted" or "kept",
+            message = keptLocalReplay
+                and "Replay saved locally."
+                or "Replay was saved, but it is outside the local top 10 for this map revision.",
         }
         return
     end
@@ -310,7 +319,7 @@ function Game:submitResultsScore()
     if not onlineConfig.isConfigured then
         self.resultsOnlineState = {
             status = "disabled",
-            message = "Saved locally. " .. getLeaderboardUnavailableMessage(),
+            message = "Replay saved locally. " .. getLeaderboardUnavailableMessage(),
         }
         return
     end
@@ -318,17 +327,16 @@ function Game:submitResultsScore()
     if self:isDebugModeEnabled() then
         self.resultsOnlineState = {
             status = "skipped",
-            message = "Saved locally. Debug mode is enabled, so the online score upload was skipped.",
+            message = "Replay saved locally. Debug mode is enabled, so the online replay upload was skipped.",
         }
         return
     end
 
-    local summary = self.resultsSummary or {}
     self.resultsOnlineState = {
         status = "pending",
-        message = "Uploading score...",
+        message = "Uploading replay...",
     }
-    self:beginScoreSubmitRequest(onlineConfig, summary)
+    self:beginReplaySubmitRequest(onlineConfig, summary, self.replayRecord)
 end
 
 function Game:canUploadMapDescriptor(mapDescriptor)
@@ -555,6 +563,7 @@ function Game:downloadMarketplaceMap(mapDescriptor)
         version = 1,
         mapUuid = tostring(sourceEntry.map_uuid or selectedMap.mapUuid or ""),
         name = tostring(sourceEntry.map_name or selectedMap.displayName or selectedMap.name or "Untitled Map"),
+        savedAt = tostring(sourceEntry.updated_at or selectedMap.savedAt or ""),
         previewDescription = selectedMap.previewDescription,
         level = deepCopy(sourceEntry.map),
         remoteSource = {
@@ -564,6 +573,8 @@ function Game:downloadMarketplaceMap(mapDescriptor)
             internalIdentifier = tostring(sourceEntry.internal_identifier or ""),
             likedByPlayer = sourceEntry.liked_by_player == true,
             mapCategory = tostring(sourceEntry.map_category or ""),
+            mapHash = tostring(sourceEntry.map_hash or ""),
+            updatedAt = tostring(sourceEntry.updated_at or ""),
         },
     }
 

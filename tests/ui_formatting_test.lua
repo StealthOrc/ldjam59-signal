@@ -140,7 +140,12 @@ assertEqual(
 
 assert(type(ui.getPlayHoverInfoAt) == "function", "ui.getPlayHoverInfoAt should exist")
 assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt should exist")
+assert(type(ui.getPlayOverlayHit) == "function", "ui.getPlayOverlayHit should exist")
+assert(type(ui.getPlayOverlayCopyTargets) == "function", "ui.getPlayOverlayCopyTargets should exist")
 assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
+assert(type(ui.getReplayHit) == "function", "ui.getReplayHit should exist")
+assert(type(ui.getReplayHoverInfoAt) == "function", "ui.getReplayHoverInfoAt should exist")
+assert(type(ui.getReplayTimelineTimeAt) == "function", "ui.getReplayTimelineTimeAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
@@ -206,6 +211,59 @@ local function makeFont(widthPerCharacter, height)
         end,
     }
 end
+
+local playDebugOverlayGame = {
+    viewport = { w = 1280, h = 720 },
+    playOverlayMode = "debug",
+    currentMapDescriptor = {
+        mapUuid = "map-uuid-debug",
+        mapHash = "hash-debug",
+    },
+    world = {
+        elapsedTime = 0,
+        trains = {},
+        getRunSummary = function()
+            return {
+                interactionCount = 0,
+                finalScore = 0,
+            }
+        end,
+        countCompletedTrains = function()
+            return 0
+        end,
+        getNextQueuedTrain = function()
+            return nil
+        end,
+        getNearestPendingDeadline = function()
+            return nil
+        end,
+        getActiveRouteSummary = function()
+            return "No active routes"
+        end,
+        getInputEdgeGroups = function()
+            return {}
+        end,
+        junctionOrder = {},
+    },
+    fonts = {
+        title = makeFont(16, 34),
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+}
+
+local playOverlayCopyTargets = ui.getPlayOverlayCopyTargets(playDebugOverlayGame)
+assertEqual(#playOverlayCopyTargets, 2, "play debug overlay exposes copy targets for map uuid and map hash")
+assertEqual(playOverlayCopyTargets[1].copyLabel, "Map UUID", "first play debug copy target is the map uuid")
+assertEqual(playOverlayCopyTargets[2].copyLabel, "Map Hash", "second play debug copy target is the map hash")
+
+local playOverlayCopyHit = ui.getPlayOverlayHit(
+    playDebugOverlayGame,
+    playOverlayCopyTargets[1].x + 4,
+    playOverlayCopyTargets[1].y + 4
+)
+assertEqual(playOverlayCopyHit.kind, "copy_debug_value", "play debug overlay map uuid line is clickable")
+assertEqual(playOverlayCopyHit.copyText, "map-uuid-debug", "play debug overlay returns the map uuid copy payload")
 
 local startEdge = {
     id = "start_edge",
@@ -390,6 +448,9 @@ assertEqual(resultsHover.text:find("Late arrivals: -10", 1, true) ~= nil, true, 
 assertEqual(resultsHover.text:find("Wrong destinations: -10", 1, true) ~= nil, true, "results hover includes wrong destination losses")
 assertEqual(ui.getResultsHoverInfoAt(resultsHoverGame, 640, 340), nil, "results hover ignores non-hover rows")
 
+local resultsRetryHit = ui.getResultsHit({ viewport = { w = 1280, h = 720 } }, 350, 652)
+assertEqual(resultsRetryHit, "retry", "results hit detection includes the retry button")
+
 hoverGame.playPhase = "play"
 assertEqual(ui.getPlayHoverInfoAt(hoverGame, 600, 300), nil, "play hover disables itself outside preparation")
 hoverGame.playPhase = "prepare"
@@ -533,6 +594,7 @@ local marketplaceDescriptorGame = {
                 creator_uuid = "creator-1",
                 creator_display_name = "Creator",
                 map_name = "Shared Map",
+                updated_at = "2026-04-21T12:00:00Z",
                 map_category = "users",
                 liked_by_player = false,
                 favorite_count = 2,
@@ -547,6 +609,7 @@ local marketplaceDescriptorGame = {
                 creator_uuid = "creator-1",
                 creator_display_name = "Creator",
                 map_name = "Shared Map Variant",
+                updated_at = "2026-04-21T12:05:00Z",
                 map_category = "users",
                 liked_by_player = true,
                 favorite_count = 5,
@@ -564,6 +627,19 @@ assertEqual(#marketplaceDescriptors, 2, "marketplace descriptors include both en
 assert(
     marketplaceDescriptors[1].id ~= marketplaceDescriptors[2].id,
     "marketplace descriptors keep unique ids when entries share a map UUID"
+)
+local sharedMapDescriptor = nil
+for _, descriptor in ipairs(marketplaceDescriptors) do
+    if descriptor.name == "Shared Map" then
+        sharedMapDescriptor = descriptor
+        break
+    end
+end
+assert(sharedMapDescriptor ~= nil, "marketplace descriptors keep the original shared map entry")
+assertEqual(
+    sharedMapDescriptor.savedAt,
+    "2026-04-21T12:00:00Z",
+    "marketplace descriptors keep the backend updated_at timestamp as savedAt"
 )
 
 local delayBadgeHover = nil
@@ -637,5 +713,177 @@ assertEqual(blockedHit.kind, "upload_dialog_blocked", "upload dialog blocks clic
 
 local outsideHit = ui.getLevelSelectHit(uploadDialogGame, uploadDialogRects.panel.x - 8, uploadDialogRects.panel.y - 8, 1)
 assertEqual(outsideHit.kind, "upload_dialog_close", "upload dialog closes when clicking outside the panel")
+
+local replayGame = {
+    viewport = { w = 1280, h = 720 },
+    replayRuntime = {
+        isPlaying = false,
+        duration = 10,
+        currentTime = 3,
+        record = {
+            preparationInteractions = {
+                { junctionId = "junction_1", target = "junction" },
+                { junctionId = "junction_2", target = "selector" },
+                { junctionId = "junction_3", target = "junction" },
+            },
+            timelineEvents = {
+                { time = 0, kind = "start" },
+                { time = 3, kind = "interaction", junctionId = "junction_1", target = "junction" },
+            },
+        },
+        playbackWorld = {
+            junctions = {
+                junction_1 = {
+                    label = "Main Junction",
+                },
+                junction_2 = {
+                    label = "East Switch",
+                },
+                junction_3 = {
+                    label = "North Junction",
+                },
+            },
+        },
+    },
+    fonts = {
+        small = makeFont(7, 14),
+    },
+}
+
+assertEqual(ui.getReplayHit(replayGame, 40, 40), "back", "replay hit detection includes the back button")
+assertEqual(ui.getReplayTimelineTimeAt(replayGame, 640, 0), 5, "replay timeline converts x positions into replay time")
+
+local replayHover = ui.getReplayHoverInfoAt(replayGame, 402, 628)
+assertEqual(replayHover.title, "3.0s", "replay hover labels events with their timestamp")
+assertEqual(
+    replayHover.text,
+    "Triggered Main Junction",
+    "replay hover formats interaction event copy"
+)
+
+local replayPreparationSummary = ui.getReplayPreparationSummary(replayGame, 2)
+assertEqual(
+    replayPreparationSummary,
+    "Setup: Main Junction • Output East Switch • +1 more",
+    "replay setup summary shows the pre-start preparation changes"
+)
+
+local function findButtonById(buttons, id)
+    for _, button in ipairs(buttons or {}) do
+        if button.id == id then
+            return button
+        end
+    end
+
+    return nil
+end
+
+local levelSelectButtonGame = {
+    viewport = { w = 1280, h = 720 },
+    levelSelectMode = "library",
+    levelSelectFilter = "campaign",
+    levelSelectSelectedId = "campaign:map-1",
+    levelSelectSelectedMapUuid = "map-uuid-1",
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "map-uuid-1",
+            mapHash = "hash-1",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    isUploadSelectedMapAvailable = function()
+        return true
+    end,
+}
+
+local levelSelectButtons = ui.getLevelSelectActionButtons(levelSelectButtonGame)
+local startButton = findButtonById(levelSelectButtons, "open_map")
+local replaysButton = findButtonById(levelSelectButtons, "open_replays")
+local uploadButton = findButtonById(levelSelectButtons, "upload_map")
+local editButton = findButtonById(levelSelectButtons, "edit_map")
+
+assert(startButton ~= nil, "level select should expose the Start button rect")
+assert(replaysButton ~= nil, "level select should expose the Replays button rect")
+assert(uploadButton ~= nil, "level select should expose the Upload button rect")
+assert(editButton ~= nil, "level select should expose the Edit button rect")
+assert(
+    startButton.x + startButton.w + 18 <= replaysButton.x,
+    "replays button should keep the configured gap from the start button"
+)
+assertEqual(uploadButton.x, replaysButton.x + replaysButton.w + 18, "upload button stays directly to the right of replays")
+assertEqual(editButton.x, uploadButton.x + uploadButton.w + 18, "edit button stays directly to the right of upload")
+
+local flippedLeaderboardGame = {
+    viewport = { w = 1280, h = 720 },
+    fonts = {
+        title = makeFont(16, 34),
+        body = makeFont(9, 18),
+        small = makeFont(7, 14),
+    },
+    levelSelectMode = "library",
+    levelSelectFilter = "campaign",
+    levelSelectSelectedId = "campaign:map-1",
+    levelSelectSelectedMapUuid = "map-uuid-1",
+    levelSelectLeaderboardFlipMapUuid = "map-uuid-1",
+    levelSelectUploadDialog = nil,
+    levelSelectReplayOverlay = nil,
+    levelSelectIssue = nil,
+    levelSelectHoverId = nil,
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "map-uuid-1",
+            mapHash = "hash-1",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    profile = {
+        player_uuid = "player-self",
+    },
+    getLevelSelectPreviewDisplayState = function()
+        return {
+            title = "Leaderboard",
+            topEntries = {
+                {
+                    rank = 1,
+                    playerDisplayName = "Runner",
+                    playerUuid = "player-1",
+                    score = 12.5,
+                    replayUuid = "replay-1",
+                },
+            },
+            pinnedPlayerEntry = nil,
+            isLoading = false,
+            message = nil,
+        }
+    end,
+    isUploadSelectedMapAvailable = function()
+        return false
+    end,
+}
+
+local leaderboardReplayHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 240, 1)
+assertEqual(leaderboardReplayHit.kind, "open_leaderboard_replay", "flipped leaderboard rows open replays when replay metadata exists")
+assertEqual(leaderboardReplayHit.replayEntry.replayUuid, "replay-1", "flipped leaderboard row hit returns the replay metadata entry")
+
+local leaderboardCardBackgroundHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 190, 1)
+assertEqual(
+    leaderboardCardBackgroundHit.kind,
+    "leaderboard_row_blocked",
+    "flipped leaderboard card clicks outside rows stay consumed and do not open the map"
+)
 
 print("ui formatting tests passed")

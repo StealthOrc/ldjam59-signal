@@ -8,7 +8,8 @@ local REQUEST_KIND_FETCH = "fetch"
 local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
 local REQUEST_KIND_FAVORITE_MAP = "favorite_map"
-local REQUEST_KIND_SCORE_SUBMIT = "score_submit"
+local REQUEST_KIND_REPLAY_SUBMIT = "replay_submit"
+local REQUEST_KIND_REPLAY_FETCH = "replay_fetch"
 local REQUEST_KIND_UPLOAD_MAP = "upload_map"
 local DEFAULT_LEADERBOARD_LIMIT = 50
 local DEFAULT_PREVIEW_LIMIT = 5
@@ -63,6 +64,25 @@ local function buildMapAroundUri(baseUrl, mapUuid, playerUuid)
         normalizeBaseUrl(baseUrl),
         tostring(mapUuid or ""),
         tostring(playerUuid or "")
+    )
+end
+
+local function buildReplayMetadataUri(baseUrl, mapUuid, mapHash, limit)
+    return string.format(
+        "%s/api/maps/%s/replays?map_hash=%s&limit=%d",
+        normalizeBaseUrl(baseUrl),
+        tostring(mapUuid or ""),
+        urlEncode(tostring(mapHash or "")),
+        tonumber(limit) or DEFAULT_PREVIEW_LIMIT
+    )
+end
+
+local function buildReplayUri(baseUrl, mapUuid, replayUuid)
+    return string.format(
+        "%s/api/maps/%s/replays/%s",
+        normalizeBaseUrl(baseUrl),
+        tostring(mapUuid or ""),
+        tostring(replayUuid or "")
     )
 end
 
@@ -162,8 +182,13 @@ local function fetchLeaderboardPreview(config)
         return nil, "Leaderboard preview could not be loaded because the map UUID is missing."
     end
 
+    local mapHash = tostring(config.mapHash or config.map_hash or "")
+    if mapHash == "" then
+        return nil, "Leaderboard preview could not be loaded because the map hash is missing."
+    end
+
     local topPayload, topError = fetchJson(
-        buildLeaderboardUri(config.apiBaseUrl, mapUuid, tonumber(config.limit) or DEFAULT_PREVIEW_LIMIT),
+        buildReplayMetadataUri(config.apiBaseUrl, mapUuid, mapHash, tonumber(config.limit) or DEFAULT_PREVIEW_LIMIT),
         config.apiKey
     )
     if not topPayload then
@@ -172,29 +197,11 @@ local function fetchLeaderboardPreview(config)
 
     local previewPayload = {
         map_uuid = mapUuid,
+        map_hash = mapHash,
         top_entries = type(topPayload.entries) == "table" and topPayload.entries or {},
         player_entry = nil,
         target_rank = nil,
     }
-
-    local playerUuid = tostring(config.player_uuid or "")
-    if playerUuid == "" then
-        return previewPayload
-    end
-
-    local aroundPayload, aroundError, aroundStatus = fetchJson(
-        buildMapAroundUri(config.apiBaseUrl, mapUuid, playerUuid),
-        config.apiKey
-    )
-    if not aroundPayload then
-        if aroundStatus == 404 then
-            return previewPayload
-        end
-        return nil, aroundError
-    end
-
-    previewPayload.player_entry = extractPlayerPreviewEntry(aroundPayload, playerUuid)
-    previewPayload.target_rank = tonumber(aroundPayload.target_rank) or nil
     return previewPayload
 end
 
@@ -236,17 +243,37 @@ local function favoriteMarketplaceMap(config, requestId)
     return runJsonDelete(config, endpointPath, payload, requestId)
 end
 
-local function submitScore(config, requestId)
+local function submitReplay(config, requestId)
     local mapUuid = tostring(config.mapUuid or "")
     if mapUuid == "" then
-        return nil, "The score could not be uploaded because the map UUID is missing."
+        return nil, "The replay could not be uploaded because the map UUID is missing."
     end
 
-    return runJsonPost(config, string.format("/api/maps/%s/score", mapUuid), {
+    return runJsonPost(config, string.format("/api/maps/%s/replays", mapUuid), {
         player_uuid = tostring(config.player_uuid or ""),
         display_name = tostring(config.playerDisplayName or ""),
         score = tonumber(config.score or 0) or 0,
+        map_hash = tostring(config.mapHash or config.map_hash or ""),
+        replay = config.replay,
     }, requestId)
+end
+
+local function fetchReplayRecord(config)
+    local _, validationError = validateConfig(config)
+    if validationError then
+        return nil, validationError
+    end
+
+    local mapUuid = tostring(config.mapUuid or "")
+    local replayUuid = tostring(config.replayUuid or config.replay_uuid or "")
+    if mapUuid == "" then
+        return nil, "Replay download could not start because the map UUID is missing."
+    end
+    if replayUuid == "" then
+        return nil, "Replay download could not start because the replay UUID is missing."
+    end
+
+    return fetchJson(buildReplayUri(config.apiBaseUrl, mapUuid, replayUuid), config.apiKey)
 end
 
 local function uploadMap(config, requestId)
@@ -261,6 +288,7 @@ local function uploadMap(config, requestId)
         map_category = tostring(config.mapCategory or MAP_CATEGORY_ONLINE),
         creator_uuid = tostring(config.creator_uuid or config.creatorUuid or ""),
         display_name = tostring(config.playerDisplayName or ""),
+        map_hash = tostring(config.mapHash or config.map_hash or ""),
         map = config.map,
     }, requestId)
 end
@@ -306,14 +334,24 @@ while true do
             error = requestError,
             status = statusCode,
         }))
-    elseif type(request) == "table" and request.kind == REQUEST_KIND_SCORE_SUBMIT then
-        local payload, requestError, statusCode = submitScore(request.config or {}, request.requestId)
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_REPLAY_SUBMIT then
+        local payload, requestError, statusCode = submitReplay(request.config or {}, request.requestId)
         responseChannel:push(json.encode({
-            kind = REQUEST_KIND_SCORE_SUBMIT,
+            kind = REQUEST_KIND_REPLAY_SUBMIT,
             requestId = request.requestId,
             ok = payload ~= nil,
             payload = payload,
             error = requestError,
+            status = statusCode,
+        }))
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_REPLAY_FETCH then
+        local payload, fetchError, statusCode = fetchReplayRecord(request.config or {})
+        responseChannel:push(json.encode({
+            kind = REQUEST_KIND_REPLAY_FETCH,
+            requestId = request.requestId,
+            ok = payload ~= nil,
+            payload = payload,
+            error = fetchError,
             status = statusCode,
         }))
     elseif type(request) == "table" and request.kind == REQUEST_KIND_UPLOAD_MAP then

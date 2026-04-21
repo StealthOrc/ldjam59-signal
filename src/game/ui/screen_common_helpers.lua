@@ -813,6 +813,7 @@ function buildPlayHelpSections(game)
 end
 
 function buildPlayDebugSections(game)
+    local currentMapDescriptor = game.currentMapDescriptor or {}
     local runSummary = game.world:getRunSummary()
     local nextTrain = game.world:getNextQueuedTrain()
     local nextDeadline = game.world:getNearestPendingDeadline()
@@ -826,6 +827,16 @@ function buildPlayDebugSections(game)
                 string.format("Trains cleared: %d / %d", game.world:countCompletedTrains(), #game.world.trains),
                 string.format("Interactions: %d", runSummary.interactionCount or 0),
                 string.format("Score: %s", formatScore(runSummary.finalScore or 0)),
+                {
+                    text = string.format("Map UUID: %s", currentMapDescriptor.mapUuid or "n/a"),
+                    copyValue = currentMapDescriptor.mapUuid,
+                    copyLabel = "Map UUID",
+                },
+                {
+                    text = string.format("Map Hash: %s", currentMapDescriptor.mapHash or "n/a"),
+                    copyValue = currentMapDescriptor.mapHash,
+                    copyLabel = "Map Hash",
+                },
                 nextTrain and string.format(
                     "Next spawn: %s at %.1fs",
                     game.world:getTrainSummary(nextTrain),
@@ -883,6 +894,87 @@ function buildPlayDebugSections(game)
     return sections
 end
 
+local function getPlayInfoOverlaySections(game)
+    return game.playOverlayMode == "help" and buildPlayHelpSections(game) or buildPlayDebugSections(game)
+end
+
+local function getPlayInfoOverlayLineText(line)
+    if type(line) == "table" then
+        return safeUiText(line.text, "")
+    end
+
+    return safeUiText(line, "")
+end
+
+local function isPlayInfoOverlayLineCopyable(line)
+    return type(line) == "table" and tostring(line.copyValue or "") ~= ""
+end
+
+function ui.getPlayOverlayCopyTargets(game)
+    if not game or game.playOverlayMode ~= "debug" then
+        return {}
+    end
+
+    local rect = getPlayInfoOverlayRect(game)
+    local sections = getPlayInfoOverlaySections(game)
+    local currentY = rect.y + PLAY_OVERLAY.padding
+    local contentX = rect.x + PLAY_OVERLAY.padding
+    local contentWidth = rect.w - PLAY_OVERLAY.padding * 2
+    local targets = {}
+
+    love.graphics.setFont(game.fonts.title)
+    currentY = currentY + game.fonts.title:getHeight() + PLAY_OVERLAY.sectionGap
+
+    for _, section in ipairs(sections) do
+        love.graphics.setFont(game.fonts.body)
+        currentY = currentY + game.fonts.body:getHeight() + PLAY_OVERLAY.lineGap
+
+        love.graphics.setFont(game.fonts.small)
+        for _, line in ipairs(section.lines or {}) do
+            local lineText = getPlayInfoOverlayLineText(line)
+            local lineHeight = getWrappedLineCount(game.fonts.small, lineText, contentWidth) * game.fonts.small:getHeight()
+            if isPlayInfoOverlayLineCopyable(line) then
+                targets[#targets + 1] = {
+                    x = contentX,
+                    y = currentY,
+                    w = contentWidth,
+                    h = lineHeight,
+                    copyText = tostring(line.copyValue or ""),
+                    copyLabel = tostring(line.copyLabel or "Value"),
+                }
+            end
+            currentY = currentY + lineHeight + PLAY_OVERLAY.lineGap
+        end
+
+        currentY = currentY + PLAY_OVERLAY.sectionGap
+    end
+
+    return targets
+end
+
+function ui.getPlayOverlayHit(game, x, y)
+    if not game or (game.playOverlayMode ~= "help" and game.playOverlayMode ~= "debug") then
+        return nil
+    end
+
+    local rect = getPlayInfoOverlayRect(game)
+    if not pointInRect(x, y, rect) then
+        return nil
+    end
+
+    for _, target in ipairs(ui.getPlayOverlayCopyTargets(game)) do
+        if pointInRect(x, y, target) then
+            return {
+                kind = "copy_debug_value",
+                copyText = target.copyText,
+                copyLabel = target.copyLabel,
+            }
+        end
+    end
+
+    return { kind = "overlay_blocked" }
+end
+
 function drawPlayInfoOverlay(game)
     if game.playOverlayMode ~= "help" and game.playOverlayMode ~= "debug" then
         return
@@ -892,7 +984,7 @@ function drawPlayInfoOverlay(game)
     local rect = getPlayInfoOverlayRect(game)
     local title = game.playOverlayMode == "help" and "Route Help" or "Route Debug"
     local accentColor = game.playOverlayMode == "help" and { 0.48, 0.92, 0.62, 1 } or { 0.99, 0.78, 0.32, 1 }
-    local sections = game.playOverlayMode == "help" and buildPlayHelpSections(game) or buildPlayDebugSections(game)
+    local sections = getPlayInfoOverlaySections(game)
     local currentY = rect.y + PLAY_OVERLAY.padding
     local contentX = rect.x + PLAY_OVERLAY.padding
     local contentWidth = rect.w - PLAY_OVERLAY.padding * 2
@@ -914,15 +1006,37 @@ function drawPlayInfoOverlay(game)
         currentY = currentY + game.fonts.body:getHeight() + PLAY_OVERLAY.lineGap
 
         love.graphics.setFont(game.fonts.small)
-        graphics.setColor(0.84, 0.88, 0.92, 1)
         for _, line in ipairs(section.lines or {}) do
-            graphics.printf(line, contentX, currentY, contentWidth, "left")
+            local lineText = getPlayInfoOverlayLineText(line)
+            if isPlayInfoOverlayLineCopyable(line) then
+                graphics.setColor(0.56, 0.72, 0.98, 1)
+            else
+                graphics.setColor(0.84, 0.88, 0.92, 1)
+            end
+            graphics.printf(lineText, contentX, currentY, contentWidth, "left")
             currentY = currentY
-                + getWrappedLineCount(game.fonts.small, line, contentWidth) * game.fonts.small:getHeight()
+                + getWrappedLineCount(game.fonts.small, lineText, contentWidth) * game.fonts.small:getHeight()
                 + PLAY_OVERLAY.lineGap
         end
 
         currentY = currentY + PLAY_OVERLAY.sectionGap
+    end
+
+    local copyStatus = game.playOverlayCopyStatus or nil
+    if copyStatus and copyStatus.message and copyStatus.message ~= "" then
+        love.graphics.setFont(game.fonts.small)
+        if copyStatus.status == "error" then
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+        else
+            graphics.setColor(0.56, 0.72, 0.98, 1)
+        end
+        graphics.printf(
+            copyStatus.message,
+            contentX,
+            rect.y + rect.h - PLAY_OVERLAY.padding - game.fonts.small:getHeight(),
+            contentWidth,
+            "center"
+        )
     end
 end
 

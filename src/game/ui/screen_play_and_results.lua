@@ -1145,23 +1145,244 @@ function ui.getPlayHeaderHintLines(game)
     }
 end
 
+local REPLAY_LAYOUT = {
+    outerMargin = 24,
+    topY = 28,
+    buttonH = 42,
+    buttonGap = 16,
+    backW = 156,
+    retryW = 112,
+    toggleW = 120,
+    panelH = 132,
+    panelBottomGap = 20,
+    panelRadius = 20,
+    panelPaddingX = 22,
+    panelPaddingY = 16,
+    timelineH = 12,
+    timelineTopGap = 54,
+    timelineBottomGap = 34,
+    markerRadius = 5,
+    markerHitRadius = 10,
+    playheadW = 4,
+    tooltipOffsetY = 18,
+}
+
+local REPLAY_EVENT_COLOR_BY_KIND = {
+    start = { 0.56, 0.72, 0.98, 1 },
+    preparation = { 0.7, 0.76, 0.84, 1 },
+    interaction = { 0.48, 0.92, 0.62, 1 },
+    junction_state = { 0.99, 0.78, 0.32, 1 },
+    train_spawn = { 0.52, 0.86, 0.98, 1 },
+    train_exit = { 0.98, 0.66, 0.28, 1 },
+    train_complete = { 0.98, 0.84, 0.38, 1 },
+    run_end = { 0.98, 0.48, 0.62, 1 },
+}
+
+function getReplayLayout(game)
+    local panel = {
+        x = REPLAY_LAYOUT.outerMargin,
+        y = game.viewport.h - REPLAY_LAYOUT.panelH - REPLAY_LAYOUT.panelBottomGap,
+        w = game.viewport.w - REPLAY_LAYOUT.outerMargin * 2,
+        h = REPLAY_LAYOUT.panelH,
+    }
+    local buttonsY = REPLAY_LAYOUT.topY
+    local toggleX = game.viewport.w - REPLAY_LAYOUT.outerMargin - REPLAY_LAYOUT.toggleW
+    local retryX = toggleX - REPLAY_LAYOUT.buttonGap - REPLAY_LAYOUT.retryW
+    local backRect = {
+        x = REPLAY_LAYOUT.outerMargin,
+        y = buttonsY,
+        w = REPLAY_LAYOUT.backW,
+        h = REPLAY_LAYOUT.buttonH,
+    }
+    local retryRect = {
+        x = retryX,
+        y = buttonsY,
+        w = REPLAY_LAYOUT.retryW,
+        h = REPLAY_LAYOUT.buttonH,
+    }
+    local toggleRect = {
+        x = toggleX,
+        y = buttonsY,
+        w = REPLAY_LAYOUT.toggleW,
+        h = REPLAY_LAYOUT.buttonH,
+    }
+    local timeline = {
+        x = panel.x + REPLAY_LAYOUT.panelPaddingX,
+        y = panel.y + REPLAY_LAYOUT.timelineTopGap,
+        w = panel.w - REPLAY_LAYOUT.panelPaddingX * 2,
+        h = REPLAY_LAYOUT.timelineH,
+    }
+
+    return {
+        panel = panel,
+        back = backRect,
+        retry = retryRect,
+        toggle = toggleRect,
+        timeline = timeline,
+    }
+end
+
+function getReplayTimelineRatio(game, time)
+    local runtime = game and game.replayRuntime or nil
+    local duration = runtime and runtime.duration or 0
+    if duration <= 0 then
+        return 0
+    end
+
+    return clamp((time or 0) / duration, 0, 1)
+end
+
+function getReplayTimelineX(game, time)
+    local layout = getReplayLayout(game)
+    return layout.timeline.x + layout.timeline.w * getReplayTimelineRatio(game, time)
+end
+
+function getReplayJunctionLabel(game, junctionId)
+    local playbackWorld = game and game.replayRuntime and game.replayRuntime.playbackWorld or nil
+    local junction = playbackWorld and playbackWorld.junctions and playbackWorld.junctions[junctionId] or nil
+    return junction and junction.label or tostring(junctionId or "junction")
+end
+
+function formatReplayEventLabel(game, event)
+    local eventKind = event and event.kind or "unknown"
+
+    if eventKind == "start" then
+        return "Run started"
+    end
+    if eventKind == "preparation" then
+        return string.format("Prepared routes with %d setup clicks", event.interactionCount or 0)
+    end
+    if eventKind == "interaction" then
+        local junctionLabel = getReplayJunctionLabel(game, event.junctionId)
+        if event.target == "selector" then
+            return string.format("Changed output at %s", junctionLabel)
+        end
+        return string.format("Triggered %s", junctionLabel)
+    end
+    if eventKind == "junction_state" then
+        return string.format("%s changed automatically", getReplayJunctionLabel(game, event.junctionId))
+    end
+    if eventKind == "train_spawn" then
+        return string.format("Train %s entered the map", tostring(event.trainId or "?"))
+    end
+    if eventKind == "train_exit" then
+        return string.format("Train %s reached an exit", tostring(event.trainId or "?"))
+    end
+    if eventKind == "train_complete" then
+        return string.format("Train %s cleared", tostring(event.trainId or "?"))
+    end
+    if eventKind == "run_end" then
+        return string.format("Run ended with %s", tostring(event.endReason or "unknown"))
+    end
+
+    return tostring(eventKind)
+end
+
+function getReplayTimelineEventAt(game, x, y)
+    local runtime = game and game.replayRuntime or nil
+    if not runtime then
+        return nil
+    end
+
+    local layout = getReplayLayout(game)
+    local timeline = layout.timeline
+    if y < timeline.y - REPLAY_LAYOUT.markerHitRadius or y > timeline.y + timeline.h + REPLAY_LAYOUT.markerHitRadius then
+        return nil
+    end
+
+    local bestEvent = nil
+    local bestDistanceSquared = REPLAY_LAYOUT.markerHitRadius * REPLAY_LAYOUT.markerHitRadius
+
+    for _, event in ipairs(runtime.record and runtime.record.timelineEvents or {}) do
+        local markerX = getReplayTimelineX(game, event.time or 0)
+        local dx = x - markerX
+        local dy = y - (timeline.y + timeline.h * 0.5)
+        local markerDistanceSquared = dx * dx + dy * dy
+        if markerDistanceSquared <= bestDistanceSquared then
+            bestDistanceSquared = markerDistanceSquared
+            bestEvent = event
+        end
+    end
+
+    return bestEvent
+end
+
+function ui.getReplayTimelineTimeAt(game, x, _)
+    local runtime = game and game.replayRuntime or nil
+    local layout = getReplayLayout(game)
+    if not runtime then
+        return 0
+    end
+
+    local ratio = clamp((x - layout.timeline.x) / math.max(1, layout.timeline.w), 0, 1)
+    return ratio * (runtime.duration or 0)
+end
+
+function ui.getReplayHit(game, x, y)
+    local layout = getReplayLayout(game)
+    if pointInRect(x, y, layout.back) then
+        return "back"
+    end
+    if pointInRect(x, y, layout.retry) then
+        return "retry"
+    end
+    if pointInRect(x, y, layout.toggle) then
+        return "toggle_playback"
+    end
+    if pointInRect(x, y, layout.timeline) then
+        return "timeline"
+    end
+    if getReplayTimelineEventAt(game, x, y) then
+        return "timeline"
+    end
+    return nil
+end
+
+function ui.getReplayHoverInfoAt(game, x, y)
+    local event = getReplayTimelineEventAt(game, x, y)
+    if not event then
+        return nil
+    end
+
+    local markerX = getReplayTimelineX(game, event.time or 0)
+    local layout = getReplayLayout(game)
+    return {
+        title = formatSecondsLabel(event.time or 0),
+        text = formatReplayEventLabel(game, event),
+        x = markerX,
+        y = layout.timeline.y - REPLAY_LAYOUT.tooltipOffsetY,
+    }
+end
+
 function getResultsButtonRects(game)
     local widths = {
+        retry = 112,
         replay = 112,
         leaderboard = 112,
         editor = 112,
         menu = game and game.currentRunOrigin == "editor" and 154 or 132,
     }
     local gap = 16
-    local totalWidth = widths.replay + widths.leaderboard + widths.editor + widths.menu + (gap * 3)
+    local totalWidth = widths.retry + widths.replay + widths.leaderboard + widths.editor + widths.menu + (gap * 4)
     local panelX = math.floor((game.viewport.w - totalWidth) * 0.5 + 0.5)
     local buttonY = game.viewport.h - 72
     return {
-        replay = { x = panelX, y = buttonY, w = widths.replay, h = 42 },
-        leaderboard = { x = panelX + widths.replay + gap, y = buttonY, w = widths.leaderboard, h = 42 },
-        editor = { x = panelX + widths.replay + widths.leaderboard + (gap * 2), y = buttonY, w = widths.editor, h = 42 },
+        retry = { x = panelX, y = buttonY, w = widths.retry, h = 42 },
+        replay = { x = panelX + widths.retry + gap, y = buttonY, w = widths.replay, h = 42 },
+        leaderboard = {
+            x = panelX + widths.retry + widths.replay + (gap * 2),
+            y = buttonY,
+            w = widths.leaderboard,
+            h = 42,
+        },
+        editor = {
+            x = panelX + widths.retry + widths.replay + widths.leaderboard + (gap * 3),
+            y = buttonY,
+            w = widths.editor,
+            h = 42,
+        },
         menu = {
-            x = panelX + widths.replay + widths.leaderboard + widths.editor + (gap * 3),
+            x = panelX + widths.retry + widths.replay + widths.leaderboard + widths.editor + (gap * 4),
             y = buttonY,
             w = widths.menu,
             h = 42,
@@ -1214,6 +1435,9 @@ end
 
 function ui.getResultsHit(game, x, y)
     local buttons = getResultsButtonRects(game)
+    if pointInRect(x, y, buttons.retry) then
+        return "retry"
+    end
     if pointInRect(x, y, buttons.replay) then
         return "replay"
     end
