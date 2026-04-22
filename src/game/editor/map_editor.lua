@@ -247,6 +247,7 @@ local function copyPoint(point)
         x = point.x,
         y = point.y,
         sharedPointId = point.sharedPointId,
+        linkedPointGroupId = point.linkedPointGroupId,
     }
 end
 

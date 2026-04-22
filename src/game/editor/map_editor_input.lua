@@ -125,6 +125,8 @@ function mapEditor:updateDraggedPoint(x, y)
         point.y = clampedY
         if point.sharedPointId then
             self:updateSharedPointGroup(point.sharedPointId, clampedX, clampedY)
+        elseif point.linkedPointGroupId then
+            self:updateLinkedPointGroup(point.linkedPointGroupId, clampedX, clampedY)
         end
     end
     self:closeColorPicker()
@@ -166,6 +168,98 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
     end
 
     return nil, nil, false
+end
+
+function mapEditor:pointsCoincide(firstPoint, secondPoint, toleranceSquared)
+    if not firstPoint or not secondPoint then
+        return false
+    end
+
+    return distanceSquared(firstPoint.x, firstPoint.y, secondPoint.x, secondPoint.y)
+        <= (toleranceSquared or INTERNAL_POINT_MATCH_DISTANCE_SQUARED)
+end
+
+function mapEditor:segmentsCoincide(firstStart, firstEnd, secondStart, secondEnd, toleranceSquared)
+    local tolerance = toleranceSquared or INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+    return (
+        self:pointsCoincide(firstStart, secondStart, tolerance)
+        and self:pointsCoincide(firstEnd, secondEnd, tolerance)
+    ) or (
+        self:pointsCoincide(firstStart, secondEnd, tolerance)
+        and self:pointsCoincide(firstEnd, secondStart, tolerance)
+    )
+end
+
+function mapEditor:getCoincidentSegmentMembers(route, segmentIndex)
+    local members = {}
+    local pointA = route and route.points and route.points[segmentIndex] or nil
+    local pointB = route and route.points and route.points[segmentIndex + 1] or nil
+    if not pointA or not pointB then
+        return members
+    end
+
+    for _, candidateRoute in ipairs(self.routes) do
+        for candidateSegmentIndex = 1, #candidateRoute.points - 1 do
+            local candidateA = candidateRoute.points[candidateSegmentIndex]
+            local candidateB = candidateRoute.points[candidateSegmentIndex + 1]
+            if self:segmentsCoincide(pointA, pointB, candidateA, candidateB) then
+                members[#members + 1] = {
+                    route = candidateRoute,
+                    segmentIndex = candidateSegmentIndex,
+                }
+                break
+            end
+        end
+    end
+
+    return members
+end
+
+function mapEditor:insertBendPointAtSegmentHit(segmentHit)
+    if not (segmentHit and segmentHit.route and segmentHit.segmentIndex and segmentHit.point) then
+        return nil
+    end
+
+    local members = self:getCoincidentSegmentMembers(segmentHit.route, segmentHit.segmentIndex)
+    local insertedMembers = {}
+    local primaryInsertedMember = nil
+
+    for _, member in ipairs(members) do
+        local point = {
+            x = segmentHit.point.x,
+            y = segmentHit.point.y,
+        }
+        local insertIndex = member.segmentIndex + 1
+        table.insert(member.route.points, insertIndex, point)
+        self:splitRouteSegmentStyle(member.route, member.segmentIndex)
+
+        local insertedMember = {
+            route = member.route,
+            pointIndex = insertIndex,
+            point = point,
+        }
+        insertedMembers[#insertedMembers + 1] = insertedMember
+
+        if member.route.id == segmentHit.route.id and not primaryInsertedMember then
+            primaryInsertedMember = insertedMember
+        end
+    end
+
+    if #insertedMembers == 0 then
+        return nil
+    end
+
+    if #insertedMembers > 1 then
+        local linkedPointGroupId = self.nextLinkedPointGroupId
+        self.nextLinkedPointGroupId = self.nextLinkedPointGroupId + 1
+        for _, insertedMember in ipairs(insertedMembers) do
+            insertedMember.point.linkedPointGroupId = linkedPointGroupId
+        end
+        self:updateLinkedPointGroup(linkedPointGroupId, segmentHit.point.x, segmentHit.point.y)
+    end
+
+    self:rebuildIntersections()
+    return primaryInsertedMember or insertedMembers[1]
 end
 
 function mapEditor:prepareIntersectionForDrag(intersection)
@@ -269,7 +363,7 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
 end
 
 function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
-    if not intersection or #intersection.outputEndpointIds <= 1 then
+    if not intersection or self:getIntersectionOutputCount(intersection) <= 1 then
         return false
     end
     return distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y)
@@ -332,7 +426,7 @@ function mapEditor:syncIntersectionOutputToControl(intersection)
         return
     end
 
-    local outputCount = #(intersection.outputEndpointIds or {})
+    local outputCount = self:getIntersectionOutputCount(intersection)
     if outputCount <= 0 then
         intersection.activeOutputIndex = 1
         return
@@ -380,11 +474,11 @@ function mapEditor:cycleIntersectionOutput(intersection, direction)
         return
     end
 
-    if (intersection.outputEndpointIds and #intersection.outputEndpointIds or 0) <= 1 then
+    local outputCount = self:getIntersectionOutputCount(intersection)
+    if outputCount <= 1 then
         return
     end
 
-    local outputCount = #intersection.outputEndpointIds
     intersection.activeOutputIndex = intersection.activeOutputIndex + direction
     if intersection.activeOutputIndex < 1 then
         intersection.activeOutputIndex = outputCount
@@ -965,12 +1059,25 @@ function mapEditor:setRouteSegmentRoadType(route, segmentIndex, roadType)
     end
 
     local normalizedRoadType = roadTypes.normalizeRoadType(roadType)
-    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
-    if not segmentRoadTypes[segmentIndex] then
+    local coincidentMembers = self:getCoincidentSegmentMembers(route, segmentIndex)
+    if #coincidentMembers == 0 then
+        coincidentMembers[1] = {
+            route = route,
+            segmentIndex = segmentIndex,
+        }
+    end
+
+    local primarySegmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    if not primarySegmentRoadTypes[segmentIndex] then
         return
     end
 
-    segmentRoadTypes[segmentIndex] = normalizedRoadType
+    for _, member in ipairs(coincidentMembers) do
+        local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(member.route)
+        if segmentRoadTypes[member.segmentIndex] then
+            segmentRoadTypes[member.segmentIndex] = normalizedRoadType
+        end
+    end
     self:refreshValidation()
     self:showStatus("Segment road type set to " .. roadTypes.getConfig(normalizedRoadType).label .. ".")
 end
@@ -1420,14 +1527,16 @@ function mapEditor:mousepressed(screenX, screenY, button)
 
     local segmentHit = self:findSegmentHit(x, y)
     if segmentHit then
-        table.insert(segmentHit.route.points, segmentHit.insertIndex, segmentHit.point)
-        self:splitRouteSegmentStyle(segmentHit.route, segmentHit.segmentIndex)
-        self.selectedRouteId = segmentHit.route.id
-        self.selectedPointIndex = segmentHit.insertIndex
+        local insertedMember = self:insertBendPointAtSegmentHit(segmentHit)
+        if not insertedMember then
+            return false
+        end
+        self.selectedRouteId = insertedMember.route.id
+        self.selectedPointIndex = insertedMember.pointIndex
         self.drag = {
             kind = "point",
-            routeId = segmentHit.route.id,
-            pointIndex = segmentHit.insertIndex,
+            routeId = insertedMember.route.id,
+            pointIndex = insertedMember.pointIndex,
             startMouseX = x,
             startMouseY = y,
             moved = true,
@@ -1436,7 +1545,6 @@ function mapEditor:mousepressed(screenX, screenY, button)
         }
         self:closeColorPicker()
         self:closeRouteTypePicker()
-        self:rebuildIntersections()
         self:showStatus("Bend point added.")
         return true
     end

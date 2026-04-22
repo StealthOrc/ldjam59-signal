@@ -40,10 +40,18 @@ end
 
 local function hasOutputSelector(junction)
     return junction
-        and #(junction.outputs or {}) > 1
+        and renderer.getDistinctOutputCount(junction) > 1
         and junction.control
         and junction.control.type ~= "relay"
         and junction.control.type ~= "crossbar"
+end
+
+local function serializeTrackPointList(points)
+    local parts = {}
+    for _, point in ipairs(points or {}) do
+        parts[#parts + 1] = string.format("%.3f,%.3f", point.x or 0, point.y or 0)
+    end
+    return table.concat(parts, ";")
 end
 
 local function getColorById(colorId)
@@ -418,6 +426,21 @@ end
 
 function renderer.getControlBubbleLayout(junction)
     return getControlBubbleLayout(junction)
+end
+
+function renderer.getDistinctOutputCount(junction)
+    local distinctCount = 0
+    local seenSignatures = {}
+
+    for _, outputTrack in ipairs(junction and junction.outputs or {}) do
+        local signature = serializeTrackPointList(outputTrack and outputTrack.path and outputTrack.path.points or {})
+        if signature ~= "" and not seenSignatures[signature] then
+            seenSignatures[signature] = true
+            distinctCount = distinctCount + 1
+        end
+    end
+
+    return distinctCount
 end
 
 function renderer.getOutputSelectorLayout(junction)

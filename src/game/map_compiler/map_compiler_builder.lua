@@ -24,6 +24,74 @@ function buildCompiledLevel(mapName, editorData)
         return #diagnostics
     end
 
+    local function copyArray(source)
+        local copy = {}
+        for _, value in ipairs(source or {}) do
+            copy[#copy + 1] = value
+        end
+        return copy
+    end
+
+    local function mergeUniqueValues(target, additions)
+        local merged = {}
+        local lookup = {}
+
+        for _, value in ipairs(target or {}) do
+            if value and not lookup[value] then
+                lookup[value] = true
+                merged[#merged + 1] = value
+            end
+        end
+
+        for _, value in ipairs(additions or {}) do
+            if value and not lookup[value] then
+                lookup[value] = true
+                merged[#merged + 1] = value
+            end
+        end
+
+        table.sort(merged)
+        return merged
+    end
+
+    local function serializePointList(points)
+        local parts = {}
+        for _, point in ipairs(points or {}) do
+            parts[#parts + 1] = string.format("%.6f,%.6f", point.x or 0, point.y or 0)
+        end
+        return table.concat(parts, ";")
+    end
+
+    local function serializeStyleSections(styleSections)
+        local parts = {}
+        for _, section in ipairs(styleSections or {}) do
+            parts[#parts + 1] = string.format(
+                "%s:%.6f:%.6f",
+                tostring(section.roadType or roadTypes.DEFAULT_ID),
+                tonumber(section.startRatio or 0) or 0,
+                tonumber(section.endRatio or 0) or 0
+            )
+        end
+        return table.concat(parts, "|")
+    end
+
+    local function buildMergedEdgeKey(edge)
+        return table.concat({
+            tostring(edge.sourceType or ""),
+            tostring(edge.sourceId or ""),
+            tostring(edge.targetType or ""),
+            tostring(edge.targetId or ""),
+            tostring(edge.roadType or roadTypes.DEFAULT_ID),
+            serializeStyleSections(edge.styleSections),
+            serializePointList(edge.points),
+        }, "#")
+    end
+
+    local function mergeAuthoredEdge(existingEdge, newEdge)
+        existingEdge.colors = mergeUniqueValues(existingEdge.colors, newEdge.colors)
+        existingEdge.inputColors = mergeUniqueValues(existingEdge.inputColors, newEdge.inputColors)
+    end
+
     local baseLevel = {
         title = mapName,
         description = "Custom map loaded from the editor.",
@@ -74,6 +142,7 @@ function buildCompiledLevel(mapName, editorData)
     end
 
     local edgeLookup = {}
+    local mergedEdgeIdsByKey = {}
     local startEdgeRecords = {}
     local lineColorToEdgeId = {}
     local outputColorLookup = {}
@@ -174,6 +243,17 @@ function buildCompiledLevel(mapName, editorData)
             local sourceEndpoint = sourceNode.kind == "start" and getEndpointById(editorData, sourceNode.id) or nil
             local styleSections = buildRouteStyleSections(route, sourceNode.distance, targetNode.distance)
             local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
+            local edgeColorIds = nil
+            if targetEndpoint and #(targetEndpoint.colors or {}) > 0 then
+                edgeColorIds = copyArray(targetEndpoint.colors or {})
+            elseif sourceEndpoint and #(sourceEndpoint.colors or {}) > 0 then
+                edgeColorIds = copyArray(sourceEndpoint.colors or {})
+            elseif route.color then
+                edgeColorIds = { route.color }
+            else
+                edgeColorIds = {}
+            end
+
             local edge = {
                 id = string.format("%s_segment_%d", route.id, nodeIndex),
                 label = string.format("%s Segment %d", getRouteDisplayName(route), nodeIndex),
@@ -184,8 +264,8 @@ function buildCompiledLevel(mapName, editorData)
                 points = points,
                 color = getColor(route.color),
                 darkColor = darkerColor(getColor(route.color)),
-                colors = targetEndpoint and (targetEndpoint.colors or {}) or sourceEndpoint and (sourceEndpoint.colors or {}) or {},
-                inputColors = sourceEndpoint and (sourceEndpoint.colors or {}) or {},
+                colors = edgeColorIds,
+                inputColors = copyArray(sourceEndpoint and (sourceEndpoint.colors or {}) or {}),
                 -- Merged endpoints may accept multiple colors, but authored route visuals
                 -- should stay tied to the route's defined map color.
                 adoptInputColor = false,
@@ -195,9 +275,15 @@ function buildCompiledLevel(mapName, editorData)
                 targetId = targetNode.id,
             }
 
-            -- Keep authored route segments distinct even when they overlap exactly,
-            -- so each lane can preserve its own style and speed profile.
-            edgeLookup[edge.id] = edge
+            local mergedEdgeKey = buildMergedEdgeKey(edge)
+            local existingEdgeId = mergedEdgeIdsByKey[mergedEdgeKey]
+            if existingEdgeId and edgeLookup[existingEdgeId] then
+                mergeAuthoredEdge(edgeLookup[existingEdgeId], edge)
+                edge = edgeLookup[existingEdgeId]
+            else
+                edgeLookup[edge.id] = edge
+                mergedEdgeIdsByKey[mergedEdgeKey] = edge.id
+            end
 
             if sourceNode.kind == "junction" then
                 local sourceJunction = junctionLookup[sourceNode.id]
