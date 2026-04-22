@@ -25,6 +25,7 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
+    self.nextLinkedPointGroupId = 1
     self.selectedRouteId = nil
     self.selectedPointIndex = nil
     self.drag = nil
@@ -1147,6 +1148,7 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self.nextEndpointId = 1
         self.nextRouteId = 1
         self.nextSharedPointId = 1
+        self.nextLinkedPointGroupId = 1
         self.nextTrainId = 1
         self.importedJunctionState = {}
         self.drag = nil
@@ -1193,6 +1195,7 @@ function mapEditor:resetFromLevel(level)
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
+    self.nextLinkedPointGroupId = 1
     self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil

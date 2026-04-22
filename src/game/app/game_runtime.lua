@@ -485,6 +485,14 @@ function Game.new()
     self.profileModeSelection = getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE
     self.profileModeHoverId = nil
     self.profileModeSetupError = nil
+    if getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE and not self.onlineConfig.isConfigured then
+        self.profile.playMode = PLAY_MODE_OFFLINE
+        self.profileModeSelection = PLAY_MODE_OFFLINE
+        local _, saveError = self:saveProfile()
+        if saveError then
+            print(string.format("%s failed to save offline fallback: %s", ONLINE_CONFIG_LOG_PREFIX, saveError))
+        end
+    end
     self.playOverlayMode = nil
     self.playGuide = nil
     self.playGuideTransition = nil
