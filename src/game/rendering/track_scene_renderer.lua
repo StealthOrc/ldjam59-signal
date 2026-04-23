@@ -18,6 +18,8 @@ local CROSSBAR_FLASH_DURATION = 0.28
 local SPRING_RELEASE_DURATION = 0.42
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
+local TRACK_DECORATOR_REVEAL_DELAY = 0.08
+local TRACK_DECORATOR_POP_DURATION = 0.50
 local TRACK_STRIPE_LENGTH = 14
 local OUTPUT_SELECTOR_RADIUS = 15
 local TRACK_LINE_JOIN = "bevel"
@@ -172,42 +174,56 @@ local function buildPathSlice(scene, path, startDistance, endDistance)
     return points
 end
 
-local function getRenderedTrackPoints(scene, track, revealProgress)
+local function getTrackRenderWindow(scene, track, drawState)
+    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
+    local revealProgress = drawState and drawState.revealProgress or nil
+    local outroProgress = drawState and drawState.outroProgress or nil
+
+    if outroProgress ~= nil then
+        local clampedOutroProgress = clamp(outroProgress, 0, 1)
+        if clampedOutroProgress >= 0.999 then
+            return nil, nil
+        end
+
+        local midpoint = (startDistance + endDistance) * 0.5
+        local animatedStartDistance = lerp(startDistance, midpoint, clampedOutroProgress)
+        local animatedEndDistance = lerp(endDistance, midpoint, clampedOutroProgress)
+        if animatedEndDistance - animatedStartDistance <= 0.001 then
+            return nil, nil
+        end
+
+        return animatedStartDistance, animatedEndDistance
+    end
+
     local resolvedRevealProgress = revealProgress == nil and 1 or clamp(revealProgress, 0, 1)
     if resolvedRevealProgress <= 0 then
-        return {}
+        return nil, nil
     end
     if resolvedRevealProgress >= 0.999 then
-        return scene:getRenderedTrackPoints(track)
+        return startDistance, endDistance
     end
 
-    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
     local visibleLength = math.max(0, (endDistance or 0) - (startDistance or 0))
-    return buildPathSlice(scene, track.path, startDistance, startDistance + visibleLength * resolvedRevealProgress)
-end
-
-local function getUndrawingTrackPoints(scene, track, outroProgress)
-    local clampedOutroProgress = clamp(outroProgress or 0, 0, 1)
-    if clampedOutroProgress >= 0.999 then
-        return {}
-    end
-
-    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
-    local midpoint = (startDistance + endDistance) * 0.5
-    local animatedStartDistance = lerp(startDistance, midpoint, clampedOutroProgress)
-    local animatedEndDistance = lerp(endDistance, midpoint, clampedOutroProgress)
-
-    if animatedEndDistance - animatedStartDistance <= 0.001 then
-        return {}
-    end
-
-    return buildPathSlice(scene, track.path, animatedStartDistance, animatedEndDistance)
+    return startDistance, startDistance + visibleLength * resolvedRevealProgress
 end
 
 local function easeOutBack(t)
     local s = 1.70158
     local value = t - 1
     return 1 + value * value * ((s + 1) * value + s)
+end
+
+local function easeOutSpring(t)
+    local clamped = clamp(t or 0, 0, 1)
+    if clamped <= 0.001 then
+        return 0
+    end
+    if clamped >= 0.999 then
+        return 1
+    end
+
+    local c4 = (2 * math.pi) / 3
+    return math.pow(2, -10 * clamped) * math.sin((clamped * 10 - 0.75) * c4) + 1
 end
 
 local function getPresentationTimedProgress(presentation, transition)
@@ -258,6 +274,24 @@ local function getPresentationTrackRevealProgress(presentation, edgeId)
 
     local duration = math.max(0.0001, (schedule.endTime or 0) - (schedule.startTime or 0))
     return clamp(((presentation.elapsed or 0) - (schedule.startTime or 0)) / duration, 0, 1)
+end
+
+local function getPresentationTrackDecoratorState(presentation, edgeId)
+    local schedule = presentation and presentation.edgeScheduleById and presentation.edgeScheduleById[edgeId] or nil
+    if not schedule then
+        return nil
+    end
+
+    local duration = math.max(0.0001, (schedule.endTime or 0) - (schedule.startTime or 0))
+    local startTime = (schedule.startTime or 0) + math.min(TRACK_DECORATOR_REVEAL_DELAY, duration * 0.35)
+
+    return {
+        elapsed = presentation.elapsed or 0,
+        startTime = startTime,
+        duration = duration,
+        frontProgress = clamp(((presentation.elapsed or 0) - startTime) / duration, 0, 1),
+        popDuration = TRACK_DECORATOR_POP_DURATION,
+    }
 end
 
 local function getPresentationJunctionState(presentation, junctionId)
@@ -645,16 +679,34 @@ function renderer.drawTrackPatternSegment(_, startX, startY, endX, endY, alpha, 
     graphics.line(startX, startY, endX, endY)
 end
 
-function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
-    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
+local function scalePointFromCenter(centerX, centerY, pointX, pointY, scale)
+    return centerX + (pointX - centerX) * scale, centerY + (pointY - centerY) * scale
+end
+
+function renderer.drawTrackRoadTypeMarkers(scene, track, isActive, drawState)
+    local startDistance = drawState and drawState.renderStartDistance or nil
+    local endDistance = drawState and drawState.renderEndDistance or nil
+    if startDistance == nil or endDistance == nil then
+        startDistance, endDistance = scene:getRenderedTrackWindow(track)
+    end
+    if endDistance <= startDistance then
+        return
+    end
+
     local activityMix = type(isActive) == "number" and clamp(isActive, 0, 1) or (isActive and 1 or 0)
     local alpha = lerp(0.78, 0.95, activityMix)
+    local fullStartDistance, fullEndDistance = scene:getRenderedTrackWindow(track)
+    local fullVisibleLength = math.max(0.0001, (fullEndDistance or 0) - (fullStartDistance or 0))
+    local decoratorPresentation = drawState and drawState.decoratorPresentation or nil
+    local decoratorEndDistance = decoratorPresentation
+        and (fullStartDistance + fullVisibleLength * decoratorPresentation.frontProgress)
+        or endDistance
 
     for _, section in ipairs(track.styleSections or {}) do
         local roadTypeConfig = roadTypes.getConfig(section.roadType)
         if roadTypeConfig.pattern ~= "plain" then
             local sectionStartDistance = math.max(startDistance, section.startDistance)
-            local sectionEndDistance = math.min(endDistance, section.endDistance)
+            local sectionEndDistance = math.min(endDistance, section.endDistance, decoratorEndDistance)
             local markerDistance = sectionStartDistance + roadTypeConfig.markerSpacing * 0.5
             local markerSize = roadTypeConfig.markerSize
             local outlineWidth = roadTypeConfig.markerWidth + 2
@@ -666,6 +718,24 @@ function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
                 local directionY = math.sin(angle)
                 local normalX = -directionY
                 local normalY = directionX
+                local markerAlpha = alpha
+                local markerScale = 1
+
+                if decoratorPresentation then
+                    local markerFraction = clamp((markerDistance - fullStartDistance) / fullVisibleLength, 0, 1)
+                    local markerStartTime = decoratorPresentation.startTime + decoratorPresentation.duration * markerFraction
+                    local popupProgress = clamp(
+                        (decoratorPresentation.elapsed - markerStartTime) / math.max(0.0001, decoratorPresentation.popDuration),
+                        0,
+                        1
+                    )
+                    if popupProgress <= 0.001 then
+                        markerDistance = markerDistance + roadTypeConfig.markerSpacing
+                        goto continue_marker
+                    end
+
+                    markerScale = 0.06 + 0.94 * easeOutSpring(popupProgress)
+                end
 
                 if roadTypeConfig.pattern == "chevron" then
                     local tipX = markerX + directionX * markerSize
@@ -674,17 +744,23 @@ function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
                     local leftY = markerY - normalY * markerSize * 0.7
                     local rightX = markerX + normalX * markerSize * 0.7
                     local rightY = markerY + normalY * markerSize * 0.7
-                    renderer.drawTrackPatternSegment(scene, leftX, leftY, tipX, tipY, alpha, outlineWidth, fillWidth)
-                    renderer.drawTrackPatternSegment(scene, rightX, rightY, tipX, tipY, alpha, outlineWidth, fillWidth)
+                    tipX, tipY = scalePointFromCenter(markerX, markerY, tipX, tipY, markerScale)
+                    leftX, leftY = scalePointFromCenter(markerX, markerY, leftX, leftY, markerScale)
+                    rightX, rightY = scalePointFromCenter(markerX, markerY, rightX, rightY, markerScale)
+                    renderer.drawTrackPatternSegment(scene, leftX, leftY, tipX, tipY, markerAlpha, outlineWidth, fillWidth)
+                    renderer.drawTrackPatternSegment(scene, rightX, rightY, tipX, tipY, markerAlpha, outlineWidth, fillWidth)
                 elseif roadTypeConfig.pattern == "crossbar" then
                     local startX = markerX - normalX * markerSize
                     local startY = markerY - normalY * markerSize
                     local endX = markerX + normalX * markerSize
                     local endY = markerY + normalY * markerSize
-                    renderer.drawTrackPatternSegment(scene, startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
+                    startX, startY = scalePointFromCenter(markerX, markerY, startX, startY, markerScale)
+                    endX, endY = scalePointFromCenter(markerX, markerY, endX, endY, markerScale)
+                    renderer.drawTrackPatternSegment(scene, startX, startY, endX, endY, markerAlpha, outlineWidth, fillWidth)
                 end
 
                 markerDistance = markerDistance + roadTypeConfig.markerSpacing
+                ::continue_marker::
             end
         end
     end
@@ -745,10 +821,13 @@ function renderer.drawInputTrack(scene, track, isActive, drawState)
     local trackColor = mixColor(track.darkColor, track.color, activityMix)
     local trackAlpha = lerp(0.72, 0.96, activityMix)
     local stripeColors = buildTrackStripeColors(track.colors, activityMix)
-    local revealProgress = drawState and drawState.revealProgress or nil
-    local outroProgress = drawState and drawState.outroProgress or nil
-    local renderedPoints = outroProgress and getUndrawingTrackPoints(scene, track, outroProgress)
-        or getRenderedTrackPoints(scene, track, revealProgress)
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, track, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, track.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -768,7 +847,11 @@ function renderer.drawInputTrack(scene, track, isActive, drawState)
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix)
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
     end
 end
 
@@ -786,10 +869,13 @@ function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
         stripeColors = buildTrackStripeColors(track.colors, activityMix)
     end
 
-    local revealProgress = drawState and drawState.revealProgress or nil
-    local outroProgress = drawState and drawState.outroProgress or nil
-    local renderedPoints = outroProgress and getUndrawingTrackPoints(scene, track, outroProgress)
-        or getRenderedTrackPoints(scene, track, revealProgress)
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, track, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, track.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -809,7 +895,11 @@ function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix)
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
     end
 end
 
@@ -824,10 +914,13 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawSt
     local inactiveColor = scene:getOutputDisplayColor(junction, outputIndex, false)
     local color = mixColor(inactiveColor, activeColor, activityMix)
     local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, activityMix) or nil
-    local revealProgress = drawState and drawState.revealProgress or nil
-    local outroProgress = drawState and drawState.outroProgress or nil
-    local renderedPoints = outroProgress and getUndrawingTrackPoints(scene, outputTrack, outroProgress)
-        or getRenderedTrackPoints(scene, outputTrack, revealProgress)
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, outputTrack, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, outputTrack.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -847,7 +940,11 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawSt
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, activityMix)
+        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
     end
 end
 
@@ -1193,8 +1290,8 @@ function renderer.drawScene(scene, options)
                 if presentation then
                     drawState = {
                         revealProgress = getPresentationTrackRevealProgress(presentation, outputTrack.id),
-                        showMarkers = false,
                         activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                        decoratorPresentation = getPresentationTrackDecoratorState(presentation, outputTrack.id),
                     }
                 elseif outro then
                     drawState = {
@@ -1223,8 +1320,8 @@ function renderer.drawScene(scene, options)
                 if presentation then
                     drawState = {
                         revealProgress = getPresentationTrackRevealProgress(presentation, inputTrack.id),
-                        showMarkers = false,
                         activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                        decoratorPresentation = getPresentationTrackDecoratorState(presentation, inputTrack.id),
                     }
                 elseif outro then
                     drawState = {
@@ -1250,8 +1347,8 @@ function renderer.drawScene(scene, options)
             if presentation then
                 drawState = {
                     revealProgress = getPresentationTrackRevealProgress(presentation, track.id),
-                    showMarkers = false,
                     activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                    decoratorPresentation = getPresentationTrackDecoratorState(presentation, track.id),
                 }
             elseif outro then
                 drawState = {
