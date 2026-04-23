@@ -16,6 +16,10 @@ return function(mapEditor, shared)
 function mapEditor:beginRoute(x, y)
     local colorOption = COLOR_OPTIONS[((self.nextRouteId - 1) % #COLOR_OPTIONS) + 1]
     local startX, startY = self:clampPoint(x, y, false)
+    if self:isGridSnapEnabled() then
+        startX, startY = self:snapPointToGrid(startX, startY)
+        startX, startY = self:clampPoint(startX, startY, false)
+    end
     local route = self:createRoute(
         {
             { x = startX, y = startY },
