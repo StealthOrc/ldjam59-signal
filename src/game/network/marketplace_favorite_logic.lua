@@ -31,7 +31,7 @@ function marketplaceFavoriteLogic.wasMutationAccepted(payload, targetLikedByPlay
         return false
     end
 
-    if targetLikedByPlayer == true and payload.accepted ~= nil then
+    if payload.accepted ~= nil then
         return payload.accepted == true
     end
 
@@ -65,6 +65,10 @@ function marketplaceFavoriteLogic.wasAlreadyRemoved(payload, targetLikedByPlayer
 
     if targetLikedByPlayer == true then
         return false
+    end
+
+    if payload.already_removed ~= nil then
+        return payload.already_removed == true
     end
 
     if payload.removed ~= nil then
