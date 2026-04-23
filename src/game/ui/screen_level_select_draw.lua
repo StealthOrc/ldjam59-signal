@@ -855,9 +855,6 @@ function getMenuButtons(game)
 
     return {
         playButton,
-        leaderboardRect,
-        editorRect,
-        quitRect,
         {
             id = "toggle_play_mode",
             x = playModeRect.x,
@@ -870,6 +867,9 @@ function getMenuButtons(game)
                 { id = "online", label = "On" },
             },
         },
+        leaderboardRect,
+        editorRect,
+        quitRect,
     }
 end
 

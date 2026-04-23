@@ -744,6 +744,8 @@ function Game:openMenu()
 
     self.screen = "menu"
     self.menuTitleAnimationStartedAt = love.timer.getTime()
+    self.menuIntroSkipStartedAt = nil
+    self.menuIntroSkipFromElapsed = nil
     self.levelSelectIssue = nil
     self:closeLevelSelectReplayOverlay()
     self.levelSelectHoverId = nil
@@ -765,6 +767,23 @@ local MENU_TITLE_ENTER_DURATION = 0.55
 local MENU_BUTTON_REVEAL_DURATION = 0.52
 local MENU_BUTTON_STAGGER = 0.07
 local MENU_BUTTON_COUNT = 5
+local MENU_SKIP_FINISH_DURATION = 0.16
+
+local function clamp01(value)
+    if value < 0 then
+        return 0
+    end
+    if value > 1 then
+        return 1
+    end
+    return value
+end
+
+local function easeOutCubic(t)
+    local clamped = clamp01(t)
+    local inverse = 1 - clamped
+    return 1 - inverse * inverse * inverse
+end
 
 function Game:getMenuIntroTotalDuration()
     return MENU_TITLE_ENTER_DURATION
@@ -773,9 +792,17 @@ function Game:getMenuIntroTotalDuration()
 end
 
 function Game:getMenuIntroElapsed()
-    local startedAt = tonumber(self.menuTitleAnimationStartedAt or 0) or 0
+    local totalDuration = self:getMenuIntroTotalDuration()
     local now = love.timer.getTime()
-    return math.max(0, now - startedAt)
+    local skipStartedAt = tonumber(self.menuIntroSkipStartedAt or 0) or 0
+    if skipStartedAt > 0 then
+        local skipFromElapsed = tonumber(self.menuIntroSkipFromElapsed or 0) or 0
+        local skipProgress = clamp01((now - skipStartedAt) / MENU_SKIP_FINISH_DURATION)
+        return skipFromElapsed + ((totalDuration - skipFromElapsed) * easeOutCubic(skipProgress))
+    end
+
+    local startedAt = tonumber(self.menuTitleAnimationStartedAt or 0) or 0
+    return math.max(0, math.min(totalDuration, now - startedAt))
 end
 
 function Game:isMenuIntroActive()
@@ -783,7 +810,12 @@ function Game:isMenuIntroActive()
 end
 
 function Game:skipMenuIntro()
-    self.menuTitleAnimationStartedAt = love.timer.getTime() - self:getMenuIntroTotalDuration()
+    if self.menuIntroSkipStartedAt then
+        return
+    end
+
+    self.menuIntroSkipFromElapsed = self:getMenuIntroElapsed()
+    self.menuIntroSkipStartedAt = love.timer.getTime()
 end
 
 function Game:openLevelSelect()

@@ -498,6 +498,8 @@ function Game.new()
     self.profileModeSetupError = nil
     self.menuStatusMessage = nil
     self.menuTitleAnimationStartedAt = love.timer.getTime()
+    self.menuIntroSkipStartedAt = nil
+    self.menuIntroSkipFromElapsed = nil
     if getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE and not self.onlineConfig.isConfigured then
         self.profile.playMode = PLAY_MODE_OFFLINE
         self.profileModeSelection = PLAY_MODE_OFFLINE
