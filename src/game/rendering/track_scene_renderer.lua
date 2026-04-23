@@ -307,13 +307,17 @@ local function getPresentationJunctionState(presentation, junctionId)
 
     local ringDuration = math.max(0.0001, (schedule.ringEndTime or 0) - (schedule.ringStartTime or 0))
     local iconDuration = math.max(0.0001, (schedule.iconEndTime or 0) - (schedule.iconStartTime or 0))
+    local selectorDuration = math.max(0.0001, (schedule.selectorEndTime or 0) - (schedule.selectorStartTime or 0))
     local ringProgress = clamp((elapsed - (schedule.ringStartTime or 0)) / ringDuration, 0, 1)
     local iconProgress = clamp((elapsed - (schedule.iconStartTime or 0)) / iconDuration, 0, 1)
+    local selectorProgress = clamp((elapsed - (schedule.selectorStartTime or 0)) / selectorDuration, 0, 1)
 
     return {
         ringProgress = ringProgress,
         iconProgress = iconProgress,
         iconScaleMultiplier = 0.18 + 0.82 * easeOutBack(iconProgress),
+        selectorProgress = selectorProgress,
+        selectorScaleMultiplier = 0.06 + 0.94 * easeOutSpring(selectorProgress),
         entryAngle = schedule.entryAngle or (-math.pi * 0.5),
     }
 end
@@ -1399,6 +1403,15 @@ function renderer.drawScene(scene, options)
                         alphaMultiplier = signalState.alpha,
                     })
                 end
+            end
+        end
+
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            local presentationState = getPresentationJunctionState(presentation, junction.id)
+            if presentationState and (presentationState.selectorProgress or 0) > 0.001 then
+                renderer.drawOutputSelector(scene, junction, {
+                    scaleMultiplier = presentationState.selectorScaleMultiplier or 1,
+                })
             end
         end
     elseif outro then

@@ -10,6 +10,8 @@ local TRACK_REVEAL_PIXELS_PER_SECOND = 560
 local TRACK_REVEAL_MIN_DURATION = 0.16
 local JUNCTION_RING_DURATION = 0.18
 local JUNCTION_ICON_DURATION = 0.32
+local JUNCTION_SELECTOR_DELAY = 0.08
+local JUNCTION_SELECTOR_DURATION = 0.30
 local TRACK_STATE_BLEND_DURATION = 0.42
 local SIGNAL_POP_DURATION = 0.42
 local UI_REVEAL_DELAY = 0.08
@@ -181,6 +183,8 @@ local function buildJunctionSchedule(arrivalTime, entryEdge)
     local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
     local iconStartTime = ringEndTime
     local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
+    local selectorStartTime = iconEndTime + JUNCTION_SELECTOR_DELAY
+    local selectorEndTime = selectorStartTime + JUNCTION_SELECTOR_DURATION
 
     return {
         arrivalTime = resolvedArrival,
@@ -188,6 +192,8 @@ local function buildJunctionSchedule(arrivalTime, entryEdge)
         ringEndTime = ringEndTime,
         iconStartTime = iconStartTime,
         iconEndTime = iconEndTime,
+        selectorStartTime = selectorStartTime,
+        selectorEndTime = selectorEndTime,
         entryAngle = entryEdge and getJunctionEntryAngle(entryEdge) or (-math.pi * 0.5),
     }
 end
@@ -263,6 +269,8 @@ local function scaleSchedules(edgeSchedulesById, junctionSchedulesById, graphCom
         schedule.ringEndTime = schedule.ringEndTime * timeScale
         schedule.iconStartTime = schedule.iconStartTime * timeScale
         schedule.iconEndTime = schedule.iconEndTime * timeScale
+        schedule.selectorStartTime = schedule.selectorStartTime * timeScale
+        schedule.selectorEndTime = schedule.selectorEndTime * timeScale
     end
 
     return edgeSchedulesById, junctionSchedulesById, GRAPH_REVEAL_DURATION
@@ -522,7 +530,7 @@ local function buildClusteredCycleSchedule(context)
                 schedule.iconEndTime = schedule.iconStartTime + JUNCTION_ICON_DURATION
             end
 
-            completeTime = maxValue(completeTime, schedule.iconEndTime)
+            completeTime = maxValue(completeTime, schedule.selectorEndTime)
         end
 
         local schedule = {
@@ -539,7 +547,7 @@ local function buildClusteredCycleSchedule(context)
         local componentSchedule = computeComponentSchedule(componentId)
         for junctionId, schedule in pairs(componentSchedule.junctionSchedulesById or {}) do
             junctionSchedulesById[junctionId] = schedule
-            graphCompleteTime = maxValue(graphCompleteTime, schedule.iconEndTime)
+            graphCompleteTime = maxValue(graphCompleteTime, schedule.selectorEndTime)
         end
         graphCompleteTime = maxValue(graphCompleteTime, componentSchedule.completeTime or 0)
     end
