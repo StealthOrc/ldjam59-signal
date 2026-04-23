@@ -5,6 +5,7 @@ local localScoreStorage = require("src.game.storage.local_score_storage")
 local mapReplayIndexStorage = require("src.game.storage.map_replay_index_storage")
 local profileStorage = require("src.game.storage.profile_storage")
 local leaderboardClient = require("src.game.network.leaderboard_client")
+local requestInspector = require("src.game.network.request_inspector")
 local leaderboardPreviewCache = require("src.game.storage.leaderboard_preview_cache")
 local replayStorage = require("src.game.storage.replay_storage")
 local replayRecorder = require("src.game.replay.replay_recorder")
@@ -27,6 +28,7 @@ local LEADERBOARD_ENTRY_LIMIT = 50
 local LEADERBOARD_THREAD_FILE = "src/game/network/leaderboard_fetch_thread.lua"
 local LEADERBOARD_REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local LEADERBOARD_RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
+local NETWORK_REQUEST_DEBUG_CHANNEL_NAME = "signal_network_request_debug"
 local LEADERBOARD_SCOPE_GLOBAL = "global"
 local LEADERBOARD_SCOPE_MAP_PREFIX = "map:"
 local LEADERBOARD_STATUS_IDLE = "idle"
@@ -170,6 +172,7 @@ local RESULTS_MESSAGE_LOCAL_BEST_SAVED = "Saved a new local personal best."
 local RESULTS_MESSAGE_LOCAL_BEST_KEPT = "Your local personal best stays higher."
 local RESULTS_MESSAGE_LOCAL_SAVE_FAILED = "The local personal score could not be saved."
 local LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE = "Create a local .env or build.env file with API_KEY and API_BASE_URL before uploading maps."
+local NETWORK_REQUEST_LOG_MAX_ENTRIES = 40
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -498,6 +501,13 @@ function Game.new()
         end
     end
     self.playOverlayMode = nil
+    self.networkRequestOverlayVisible = false
+    self.networkRequestLogEntries = {}
+    self.networkRequestLogEntryById = {}
+    self.networkRequestSelectedLogEntryId = nil
+    self.networkRequestOverlayListScroll = 0
+    self.networkRequestOverlayDetailScroll = 0
+    self.networkRequestOverlayCopyStatus = nil
     self.playGuide = nil
     self.playGuideTransition = nil
     self.pendingReplayPreparationInteractions = {}
@@ -530,8 +540,10 @@ function Game.new()
     self.leaderboardWorkerThread = nil
     self.leaderboardRequestChannel = love.thread.getChannel(LEADERBOARD_REQUEST_CHANNEL_NAME)
     self.leaderboardResponseChannel = love.thread.getChannel(LEADERBOARD_RESPONSE_CHANNEL_NAME)
+    self.networkRequestDebugChannel = love.thread.getChannel(NETWORK_REQUEST_DEBUG_CHANNEL_NAME)
     drainChannel(self.leaderboardRequestChannel)
     drainChannel(self.leaderboardResponseChannel)
+    drainChannel(self.networkRequestDebugChannel)
     self.playPhase = nil
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
@@ -551,6 +563,7 @@ local shared = {
     mapReplayIndexStorage = mapReplayIndexStorage,
     profileStorage = profileStorage,
     leaderboardClient = leaderboardClient,
+    requestInspector = requestInspector,
     leaderboardPreviewCache = leaderboardPreviewCache,
     replayStorage = replayStorage,
     replayRecorder = replayRecorder,
@@ -569,6 +582,7 @@ local shared = {
     LEADERBOARD_THREAD_FILE = LEADERBOARD_THREAD_FILE,
     LEADERBOARD_REQUEST_CHANNEL_NAME = LEADERBOARD_REQUEST_CHANNEL_NAME,
     LEADERBOARD_RESPONSE_CHANNEL_NAME = LEADERBOARD_RESPONSE_CHANNEL_NAME,
+    NETWORK_REQUEST_DEBUG_CHANNEL_NAME = NETWORK_REQUEST_DEBUG_CHANNEL_NAME,
     LEADERBOARD_SCOPE_GLOBAL = LEADERBOARD_SCOPE_GLOBAL,
     LEADERBOARD_SCOPE_MAP_PREFIX = LEADERBOARD_SCOPE_MAP_PREFIX,
     LEADERBOARD_STATUS_IDLE = LEADERBOARD_STATUS_IDLE,
@@ -646,6 +660,7 @@ local shared = {
     RESULTS_MESSAGE_LOCAL_BEST_KEPT = RESULTS_MESSAGE_LOCAL_BEST_KEPT,
     RESULTS_MESSAGE_LOCAL_SAVE_FAILED = RESULTS_MESSAGE_LOCAL_SAVE_FAILED,
     LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE = LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE,
+    NETWORK_REQUEST_LOG_MAX_ENTRIES = NETWORK_REQUEST_LOG_MAX_ENTRIES,
     getNowSeconds = getNowSeconds,
     getNowUnixSeconds = getNowUnixSeconds,
     drainChannel = drainChannel,

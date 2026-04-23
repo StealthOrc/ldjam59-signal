@@ -167,12 +167,54 @@ assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt sho
 assert(type(ui.getPlayOverlayHit) == "function", "ui.getPlayOverlayHit should exist")
 assert(type(ui.getPlayOverlayCopyTargets) == "function", "ui.getPlayOverlayCopyTargets should exist")
 assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
+assert(type(ui.getNetworkRequestOverlayHit) == "function", "ui.getNetworkRequestOverlayHit should exist")
+assert(type(ui.getNetworkRequestOverlayRowRects) == "function", "ui.getNetworkRequestOverlayRowRects should exist")
+assert(type(ui.buildNetworkRequestDetailLines) == "function", "ui.buildNetworkRequestDetailLines should exist")
 assert(type(ui.getReplayHit) == "function", "ui.getReplayHit should exist")
 assert(type(ui.getReplayHoverInfoAt) == "function", "ui.getReplayHoverInfoAt should exist")
 assert(type(ui.getReplayTimelineTimeAt) == "function", "ui.getReplayTimelineTimeAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
+
+local networkOverlayGame = {
+    viewport = { w = 1280, h = 720 },
+    networkRequestOverlayVisible = true,
+    networkRequestLogEntries = {
+        {
+            requestDebugId = 12,
+            method = "GET",
+            route = "/api/maps/map-1/leaderboard",
+            requestKind = "fetch",
+            phase = "finished",
+            ok = true,
+            status = 200,
+            durationMilliseconds = 48,
+            url = "https://example.com/api/maps/map-1/leaderboard",
+            headers = { ["x-api-key"] = "[redacted]" },
+            requestBody = nil,
+            responseBody = { accepted = true },
+        },
+    },
+    networkRequestLogEntryById = {},
+    networkRequestSelectedLogEntryId = 12,
+}
+networkOverlayGame.networkRequestLogEntryById[12] = networkOverlayGame.networkRequestLogEntries[1]
+
+local networkOverlayRows = ui.getNetworkRequestOverlayRowRects(networkOverlayGame)
+assertEqual(#networkOverlayRows, 1, "network request overlay exposes a row for each visible request")
+
+local networkOverlayHit = ui.getNetworkRequestOverlayHit(
+    networkOverlayGame,
+    networkOverlayRows[1].x + 4,
+    networkOverlayRows[1].y + 4
+)
+assertEqual(networkOverlayHit.kind, "network_request_overlay_select", "network request overlay rows are clickable")
+assertEqual(networkOverlayHit.requestDebugId, 12, "network request overlay rows keep the selected request id")
+
+local networkDetailLines = ui.buildNetworkRequestDetailLines(networkOverlayGame)
+assertEqual(networkDetailLines[1], "Kind: fetch", "network request detail lines show the request kind")
+assertEqual(networkDetailLines[2], "Method: GET", "network request detail lines show the method")
 
 local levelSelectMaps = {
     { id = "tutorial-1", mapKind = "tutorial", source = "builtin", displayName = "Guide 1" },

@@ -517,6 +517,20 @@ function Game:copyPlayDebugValue(copyText, copyLabel)
     return ok, copyMessage
 end
 
+function Game:copyNetworkRequestOverlayValue(copyText, copyLabel)
+    local ok, copyMessage = copyTextToClipboard(
+        copyText,
+        string.format("No %s is available for this request.", tostring(copyLabel or "value")),
+        string.format("%s copied to clipboard.", tostring(copyLabel or "Value")),
+        string.format("The %s could not be copied.", tostring(copyLabel or "value"))
+    )
+    self.networkRequestOverlayCopyStatus = {
+        status = ok and "success" or "error",
+        message = copyMessage,
+    }
+    return ok, copyMessage
+end
+
 function Game:getMarketplaceScopeDetails(tabId, query)
     local resolvedTabId = tabId or self.levelSelectMarketplaceTab or LEVEL_SELECT_MARKETPLACE_TAB_TOP
     local normalizedQuery = trim(query or self.levelSelectMarketplaceSearchQuery or "")
@@ -875,6 +889,53 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     cacheEntry.map_hash = mapHash
     cacheEntry.fetched_at = getNowUnixSeconds()
     self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, cacheEntry)
+end
+
+local function copyNetworkRequestLogFields(targetEntry, sourceEntry)
+    for key, value in pairs(sourceEntry or {}) do
+        targetEntry[key] = value
+    end
+end
+
+function Game:trimNetworkRequestLog()
+    while #self.networkRequestLogEntries > NETWORK_REQUEST_LOG_MAX_ENTRIES do
+        local removedEntry = table.remove(self.networkRequestLogEntries)
+        if removedEntry and removedEntry.requestDebugId ~= nil then
+            self.networkRequestLogEntryById[removedEntry.requestDebugId] = nil
+            if self.networkRequestSelectedLogEntryId == removedEntry.requestDebugId then
+                self.networkRequestSelectedLogEntryId = self.networkRequestLogEntries[1]
+                    and self.networkRequestLogEntries[1].requestDebugId
+                    or nil
+            end
+        end
+    end
+end
+
+function Game:applyNetworkRequestDebugEvent(event)
+    if type(event) ~= "table" or event.eventKind ~= "network_request_debug" then
+        return
+    end
+
+    local requestDebugId = tonumber(event.requestDebugId)
+    if not requestDebugId then
+        return
+    end
+
+    local existingEntry = self.networkRequestLogEntryById[requestDebugId]
+    if existingEntry then
+        copyNetworkRequestLogFields(existingEntry, event)
+    else
+        local createdEntry = {}
+        copyNetworkRequestLogFields(createdEntry, event)
+        self.networkRequestLogEntryById[requestDebugId] = createdEntry
+        table.insert(self.networkRequestLogEntries, 1, createdEntry)
+        self:trimNetworkRequestLog()
+        existingEntry = createdEntry
+    end
+
+    if self.networkRequestSelectedLogEntryId == nil or event.phase == "started" then
+        self.networkRequestSelectedLogEntryId = requestDebugId
+    end
 end
 
 function Game:ensureLeaderboardWorker()
@@ -1662,6 +1723,16 @@ function Game:updateLeaderboardFetchState()
             self.activeReplayDownloadRequestMapHash = nil
             self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The replay download timed out.")
         end
+    end
+
+    while true do
+        local encodedDebugEvent = self.networkRequestDebugChannel:pop()
+        if not encodedDebugEvent then
+            break
+        end
+
+        local decodedDebugEvent = json.decode(encodedDebugEvent)
+        self:applyNetworkRequestDebugEvent(decodedDebugEvent)
     end
 
     while true do

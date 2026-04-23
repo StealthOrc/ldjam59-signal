@@ -1,5 +1,6 @@
 local json = require("src.game.util.json")
 local nativeLoader = require("src.game.util.native_loader")
+local requestInspector = require("src.game.network.request_inspector")
 
 local httpTransport = {}
 
@@ -21,6 +22,18 @@ local HMAC_INNER_PAD_BYTE = 54
 local HMAC_OUTER_PAD_BYTE = 92
 local HMAC_SIGNATURE_HEADER_NAME = "x-signature"
 local HMAC_SIGNATURE_PREFIX = "sha256="
+
+local function emitDebugEvent(event)
+    local recorder = httpTransport._debugRecorder
+    if type(recorder) ~= "function" or type(event) ~= "table" then
+        return
+    end
+
+    local ok, recorderError = pcall(recorder, event)
+    if not ok then
+        print(string.format("[NetworkInspector] Failed to record request event: %s", tostring(recorderError)))
+    end
+end
 
 local function trim(value)
     return (tostring(value or "")):gsub("^%s+", ""):gsub("%s+$", "")
@@ -272,6 +285,15 @@ function httpTransport.requestJson(options)
     local headers = {
         ["x-api-key"] = tostring(options.apiKey or ""),
     }
+    local debugEntry = requestInspector.beginRequest({
+        requestKind = options.debugContext and options.debugContext.requestKind or nil,
+        flowRequestId = options.debugContext and options.debugContext.flowRequestId or nil,
+        method = options.method,
+        url = options.url,
+        headers = headers,
+        requestBody = requestBody ~= "" and requestBody or nil,
+        timeoutSeconds = options.timeoutSeconds,
+    })
 
     if requestBody ~= "" then
         headers["content-type"] = "application/json"
@@ -280,6 +302,10 @@ function httpTransport.requestJson(options)
 
     local signatureValue, signatureError = createHmacSha256Signature(options.hmacSecret, requestBody)
     if signatureError then
+        emitDebugEvent(requestInspector.finishRequest(debugEntry, {
+            ok = false,
+            error = signatureError,
+        }))
         return nil, signatureError
     end
 
@@ -287,8 +313,23 @@ function httpTransport.requestJson(options)
         headers[HMAC_SIGNATURE_HEADER_NAME] = signatureValue
     end
 
+    debugEntry.headers = requestInspector.sanitizeValueForDisplay("headers", headers)
+    emitDebugEvent(debugEntry)
+
+    local responsePayload
+    local responseError
+    local statusCode
+
     if isHttpsUrl(options.url) then
-        return requestWithSecureClient({
+        responsePayload, responseError, statusCode = requestWithSecureClient({
+            url = options.url,
+            method = options.method,
+            headers = headers,
+            body = requestBody,
+            timeoutSeconds = options.timeoutSeconds,
+        })
+    else
+        responsePayload, responseError, statusCode = requestWithSocketHttp({
             url = options.url,
             method = options.method,
             headers = headers,
@@ -297,13 +338,14 @@ function httpTransport.requestJson(options)
         })
     end
 
-    return requestWithSocketHttp({
-        url = options.url,
-        method = options.method,
-        headers = headers,
-        body = requestBody,
-        timeoutSeconds = options.timeoutSeconds,
-    })
+    emitDebugEvent(requestInspector.finishRequest(debugEntry, {
+        ok = responsePayload ~= nil,
+        status = statusCode,
+        error = responseError,
+        responseBody = responsePayload,
+    }))
+
+    return responsePayload, responseError, statusCode
 end
 
 function httpTransport.getJson(options)
@@ -337,6 +379,10 @@ function httpTransport.deleteJson(options)
         timeoutSeconds = options.timeoutSeconds,
         body = json.encode(options.payload or {}),
     })
+end
+
+function httpTransport.setDebugRecorder(recorder)
+    httpTransport._debugRecorder = recorder
 end
 
 return httpTransport
