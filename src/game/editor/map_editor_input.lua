@@ -16,6 +16,10 @@ return function(mapEditor, shared)
 function mapEditor:beginRoute(x, y)
     local colorOption = COLOR_OPTIONS[((self.nextRouteId - 1) % #COLOR_OPTIONS) + 1]
     local startX, startY = self:clampPoint(x, y, false)
+    if self:isGridSnapEnabled() then
+        startX, startY = self:snapPointToGrid(startX, startY)
+        startX, startY = self:clampPoint(startX, startY, false)
+    end
     local route = self:createRoute(
         {
             { x = startX, y = startY },
@@ -108,8 +112,16 @@ function mapEditor:updateDraggedPoint(x, y)
         return
     end
 
+    if self.drag.isMagnet and self.drag.rebuildFromMagnet and not self.drag.rebuildPrepared then
+        self:pruneSharedPointsFromMagnet(route, self.drag.magnetKind)
+        self.drag.rebuildPrepared = true
+        self.drag.pointIndex = self.drag.magnetKind == "start" and 1 or #route.points
+        self.selectedPointIndex = self.drag.pointIndex
+        point = route.points[self.drag.pointIndex]
+    end
+
     local clampedX, clampedY = self:clampPoint(x, y, self.drag.pointIndex == 1)
-    if self:isModifierSnapActive() then
+    if self:isGridSnapEnabled() then
         clampedX, clampedY = self:snapPointToGrid(clampedX, clampedY)
         clampedX, clampedY = self:clampPoint(clampedX, clampedY, self.drag.pointIndex == 1)
     end
@@ -161,6 +173,7 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
             end
 
             local insertIndex = segmentIndex + 1
+            hitPoint.authored = false
             table.insert(route.points, insertIndex, hitPoint)
             self:splitRouteSegmentStyle(route, segmentIndex)
             return insertIndex, route.points[insertIndex], true
@@ -277,12 +290,13 @@ function mapEditor:prepareIntersectionForDrag(intersection)
 
     for _, routeId in ipairs(intersection.routeIds or {}) do
         local route = self:getRouteById(routeId)
-        local pointIndex, point = self:ensureRoutePointAtIntersection(route, intersection)
+        local pointIndex, point, inserted = self:ensureRoutePointAtIntersection(route, intersection)
         if route and pointIndex and point then
             members[#members + 1] = {
                 route = route,
                 pointIndex = pointIndex,
                 point = point,
+                inserted = inserted == true,
             }
             if point.sharedPointId and not sharedPointId then
                 sharedPointId = point.sharedPointId
@@ -304,6 +318,9 @@ function mapEditor:prepareIntersectionForDrag(intersection)
             self:reassignSharedPointGroup(member.point.sharedPointId, sharedPointId)
         end
         member.point.sharedPointId = sharedPointId
+        if member.inserted then
+            member.point.authored = false
+        end
     end
     self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
     self:rebuildIntersections()
@@ -333,6 +350,7 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
                 route = route,
                 pointIndex = pointIndex,
                 point = point,
+                inserted = inserted == true,
             }
             changed = changed or inserted
 
@@ -361,6 +379,9 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
             changed = true
         end
         member.point.sharedPointId = sharedPointId
+        if member.inserted then
+            member.point.authored = false
+        end
     end
 
     self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
@@ -1437,6 +1458,13 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if key == "q" then
+        self.gridSnapEnabled = not self.gridSnapEnabled
+        self:notifyPreferencesChanged()
+        self:showStatus(self.gridSnapEnabled and "Grid snap enabled." or "Grid snap disabled.")
+        return true
+    end
+
     if key == "f" then
         self:resetCameraToFit()
         self:showStatus("Camera reset to fit.")
@@ -1645,6 +1673,8 @@ function mapEditor:mousepressed(screenX, screenY, button)
             moved = false,
             isMagnet = magnetKind ~= nil,
             magnetKind = magnetKind,
+            rebuildFromMagnet = magnetKind ~= nil and self:isEndpointRebuildModifierActive(),
+            rebuildPrepared = false,
         }
         return true
     end

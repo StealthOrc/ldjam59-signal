@@ -86,6 +86,7 @@ debugMode = false
 
 [editor]
 gridVisible = true
+gridSnapEnabled = true
 gridStep = 64
 
 [tutorials.dismissedMapGuides]
@@ -103,6 +104,11 @@ assertEqual(
     sanitizedProfile.tutorials.dismissedMapGuides["map-drop"],
     nil,
     "profile load removes invalid tutorial dismissal flags from disk"
+)
+assertEqual(
+    sanitizedProfile.editor.gridSnapEnabled,
+    true,
+    "profile load preserves the snap-to-grid toggle"
 )
 
 print("profile storage tests passed")

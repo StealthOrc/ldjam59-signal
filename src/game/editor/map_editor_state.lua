@@ -71,6 +71,7 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.onPreferencesChanged = editorOptions.onPreferencesChanged
     self.gridVisible = editorPreferences.gridVisible ~= false
     self.gridStep = sanitizeGridStep(editorPreferences.gridStep)
+    self.gridSnapEnabled = editorPreferences.gridSnapEnabled == true
     self.editorChargeImage = nil
     self.editorCrossImage = nil
     self.editorDirectImage = nil
@@ -133,6 +134,7 @@ function mapEditor:notifyPreferencesChanged()
         self.onPreferencesChanged({
             gridVisible = self.gridVisible ~= false,
             gridStep = sanitizeGridStep(self.gridStep),
+            gridSnapEnabled = self.gridSnapEnabled == true,
         })
     end
 end
@@ -193,8 +195,12 @@ function mapEditor:mapToScreen(mapX, mapY)
         (mapY - self.camera.y) * self.camera.zoom + centerY
 end
 
-function mapEditor:isModifierSnapActive()
+function mapEditor:isEndpointRebuildModifierActive()
     return love.keyboard.isDown("lctrl", "rctrl")
+end
+
+function mapEditor:isGridSnapEnabled()
+    return self.gridSnapEnabled == true
 end
 
 function mapEditor:snapPointToGrid(x, y)
@@ -472,7 +478,7 @@ function mapEditor:getValidationListLayout(font)
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
     local panelBottom = self:getPlayTestButtonRect().y - 16
-    local issuesTitleY = drawerLayout.gridToggleRect.y + drawerLayout.gridToggleRect.h + 26
+    local issuesTitleY = drawerLayout.controlsBottomY + 22
     local resolveText = "Resolve these before the run can start:"
     local resolveTextHeight = getWrappedLineCount(font, resolveText, panelWidth) * font:getHeight()
     local listTop = issuesTitleY + 26 + resolveTextHeight + 10

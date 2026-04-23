@@ -108,6 +108,7 @@ function mapEditor:getExportData()
                 x = point.x / self.mapSize.w,
                 y = point.y / self.mapSize.h,
                 sharedPointId = point.sharedPointId,
+                authored = point.authored ~= false,
                 linkedPointGroupId = point.linkedPointGroupId,
             }
         end
@@ -208,6 +209,7 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
                 x = point.x * self.mapSize.w,
                 y = point.y * self.mapSize.h,
                 sharedPointId = point.sharedPointId,
+                authored = point.authored ~= false,
                 linkedPointGroupId = point.linkedPointGroupId,
             }
             if point.sharedPointId and point.sharedPointId >= self.nextSharedPointId then
@@ -316,12 +318,22 @@ function mapEditor:serialize()
         lines[#lines + 1] = "            },"
         lines[#lines + 1] = "            points = {"
         for _, point in ipairs(route.points) do
-            local sharedPointSuffix = point.sharedPointId and string.format(", sharedPointId = %d", point.sharedPointId) or ""
+            local pointSuffixParts = {}
+            if point.sharedPointId then
+                pointSuffixParts[#pointSuffixParts + 1] = string.format("sharedPointId = %d", point.sharedPointId)
+            end
+            if point.linkedPointGroupId then
+                pointSuffixParts[#pointSuffixParts + 1] = string.format("linkedPointGroupId = %d", point.linkedPointGroupId)
+            end
+            if point.authored == false then
+                pointSuffixParts[#pointSuffixParts + 1] = "authored = false"
+            end
+            local pointSuffix = #pointSuffixParts > 0 and (", " .. table.concat(pointSuffixParts, ", ")) or ""
             lines[#lines + 1] = string.format(
                 "                { x = %s, y = %s%s },",
                 formatNumber(point.x / self.mapSize.w),
                 formatNumber(point.y / self.mapSize.h),
-                sharedPointSuffix
+                pointSuffix
             )
         end
         lines[#lines + 1] = "            },"

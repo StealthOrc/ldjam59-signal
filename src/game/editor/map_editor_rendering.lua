@@ -1210,6 +1210,11 @@ function mapEditor:drawDefaultSidePanel(game)
         self.gridVisible and "Hide Grid (G)" or "Show Grid (G)",
         { 0.99, 0.78, 0.32 }
     )
+    self:drawPanelButton(
+        drawerLayout.snapToggleRect,
+        self.gridSnapEnabled and "Snap On (Q)" or "Snap Off (Q)",
+        { 0.33, 0.8, 0.98 }
+    )
     self:drawTextField(
         "Grid Step",
         drawerLayout.gridStepRect,

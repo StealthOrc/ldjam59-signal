@@ -480,6 +480,52 @@ function mapEditor:pruneSharedPointFromRoutes(sharedPointId, preservedRouteIds)
     end
 end
 
+function mapEditor:pruneSharedPointsFromMagnet(route, magnetKind)
+    if not route or not route.points or #route.points <= 2 then
+        return false
+    end
+
+    local removedSharedPointIds = {}
+    local changed = false
+
+    if magnetKind == "start" then
+        while #route.points > 2 do
+            local point = route.points[2]
+            if not point or not point.sharedPointId or point.authored ~= false then
+                break
+            end
+
+            removedSharedPointIds[point.sharedPointId] = true
+            table.remove(route.points, 2)
+            self:mergeRouteSegmentStyle(route, 2)
+            changed = true
+        end
+    elseif magnetKind == "end" then
+        while #route.points > 2 do
+            local pointIndex = #route.points - 1
+            local point = route.points[pointIndex]
+            if not point or not point.sharedPointId or point.authored ~= false then
+                break
+            end
+
+            removedSharedPointIds[point.sharedPointId] = true
+            table.remove(route.points, pointIndex)
+            self:mergeRouteSegmentStyle(route, pointIndex)
+            changed = true
+        end
+    end
+
+    if not changed then
+        return false
+    end
+
+    for sharedPointId in pairs(removedSharedPointIds) do
+        self:pruneSharedPointFromRoutes(sharedPointId)
+    end
+
+    return true
+end
+
 function mapEditor:collapseRoutesForSharedPoint(sharedPointId)
     if not sharedPointId then
         return
