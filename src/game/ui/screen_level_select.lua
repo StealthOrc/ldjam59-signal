@@ -1,3 +1,5 @@
+local junctionControls = require("src.game.junction_controls")
+
 return function(ui, shared)
     local moduleEnvironment = setmetatable({ ui = ui }, {
         __index = function(_, key)
@@ -532,7 +534,7 @@ function drawMapPreview(descriptor, rect)
         graphics.setColor(color[1], color[2], color[3], color[4] or 1)
         graphics.circle("fill", x, y, 7)
 
-        if junction.outputCount > 1 and junction.controlType ~= "relay" and junction.controlType ~= "crossbar" then
+        if junctionControls.hasManualOutputSelector(junction) then
             graphics.setColor(0.99, 0.78, 0.32, 1)
             graphics.circle("line", x, y + 12, 5)
         end

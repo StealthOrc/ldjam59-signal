@@ -102,6 +102,16 @@ previewJunction = editor.previewWorld.junctionOrder[1]
 assertEqual(intersection.activeOutputIndex, 2, "clicking the output selector cycles the saved starting output")
 assertEqual(previewJunction.activeOutputIndex, 2, "preview world reflects the cycled starting output")
 
+editor:setIntersectionControlType(intersection, "relay")
+local relayOutputBefore = intersection.activeOutputIndex
+editor:mousepressed(selectorScreenX, selectorScreenY, 1)
+assertEqual(intersection.activeOutputIndex, relayOutputBefore, "relay junctions ignore separate output selector clicks")
+
+editor:setIntersectionControlType(intersection, "crossbar")
+local crossbarOutputBefore = intersection.activeOutputIndex
+editor:mousepressed(selectorScreenX, selectorScreenY, 1)
+assertEqual(intersection.activeOutputIndex, crossbarOutputBefore, "crossbar junctions ignore separate output selector clicks")
+
 local wheelIntersection = editor.intersections[1]
 local wheelScreenX, wheelScreenY = editor:mapToScreen(wheelIntersection.x, wheelIntersection.y)
 editor:mousepressed(wheelScreenX, wheelScreenY, 2)
@@ -165,5 +175,45 @@ assertTrue(
     "dragging a junction should still move it instead of cycling the saved state"
 )
 assertEqual(movedAfterDrag.activeInputIndex, beforeInputIndex, "dragging keeps the chosen starting input")
+
+local singleOutputEditorData = {
+    endpoints = {
+        { id = "single_input", kind = "input", x = 0.2, y = 0.2, colors = { "blue" } },
+        { id = "single_output", kind = "output", x = 0.8, y = 0.8, colors = { "blue" } },
+    },
+    routes = {
+        {
+            id = "single_route",
+            label = "single_route",
+            color = "blue",
+            startEndpointId = "single_input",
+            endEndpointId = "single_output",
+            segmentRoadTypes = { "normal" },
+            points = {
+                { x = 0.2, y = 0.2 },
+                { x = 0.8, y = 0.8 },
+            },
+        },
+    },
+    junctions = {
+        {
+            id = "single_junction",
+            x = 0.5,
+            y = 0.5,
+            routeIds = { "single_route" },
+            controlType = "direct",
+            activeInputIndex = 1,
+            activeOutputIndex = 1,
+        },
+    },
+    trains = {},
+}
+
+local singleOutputEditor = mapEditor.new(1280, 720, nil)
+singleOutputEditor:loadEditorData(singleOutputEditorData, "Single Output Junction", nil, nil)
+local singleIntersection = singleOutputEditor.intersections[1]
+local singleSelectorScreenX, singleSelectorScreenY = singleOutputEditor:mapToScreen(singleIntersection.x, singleIntersection.y + 36)
+singleOutputEditor:mousepressed(singleSelectorScreenX, singleSelectorScreenY, 1)
+assertEqual(singleOutputEditor.intersections[1].activeOutputIndex, 1, "single-output junctions do not expose an output selector")
 
 print("map editor junction state tests passed")

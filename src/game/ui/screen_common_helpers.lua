@@ -1,3 +1,5 @@
+local junctionControls = require("src.game.junction_controls")
+
 return function(ui, shared)
     local moduleEnvironment = setmetatable({ ui = ui }, {
         __index = function(_, key)
@@ -670,6 +672,10 @@ function getJunctionTooltipText(junction)
 end
 
 function getOutputSelectorTooltipInfo(junction)
+    if not junctionControls.hasManualOutputSelector(junction) then
+        return nil
+    end
+
     local activeOutput = junction and junction.outputs and junction.outputs[junction.activeOutputIndex] or nil
     local outputLabel = activeOutput and activeOutput.label or ("Output " .. tostring(junction and junction.activeOutputIndex or 1))
 
@@ -783,11 +789,22 @@ function buildPlayHelpSections(game)
     local backTarget = game.currentRunOrigin == "editor" and "editor" or "level select"
     local controlLines = {
         "Left click a junction to activate its control.",
-        "Left click the selector below a junction to cycle outputs forward.",
-        "Right click the selector below a junction to cycle outputs backward.",
         string.format("M returns to the %s. E opens the editor. R restarts the run.", backTarget),
         "F2 closes this help panel. F3 opens the debug panel.",
     }
+
+    local hasManualSelector = false
+    for _, junction in ipairs(game.world and game.world.junctionOrder or {}) do
+        if junctionControls.hasManualOutputSelector(junction) then
+            hasManualSelector = true
+            break
+        end
+    end
+
+    if hasManualSelector then
+        table.insert(controlLines, 2, "Left click the selector below a junction to cycle outputs forward.")
+        table.insert(controlLines, 3, "Right click the selector below a junction to cycle outputs backward.")
+    end
 
     if game.playPhase == "prepare" then
         controlLines[#controlLines + 1] = "Use the Start button when your routes are set."

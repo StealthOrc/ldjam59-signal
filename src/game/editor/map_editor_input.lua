@@ -268,8 +268,10 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
     return changed
 end
 
+local junctionControls = require("src.game.junction_controls")
+
 function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
-    if not intersection or #intersection.outputEndpointIds <= 1 then
+    if not junctionControls.hasManualOutputSelector(intersection) then
         return false
     end
     return distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y)
@@ -375,12 +377,12 @@ function mapEditor:cycleIntersectionInput(intersection)
 end
 
 function mapEditor:cycleIntersectionOutput(intersection, direction)
-    if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
+    if junctionControls.isOutputCoupledToMainControl(intersection) then
         self:showStatus("This dial couples start and end together.")
         return
     end
 
-    if (intersection.outputEndpointIds and #intersection.outputEndpointIds or 0) <= 1 then
+    if not junctionControls.hasManualOutputSelector(intersection) then
         return
     end
 

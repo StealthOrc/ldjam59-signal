@@ -1,4 +1,5 @@
 local roadTypes = require("src.game.data.road_types")
+local junctionControls = require("src.game.junction_controls")
 
 local renderer = {}
 
@@ -39,11 +40,7 @@ local function copyColor(color)
 end
 
 local function hasOutputSelector(junction)
-    return junction
-        and #(junction.outputs or {}) > 1
-        and junction.control
-        and junction.control.type ~= "relay"
-        and junction.control.type ~= "crossbar"
+    return junctionControls.hasManualOutputSelector(junction)
 end
 
 local function getColorById(colorId)
