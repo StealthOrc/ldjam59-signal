@@ -114,6 +114,30 @@ local visibleTopEntriesWithPinned, visiblePinnedEntryWithPinned = ui.getLevelSel
 assertEqual(#visibleTopEntriesWithPinned, 4, "level select leaderboard reserves one slot for the pinned player")
 assertEqual(visiblePinnedEntryWithPinned, pinnedPlayerEntry, "level select leaderboard keeps the pinned player visible")
 
+local duplicatePinnedPlayerEntry = { rank = 3, playerUuid = "player-3" }
+local visibleTopEntriesWithoutDuplicatePinned, visiblePinnedEntryWithoutDuplicatePinned = ui.getLevelSelectLeaderboardVisibleEntries(
+    {
+        { rank = 1, playerUuid = "player-1" },
+        { rank = 2, playerUuid = "player-2" },
+        { rank = 3, playerUuid = "player-3" },
+        { rank = 4, playerUuid = "player-4" },
+        { rank = 5, playerUuid = "player-5" },
+        { rank = 6, playerUuid = "player-6" },
+    },
+    duplicatePinnedPlayerEntry,
+    5
+)
+assertEqual(
+    #visibleTopEntriesWithoutDuplicatePinned,
+    5,
+    "level select leaderboard keeps all five top rows when the pinned player is already visible"
+)
+assertEqual(
+    visiblePinnedEntryWithoutDuplicatePinned,
+    nil,
+    "level select leaderboard drops the pinned player when that player is already in the visible top rows"
+)
+
 assert(type(ui.getLevelSelectLeaderboardPinnedRowY) == "function", "ui.getLevelSelectLeaderboardPinnedRowY should exist")
 assertEqual(
     ui.getLevelSelectLeaderboardPinnedRowY({ y = 100 }, 0),
@@ -143,12 +167,54 @@ assert(type(ui.getPlayGuideActionAt) == "function", "ui.getPlayGuideActionAt sho
 assert(type(ui.getPlayOverlayHit) == "function", "ui.getPlayOverlayHit should exist")
 assert(type(ui.getPlayOverlayCopyTargets) == "function", "ui.getPlayOverlayCopyTargets should exist")
 assert(type(ui.getPlayHeaderHintLines) == "function", "ui.getPlayHeaderHintLines should exist")
+assert(type(ui.getNetworkRequestOverlayHit) == "function", "ui.getNetworkRequestOverlayHit should exist")
+assert(type(ui.getNetworkRequestOverlayRowRects) == "function", "ui.getNetworkRequestOverlayRowRects should exist")
+assert(type(ui.buildNetworkRequestDetailLines) == "function", "ui.buildNetworkRequestDetailLines should exist")
 assert(type(ui.getReplayHit) == "function", "ui.getReplayHit should exist")
 assert(type(ui.getReplayHoverInfoAt) == "function", "ui.getReplayHoverInfoAt should exist")
 assert(type(ui.getReplayTimelineTimeAt) == "function", "ui.getReplayTimelineTimeAt should exist")
 assert(type(ui.getLevelSelectBadges) == "function", "ui.getLevelSelectBadges should exist")
 assert(type(ui.getLevelSelectHoverInfoAt) == "function", "ui.getLevelSelectHoverInfoAt should exist")
 assert(type(ui.getLevelSelectMapDescriptors) == "function", "ui.getLevelSelectMapDescriptors should exist")
+
+local networkOverlayGame = {
+    viewport = { w = 1280, h = 720 },
+    networkRequestOverlayVisible = true,
+    networkRequestLogEntries = {
+        {
+            requestDebugId = 12,
+            method = "GET",
+            route = "/api/maps/map-1/leaderboard",
+            requestKind = "fetch",
+            phase = "finished",
+            ok = true,
+            status = 200,
+            durationMilliseconds = 48,
+            url = "https://example.com/api/maps/map-1/leaderboard",
+            headers = { ["x-api-key"] = "[redacted]" },
+            requestBody = nil,
+            responseBody = { accepted = true },
+        },
+    },
+    networkRequestLogEntryById = {},
+    networkRequestSelectedLogEntryId = 12,
+}
+networkOverlayGame.networkRequestLogEntryById[12] = networkOverlayGame.networkRequestLogEntries[1]
+
+local networkOverlayRows = ui.getNetworkRequestOverlayRowRects(networkOverlayGame)
+assertEqual(#networkOverlayRows, 1, "network request overlay exposes a row for each visible request")
+
+local networkOverlayHit = ui.getNetworkRequestOverlayHit(
+    networkOverlayGame,
+    networkOverlayRows[1].x + 4,
+    networkOverlayRows[1].y + 4
+)
+assertEqual(networkOverlayHit.kind, "network_request_overlay_select", "network request overlay rows are clickable")
+assertEqual(networkOverlayHit.requestDebugId, 12, "network request overlay rows keep the selected request id")
+
+local networkDetailLines = ui.buildNetworkRequestDetailLines(networkOverlayGame)
+assertEqual(networkDetailLines[1], "Kind: fetch", "network request detail lines show the request kind")
+assertEqual(networkDetailLines[2], "Method: GET", "network request detail lines show the method")
 
 local levelSelectMaps = {
     { id = "tutorial-1", mapKind = "tutorial", source = "builtin", displayName = "Guide 1" },
@@ -814,11 +880,46 @@ assert(replaysButton ~= nil, "level select should expose the Replays button rect
 assert(uploadButton ~= nil, "level select should expose the Upload button rect")
 assert(editButton ~= nil, "level select should expose the Edit button rect")
 assert(
-    startButton.x + startButton.w + 18 <= replaysButton.x,
-    "replays button should keep the configured gap from the start button"
+    replaysButton.x + replaysButton.w < startButton.x,
+    "replays button should stay to the left of start"
 )
-assertEqual(uploadButton.x, replaysButton.x + replaysButton.w + 18, "upload button stays directly to the right of replays")
-assertEqual(editButton.x, uploadButton.x + uploadButton.w + 18, "edit button stays directly to the right of upload")
+assert(uploadButton.x > startButton.x + startButton.w, "upload button should stay to the right of start")
+assert(editButton.x > uploadButton.x + uploadButton.w, "edit button should stay to the right of upload")
+
+local levelSelectButtonGameWithoutReplay = {
+    viewport = levelSelectButtonGame.viewport,
+    fonts = levelSelectButtonGame.fonts,
+    levelSelectMode = levelSelectButtonGame.levelSelectMode,
+    levelSelectFilter = levelSelectButtonGame.levelSelectFilter,
+    levelSelectSelectedId = levelSelectButtonGame.levelSelectSelectedId,
+    levelSelectSelectedMapUuid = levelSelectButtonGame.levelSelectSelectedMapUuid,
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "",
+            mapHash = "",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    isUploadSelectedMapAvailable = function()
+        return true
+    end,
+}
+
+local levelSelectButtonsWithoutReplay = ui.getLevelSelectActionButtons(levelSelectButtonGameWithoutReplay)
+local uploadButtonWithoutReplay = findButtonById(levelSelectButtonsWithoutReplay, "upload_map")
+local editButtonWithoutReplay = findButtonById(levelSelectButtonsWithoutReplay, "edit_map")
+
+assert(uploadButtonWithoutReplay ~= nil, "level select without replay should still expose the Upload button rect")
+assert(editButtonWithoutReplay ~= nil, "level select without replay should still expose the Edit button rect")
+assertEqual(uploadButtonWithoutReplay.x, uploadButton.x, "upload button stays fixed when replays are unavailable")
+assertEqual(editButtonWithoutReplay.x, editButton.x, "edit button stays fixed when replays are unavailable")
 
 local flippedLeaderboardGame = {
     viewport = { w = 1280, h = 720 },
@@ -878,6 +979,39 @@ local flippedLeaderboardGame = {
 local leaderboardReplayHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 240, 1)
 assertEqual(leaderboardReplayHit.kind, "open_leaderboard_replay", "flipped leaderboard rows open replays when replay metadata exists")
 assertEqual(leaderboardReplayHit.replayEntry.replayUuid, "replay-1", "flipped leaderboard row hit returns the replay metadata entry")
+
+local leaderboardScreenGame = {
+    viewport = { w = 1280, h = 720 },
+    leaderboardMapUuid = nil,
+    leaderboardState = {
+        entries = {
+            {
+                rank = 1,
+                playerDisplayName = "Runner",
+                playerUuid = "player-1",
+                score = 24.609,
+                mapUuid = "map-uuid-1",
+                replayUuid = "replay-1",
+                recordedAt = 1710000000,
+                hasReplay = true,
+            },
+            {
+                rank = 2,
+                playerDisplayName = "Walker",
+                playerUuid = "player-2",
+                score = 21.111,
+                mapUuid = "map-uuid-2",
+                recordedAt = 1710000100,
+                hasReplay = false,
+            },
+        },
+    },
+}
+
+local leaderboardRecordHit = ui.getLeaderboardReplayHitAt(leaderboardScreenGame, 640, 248)
+assertEqual(leaderboardRecordHit.entry.replayUuid, "replay-1", "leaderboard rows open replays when replay metadata exists")
+local leaderboardRecordMiss = ui.getLeaderboardReplayHitAt(leaderboardScreenGame, 640, 290)
+assertEqual(leaderboardRecordMiss, nil, "leaderboard rows without replay metadata do not open replays")
 
 local leaderboardCardBackgroundHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 190, 1)
 assertEqual(

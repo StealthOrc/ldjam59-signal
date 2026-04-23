@@ -63,3 +63,9 @@ settings.json
 .env
 
 API_REQUESTS.md
+node_modules/
+*node_modules
+*node_modules/
+outputs/
+*outputs/
+*outputs

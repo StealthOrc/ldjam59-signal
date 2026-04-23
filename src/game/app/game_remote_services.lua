@@ -11,6 +11,16 @@ return function(Game, shared)
         end,
     }))
 
+local SCORE_SUBMIT_REQUEST_KIND_REPLAY = "replay_submit"
+local SCORE_SUBMIT_REQUEST_KIND_SCORE = "score_submit"
+local RESULTS_MESSAGE_REPLAY_UPLOAD_PENDING = "Uploading replay..."
+local RESULTS_MESSAGE_REPLAY_UPLOAD_TIMEOUT = "The replay upload timed out."
+local RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED = "The replay upload failed."
+local RESULTS_MESSAGE_SCORE_SUBMIT_PENDING = "Replay upload failed. Submitting the score only..."
+local RESULTS_MESSAGE_SCORE_SUBMIT_SUCCESS = "Replay upload failed, but the score was submitted."
+local RESULTS_MESSAGE_SCORE_SUBMIT_KEPT = "Replay upload failed. The score was valid, but it stayed outside the online leaderboard."
+local RESULTS_MESSAGE_SCORE_SUBMIT_FAILED = "Replay upload failed, and the score fallback also failed."
+
 function Game:reloadOnlineConfig()
     local loadedConfig = leaderboardClient.getConfig()
     if loadedConfig.isConfigured or not (self.onlineConfig and self.onlineConfig.isConfigured) then
@@ -102,6 +112,20 @@ function Game:getActiveOnlineConfig()
     return resolvedConfig
 end
 
+local function getOnlineModeConfigurationError(onlineConfig)
+    local errors = onlineConfig and onlineConfig.errors or nil
+    if type(errors) == "table" and #errors > 0 then
+        return table.concat(errors, " ")
+    end
+
+    return "The online marketplace is not configured."
+end
+
+function Game:isOnlineConfigAvailable()
+    local onlineConfig = self:reloadOnlineConfig()
+    return onlineConfig and onlineConfig.isConfigured == true
+end
+
 function Game:isPlayModeConfigured()
     local playMode = getProfilePlayMode(self.profile)
     return playMode == PLAY_MODE_ONLINE or playMode == PLAY_MODE_OFFLINE
@@ -164,19 +188,79 @@ function Game:getLocalScoreEntry(mapUuid)
     return entry
 end
 
-function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
-    if not mapUuid or mapUuid == "" or type(scoreEntry) ~= "table" then
+function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank, replayEntry)
+    if not mapUuid or mapUuid == "" then
         return nil
     end
+
+    local resolvedScoreEntry = type(scoreEntry) == "table" and scoreEntry or nil
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedScoreEntry and not resolvedReplayEntry then
+        return nil
+    end
+
+    local resolvedScore = tonumber(
+        resolvedReplayEntry and resolvedReplayEntry.score
+            or resolvedScoreEntry and resolvedScoreEntry.score
+            or 0
+    ) or 0
+    local resolvedRecordedAt = tonumber(
+        resolvedReplayEntry and resolvedReplayEntry.recordedAt
+            or resolvedScoreEntry and resolvedScoreEntry.recorded_at
+            or 0
+    ) or 0
 
     return {
         display_name = self.profile.playerDisplayName or "Unknown",
         player_uuid = getProfilePlayerUuid(self.profile),
-        score = tonumber(scoreEntry.score or 0) or 0,
+        score = resolvedScore,
         rank = rank or 1,
         map_uuid = mapUuid,
-        recorded_at = tonumber(scoreEntry.recorded_at or 0) or 0,
+        recorded_at = resolvedRecordedAt,
+        replay_uuid = resolvedReplayEntry and resolvedReplayEntry.replayUuid or "",
+        replay_file_path = resolvedReplayEntry and resolvedReplayEntry.replayFilePath or "",
+        duration_seconds = resolvedReplayEntry and resolvedReplayEntry.duration or 0,
     }
+end
+
+local function isBetterLocalReplayEntry(candidate, currentBest)
+    if currentBest == nil then
+        return true
+    end
+
+    local candidateScore = tonumber(candidate and candidate.score or 0) or 0
+    local currentBestScore = tonumber(currentBest and currentBest.score or 0) or 0
+    if candidateScore ~= currentBestScore then
+        return candidateScore > currentBestScore
+    end
+
+    local candidateRecordedAt = tonumber(candidate and candidate.recordedAt or 0) or 0
+    local currentBestRecordedAt = tonumber(currentBest and currentBest.recordedAt or 0) or 0
+    if candidateRecordedAt ~= currentBestRecordedAt then
+        return candidateRecordedAt < currentBestRecordedAt
+    end
+
+    return tostring(candidate and candidate.replayUuid or "") < tostring(currentBest and currentBest.replayUuid or "")
+end
+
+function Game:getBestLocalReplayEntry(mapUuid, mapHash)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    if resolvedMapUuid == "" then
+        return nil
+    end
+
+    local bestEntry = nil
+    for _, replayEntry in ipairs(self.localReplayIndex and self.localReplayIndex.replays or {}) do
+        if tostring(replayEntry.mapUuid or "") == resolvedMapUuid
+            and (resolvedMapHash == "" or tostring(replayEntry.mapHash or "") == resolvedMapHash)
+            and isBetterLocalReplayEntry(replayEntry, bestEntry)
+        then
+            bestEntry = replayEntry
+        end
+    end
+
+    return bestEntry
 end
 
 function Game:buildLocalLeaderboardPayload(mapUuid)
@@ -190,21 +274,35 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
 
     if mapUuid and mapUuid ~= "" then
         local scoreEntry = self:getLocalScoreEntry(mapUuid)
-        if not scoreEntry then
+        local replayEntry = self:getBestLocalReplayEntry(mapUuid)
+        if not scoreEntry and not replayEntry then
             return payload, nil
         end
 
-        local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
+        local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1, replayEntry)
         payload.entries[1] = localEntry
-        return payload, tonumber(scoreEntry.recorded_at or 0) or 0
+        return payload, tonumber(localEntry and localEntry.recorded_at or 0) or 0
     end
 
     local entriesByMap = self.localScoreboard and self.localScoreboard.entries_by_map or {}
-    for entryMapUuid, scoreEntry in pairs(entriesByMap or {}) do
-        local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
+    local knownMapUuids = {}
+    for entryMapUuid in pairs(entriesByMap or {}) do
+        knownMapUuids[entryMapUuid] = true
+    end
+    for _, replayEntry in ipairs(self.localReplayIndex and self.localReplayIndex.replays or {}) do
+        local replayMapUuid = tostring(replayEntry.mapUuid or "")
+        if replayMapUuid ~= "" then
+            knownMapUuids[replayMapUuid] = true
+        end
+    end
+
+    for entryMapUuid in pairs(knownMapUuids) do
+        local scoreEntry = entriesByMap[entryMapUuid]
+        local replayEntry = self:getBestLocalReplayEntry(entryMapUuid)
+        local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry, nil, replayEntry)
         if localEntry then
             payload.entries[#payload.entries + 1] = localEntry
-            local recordedAt = tonumber(scoreEntry.recorded_at or 0) or 0
+            local recordedAt = tonumber(localEntry.recorded_at or 0) or 0
             if latestRecordedAt == nil or recordedAt > latestRecordedAt then
                 latestRecordedAt = recordedAt
             end
@@ -232,9 +330,10 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
     return payload, latestRecordedAt
 end
 
-function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
+function Game:getLocalLevelSelectPreviewDisplayState(mapUuid, mapHash)
     local localScoreEntry = self:getLocalScoreEntry(mapUuid)
-    if not localScoreEntry then
+    local replayEntry = self:getBestLocalReplayEntry(mapUuid, mapHash)
+    if not localScoreEntry and not replayEntry then
         return {
             topEntries = {},
             pinnedPlayerEntry = nil,
@@ -249,7 +348,7 @@ function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
     end
 
     local localEntry = normalizeLeaderboardEntry(
-        self:buildLocalLeaderboardEntry(mapUuid, localScoreEntry, 1),
+        self:buildLocalLeaderboardEntry(mapUuid, localScoreEntry, 1, replayEntry),
         mapUuid,
         1
     )
@@ -331,6 +430,10 @@ function Game:clearOnlineRequestState()
     self.activeUploadMapDescriptor = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeScoreSubmitRequestKind = nil
+    self.activeScoreSubmitRequestSummary = nil
+    self.activeScoreSubmitRequestOnlineConfig = nil
+    self.activeScoreSubmitFallbackAttempted = false
     self.activeReplayDownloadRequestId = nil
     self.activeReplayDownloadRequestStartedAt = nil
     self.activeReplayDownloadMapDescriptor = nil
@@ -339,9 +442,40 @@ function Game:clearOnlineRequestState()
     self.activeReplayDownloadRequestMapHash = nil
 end
 
+local function clearActiveScoreSubmitRequestContext(game)
+    game.activeScoreSubmitRequestId = nil
+    game.activeScoreSubmitRequestStartedAt = nil
+    game.activeScoreSubmitRequestKind = nil
+    game.activeScoreSubmitRequestSummary = nil
+    game.activeScoreSubmitRequestOnlineConfig = nil
+    game.activeScoreSubmitFallbackAttempted = false
+end
+
+local function clearActiveScoreSubmitRequestInFlight(game)
+    game.activeScoreSubmitRequestId = nil
+    game.activeScoreSubmitRequestStartedAt = nil
+    game.activeScoreSubmitRequestKind = nil
+end
+
+local function cloneActiveScoreSubmitConfig(onlineConfig)
+    return {
+        apiKey = onlineConfig.apiKey,
+        apiBaseUrl = onlineConfig.apiBaseUrl,
+        hmacSecret = onlineConfig.hmacSecret,
+    }
+end
+
 function Game:setPlayMode(playMode)
     if playMode ~= PLAY_MODE_ONLINE and playMode ~= PLAY_MODE_OFFLINE then
         return false, "Select online or offline mode before continuing."
+    end
+
+    if playMode == PLAY_MODE_ONLINE then
+        local onlineConfig = self:reloadOnlineConfig()
+        if not (onlineConfig and onlineConfig.isConfigured) then
+            self.profileModeSelection = PLAY_MODE_OFFLINE
+            return false, getOnlineModeConfigurationError(onlineConfig)
+        end
     end
 
     local previousPlayMode = self.profile.playMode
@@ -452,6 +586,20 @@ function Game:copyPlayDebugValue(copyText, copyLabel)
         string.format("The %s could not be copied.", tostring(copyLabel or "value"))
     )
     self.playOverlayCopyStatus = {
+        status = ok and "success" or "error",
+        message = copyMessage,
+    }
+    return ok, copyMessage
+end
+
+function Game:copyNetworkRequestOverlayValue(copyText, copyLabel)
+    local ok, copyMessage = copyTextToClipboard(
+        copyText,
+        string.format("No %s is available for this request.", tostring(copyLabel or "value")),
+        string.format("%s copied to clipboard.", tostring(copyLabel or "Value")),
+        string.format("The %s could not be copied.", tostring(copyLabel or "value"))
+    )
+    self.networkRequestOverlayCopyStatus = {
         status = ok and "success" or "error",
         message = copyMessage,
     }
@@ -685,7 +833,7 @@ function Game:getLevelSelectPreviewDisplayState(mapDescriptor)
     local mapUuid = resolvedMapDescriptor and resolvedMapDescriptor.mapUuid or nil
     local mapHash = resolvedMapDescriptor and resolvedMapDescriptor.mapHash or nil
     if self:isOfflineMode() then
-        return self:getLocalLevelSelectPreviewDisplayState(mapUuid)
+        return self:getLocalLevelSelectPreviewDisplayState(mapUuid, mapHash)
     end
 
     local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
@@ -818,6 +966,53 @@ function Game:updateLevelSelectPreviewCacheFromSubmit(response)
     self:setLevelSelectPreviewCacheEntry(mapUuid, mapHash, cacheEntry)
 end
 
+local function copyNetworkRequestLogFields(targetEntry, sourceEntry)
+    for key, value in pairs(sourceEntry or {}) do
+        targetEntry[key] = value
+    end
+end
+
+function Game:trimNetworkRequestLog()
+    while #self.networkRequestLogEntries > NETWORK_REQUEST_LOG_MAX_ENTRIES do
+        local removedEntry = table.remove(self.networkRequestLogEntries)
+        if removedEntry and removedEntry.requestDebugId ~= nil then
+            self.networkRequestLogEntryById[removedEntry.requestDebugId] = nil
+            if self.networkRequestSelectedLogEntryId == removedEntry.requestDebugId then
+                self.networkRequestSelectedLogEntryId = self.networkRequestLogEntries[1]
+                    and self.networkRequestLogEntries[1].requestDebugId
+                    or nil
+            end
+        end
+    end
+end
+
+function Game:applyNetworkRequestDebugEvent(event)
+    if type(event) ~= "table" or event.eventKind ~= "network_request_debug" then
+        return
+    end
+
+    local requestDebugId = tonumber(event.requestDebugId)
+    if not requestDebugId then
+        return
+    end
+
+    local existingEntry = self.networkRequestLogEntryById[requestDebugId]
+    if existingEntry then
+        copyNetworkRequestLogFields(existingEntry, event)
+    else
+        local createdEntry = {}
+        copyNetworkRequestLogFields(createdEntry, event)
+        self.networkRequestLogEntryById[requestDebugId] = createdEntry
+        table.insert(self.networkRequestLogEntries, 1, createdEntry)
+        self:trimNetworkRequestLog()
+        existingEntry = createdEntry
+    end
+
+    if self.networkRequestSelectedLogEntryId == nil or event.phase == "started" then
+        self.networkRequestSelectedLogEntryId = requestDebugId
+    end
+end
+
 function Game:ensureLeaderboardWorker()
     local existingThread = self.leaderboardWorkerThread
     if existingThread and existingThread:isRunning() and not existingThread:getError() then
@@ -855,7 +1050,8 @@ function Game:beginLeaderboardFetch(onlineConfig)
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
-            limit = LEADERBOARD_ENTRY_LIMIT,
+            player_uuid = getProfilePlayerUuid(self.profile),
+            size = LEADERBOARD_ENTRY_LIMIT,
             mapUuid = self.leaderboardMapUuid,
         },
     }))
@@ -895,10 +1091,11 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapDescriptor)
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
-            limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
+            include_replay = true,
             mapUuid = mapUuid,
             mapHash = mapHash,
             player_uuid = getProfilePlayerUuid(self.profile),
+            size = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
         },
     }))
 end
@@ -1241,20 +1438,30 @@ function Game:beginReplaySubmitRequest(onlineConfig, summary, replayRecord)
         return false
     end
 
+    local replayMapUuid = summary.mapUuid or (replayRecord and replayRecord.mapUuid) or nil
+    local replayMapHash = replayRecord and replayRecord.mapHash or summary.mapHash or nil
     self:ensureLeaderboardWorker()
     self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
     self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
     self.activeScoreSubmitRequestStartedAt = getNowSeconds()
+    self.activeScoreSubmitRequestKind = SCORE_SUBMIT_REQUEST_KIND_REPLAY
+    self.activeScoreSubmitRequestSummary = {
+        finalScore = tonumber(summary.finalScore or 0) or 0,
+        mapHash = replayMapHash,
+        mapUuid = replayMapUuid,
+    }
+    self.activeScoreSubmitRequestOnlineConfig = cloneActiveScoreSubmitConfig(onlineConfig)
+    self.activeScoreSubmitFallbackAttempted = false
     self.leaderboardRequestChannel:push(json.encode({
-        kind = "replay_submit",
+        kind = SCORE_SUBMIT_REQUEST_KIND_REPLAY,
         requestId = self.activeScoreSubmitRequestId,
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
             hmacSecret = onlineConfig.hmacSecret,
-            mapUuid = summary.mapUuid or (replayRecord and replayRecord.mapUuid) or nil,
-            mapHash = replayRecord and replayRecord.mapHash or nil,
-            mode = "replay_submit",
+            mapUuid = replayMapUuid,
+            mapHash = replayMapHash,
+            mode = SCORE_SUBMIT_REQUEST_KIND_REPLAY,
             playerDisplayName = self.profile.playerDisplayName,
             player_uuid = getProfilePlayerUuid(self.profile),
             score = summary.finalScore or 0,
@@ -1262,6 +1469,58 @@ function Game:beginReplaySubmitRequest(onlineConfig, summary, replayRecord)
         },
     }))
     return true
+end
+
+function Game:beginScoreSubmitRequest(onlineConfig, summary)
+    if self.activeScoreSubmitRequestId ~= nil then
+        return false
+    end
+
+    local resolvedSummary = type(summary) == "table" and summary or nil
+    if not resolvedSummary then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
+    self.activeScoreSubmitRequestStartedAt = getNowSeconds()
+    self.activeScoreSubmitRequestKind = SCORE_SUBMIT_REQUEST_KIND_SCORE
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = SCORE_SUBMIT_REQUEST_KIND_SCORE,
+        requestId = self.activeScoreSubmitRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            hmacSecret = onlineConfig.hmacSecret,
+            mapUuid = resolvedSummary.mapUuid,
+            mapHash = resolvedSummary.mapHash,
+            mode = SCORE_SUBMIT_REQUEST_KIND_SCORE,
+            playerDisplayName = self.profile.playerDisplayName,
+            player_uuid = getProfilePlayerUuid(self.profile),
+            score = resolvedSummary.finalScore or 0,
+        },
+    }))
+    return true
+end
+
+function Game:attemptScoreSubmitFallback()
+    if self.activeScoreSubmitFallbackAttempted == true then
+        return false
+    end
+
+    local onlineConfig = self.activeScoreSubmitRequestOnlineConfig
+    local summary = self.activeScoreSubmitRequestSummary
+    if type(onlineConfig) ~= "table" or type(summary) ~= "table" then
+        return false
+    end
+
+    self.activeScoreSubmitFallbackAttempted = true
+    self.resultsOnlineState = {
+        status = "pending",
+        message = RESULTS_MESSAGE_SCORE_SUBMIT_PENDING,
+    }
+    return self:beginScoreSubmitRequest(onlineConfig, summary)
 end
 
 function Game:applyMarketplaceFetchResult(response, scopeKey)
@@ -1398,11 +1657,17 @@ function Game:updateLeaderboardFetchState()
             end
 
             if self.activeScoreSubmitRequestId ~= nil then
-                self.activeScoreSubmitRequestId = nil
-                self.activeScoreSubmitRequestStartedAt = nil
+                local requestKind = self.activeScoreSubmitRequestKind
+                clearActiveScoreSubmitRequestInFlight(self)
+                if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                    return
+                end
+                clearActiveScoreSubmitRequestContext(self)
                 self.resultsOnlineState = {
                     status = "error",
-                    message = threadError,
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and (RESULTS_MESSAGE_SCORE_SUBMIT_FAILED .. " " .. tostring(threadError))
+                        or threadError,
                 }
             end
 
@@ -1507,11 +1772,17 @@ function Game:updateLeaderboardFetchState()
     if self.activeScoreSubmitRequestId ~= nil and self.activeScoreSubmitRequestStartedAt ~= nil then
         local elapsedSeconds = getNowSeconds() - self.activeScoreSubmitRequestStartedAt
         if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
-            self.activeScoreSubmitRequestId = nil
-            self.activeScoreSubmitRequestStartedAt = nil
+            local requestKind = self.activeScoreSubmitRequestKind
+            clearActiveScoreSubmitRequestInFlight(self)
+            if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                return
+            end
+            clearActiveScoreSubmitRequestContext(self)
             self.resultsOnlineState = {
                 status = "error",
-                message = "The replay upload timed out.",
+                message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                    and RESULTS_MESSAGE_SCORE_SUBMIT_FAILED
+                    or RESULTS_MESSAGE_REPLAY_UPLOAD_TIMEOUT,
             }
         end
     end
@@ -1527,6 +1798,16 @@ function Game:updateLeaderboardFetchState()
             self.activeReplayDownloadRequestMapHash = nil
             self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "The replay download timed out.")
         end
+    end
+
+    while true do
+        local encodedDebugEvent = self.networkRequestDebugChannel:pop()
+        if not encodedDebugEvent then
+            break
+        end
+
+        local decodedDebugEvent = json.decode(encodedDebugEvent)
+        self:applyNetworkRequestDebugEvent(decodedDebugEvent)
     end
 
     while true do
@@ -1633,21 +1914,42 @@ function Game:updateLeaderboardFetchState()
                 end
                 self:showUploadFailureMessage(uploadOrigin, failureMessage)
             end
-        elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
-            self.activeScoreSubmitRequestId = nil
-            self.activeScoreSubmitRequestStartedAt = nil
+        elseif type(decodedResponse) == "table"
+            and decodedResponse.requestId == self.activeScoreSubmitRequestId
+            and (
+                decodedResponse.kind == SCORE_SUBMIT_REQUEST_KIND_REPLAY
+                or decodedResponse.kind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+            )
+        then
+            local requestKind = self.activeScoreSubmitRequestKind
+            clearActiveScoreSubmitRequestInFlight(self)
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
                 self.resultsOnlineState = {
                     status = decodedResponse.status == 202 and "kept" or "submitted",
-                    message = decodedResponse.status == 202
-                        and "Replay was valid, but it was outside the online top 10 for this map revision."
-                        or "Replay uploaded successfully.",
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and (
+                            decodedResponse.status == 202
+                                and RESULTS_MESSAGE_SCORE_SUBMIT_KEPT
+                                or RESULTS_MESSAGE_SCORE_SUBMIT_SUCCESS
+                        )
+                        or (
+                            decodedResponse.status == 202
+                                and "Replay was valid, but it was outside the online top 10 for this map revision."
+                                or "Replay uploaded successfully."
+                        ),
                 }
                 self:updateLevelSelectPreviewCacheFromSubmit(decodedResponse.payload)
+                clearActiveScoreSubmitRequestContext(self)
             else
+                if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                    return
+                end
+                clearActiveScoreSubmitRequestContext(self)
                 self.resultsOnlineState = {
                     status = "error",
-                    message = decodedResponse.error or "The replay upload failed.",
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and string.format("%s %s", RESULTS_MESSAGE_SCORE_SUBMIT_FAILED, tostring(decodedResponse.error or RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED))
+                        or tostring(decodedResponse.error or RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED),
                 }
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_fetch" and decodedResponse.requestId == self.activeReplayDownloadRequestId then

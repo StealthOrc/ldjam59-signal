@@ -5,6 +5,7 @@ local localScoreStorage = require("src.game.storage.local_score_storage")
 local mapReplayIndexStorage = require("src.game.storage.map_replay_index_storage")
 local profileStorage = require("src.game.storage.profile_storage")
 local leaderboardClient = require("src.game.network.leaderboard_client")
+local requestInspector = require("src.game.network.request_inspector")
 local leaderboardPreviewCache = require("src.game.storage.leaderboard_preview_cache")
 local replayStorage = require("src.game.storage.replay_storage")
 local replayRecorder = require("src.game.replay.replay_recorder")
@@ -27,6 +28,7 @@ local LEADERBOARD_ENTRY_LIMIT = 50
 local LEADERBOARD_THREAD_FILE = "src/game/network/leaderboard_fetch_thread.lua"
 local LEADERBOARD_REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local LEADERBOARD_RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
+local NETWORK_REQUEST_DEBUG_CHANNEL_NAME = "signal_network_request_debug"
 local LEADERBOARD_SCOPE_GLOBAL = "global"
 local LEADERBOARD_SCOPE_MAP_PREFIX = "map:"
 local LEADERBOARD_STATUS_IDLE = "idle"
@@ -170,6 +172,7 @@ local RESULTS_MESSAGE_LOCAL_BEST_SAVED = "Saved a new local personal best."
 local RESULTS_MESSAGE_LOCAL_BEST_KEPT = "Your local personal best stays higher."
 local RESULTS_MESSAGE_LOCAL_SAVE_FAILED = "The local personal score could not be saved."
 local LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE = "Create a local .env or build.env file with API_KEY and API_BASE_URL before uploading maps."
+local NETWORK_REQUEST_LOG_MAX_ENTRIES = 40
 
 local function getNowSeconds()
     if love and love.timer and love.timer.getTime then
@@ -280,6 +283,9 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
         return nil
     end
 
+    local replayUuid = entry.replay_uuid or entry.replayUuid or ""
+    local replayFilePath = entry.replay_file_path or entry.replayFilePath or ""
+
     return {
         playerDisplayName = entry.display_name or entry.player_display_name or "Unknown",
         playerUuid = entry.player_uuid or "",
@@ -290,9 +296,10 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
         recordedAt = entry.recorded_at or entry.updated_at,
         createdAt = entry.created_at,
         updatedAt = entry.updated_at,
-        replayUuid = entry.replay_uuid or entry.replayUuid or "",
+        replayUuid = replayUuid,
+        replayFilePath = replayFilePath,
         durationSeconds = tonumber(entry.duration_seconds or entry.durationSeconds or 0) or 0,
-        hasReplay = tostring(entry.replay_uuid or entry.replayUuid or "") ~= "",
+        hasReplay = tostring(replayUuid) ~= "" or tostring(replayFilePath) ~= "",
     }
 end
 
@@ -472,6 +479,10 @@ function Game.new()
     self.activeUploadMapOrigin = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeScoreSubmitRequestKind = nil
+    self.activeScoreSubmitRequestSummary = nil
+    self.activeScoreSubmitRequestOnlineConfig = nil
+    self.activeScoreSubmitFallbackAttempted = false
     self.activeReplayDownloadRequestId = nil
     self.activeReplayDownloadRequestStartedAt = nil
     self.activeReplayDownloadMapDescriptor = nil
@@ -485,7 +496,22 @@ function Game.new()
     self.profileModeSelection = getProfilePlayMode(profile) ~= "" and getProfilePlayMode(profile) or PLAY_MODE_OFFLINE
     self.profileModeHoverId = nil
     self.profileModeSetupError = nil
+    if getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE and not self.onlineConfig.isConfigured then
+        self.profile.playMode = PLAY_MODE_OFFLINE
+        self.profileModeSelection = PLAY_MODE_OFFLINE
+        local _, saveError = self:saveProfile()
+        if saveError then
+            print(string.format("%s failed to save offline fallback: %s", ONLINE_CONFIG_LOG_PREFIX, saveError))
+        end
+    end
     self.playOverlayMode = nil
+    self.networkRequestOverlayVisible = false
+    self.networkRequestLogEntries = {}
+    self.networkRequestLogEntryById = {}
+    self.networkRequestSelectedLogEntryId = nil
+    self.networkRequestOverlayListScroll = 0
+    self.networkRequestOverlayDetailScroll = 0
+    self.networkRequestOverlayCopyStatus = nil
     self.playGuide = nil
     self.playGuideTransition = nil
     self.pendingReplayPreparationInteractions = {}
@@ -518,8 +544,10 @@ function Game.new()
     self.leaderboardWorkerThread = nil
     self.leaderboardRequestChannel = love.thread.getChannel(LEADERBOARD_REQUEST_CHANNEL_NAME)
     self.leaderboardResponseChannel = love.thread.getChannel(LEADERBOARD_RESPONSE_CHANNEL_NAME)
+    self.networkRequestDebugChannel = love.thread.getChannel(NETWORK_REQUEST_DEBUG_CHANNEL_NAME)
     drainChannel(self.leaderboardRequestChannel)
     drainChannel(self.leaderboardResponseChannel)
+    drainChannel(self.networkRequestDebugChannel)
     self.playPhase = nil
     self.playHoverInfo = nil
     self.resultsHoverInfo = nil
@@ -539,6 +567,7 @@ local shared = {
     mapReplayIndexStorage = mapReplayIndexStorage,
     profileStorage = profileStorage,
     leaderboardClient = leaderboardClient,
+    requestInspector = requestInspector,
     leaderboardPreviewCache = leaderboardPreviewCache,
     replayStorage = replayStorage,
     replayRecorder = replayRecorder,
@@ -557,6 +586,7 @@ local shared = {
     LEADERBOARD_THREAD_FILE = LEADERBOARD_THREAD_FILE,
     LEADERBOARD_REQUEST_CHANNEL_NAME = LEADERBOARD_REQUEST_CHANNEL_NAME,
     LEADERBOARD_RESPONSE_CHANNEL_NAME = LEADERBOARD_RESPONSE_CHANNEL_NAME,
+    NETWORK_REQUEST_DEBUG_CHANNEL_NAME = NETWORK_REQUEST_DEBUG_CHANNEL_NAME,
     LEADERBOARD_SCOPE_GLOBAL = LEADERBOARD_SCOPE_GLOBAL,
     LEADERBOARD_SCOPE_MAP_PREFIX = LEADERBOARD_SCOPE_MAP_PREFIX,
     LEADERBOARD_STATUS_IDLE = LEADERBOARD_STATUS_IDLE,
@@ -634,6 +664,7 @@ local shared = {
     RESULTS_MESSAGE_LOCAL_BEST_KEPT = RESULTS_MESSAGE_LOCAL_BEST_KEPT,
     RESULTS_MESSAGE_LOCAL_SAVE_FAILED = RESULTS_MESSAGE_LOCAL_SAVE_FAILED,
     LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE = LEVEL_SELECT_UPLOAD_ENV_REQUIRED_MESSAGE,
+    NETWORK_REQUEST_LOG_MAX_ENTRIES = NETWORK_REQUEST_LOG_MAX_ENTRIES,
     getNowSeconds = getNowSeconds,
     getNowUnixSeconds = getNowUnixSeconds,
     drainChannel = drainChannel,

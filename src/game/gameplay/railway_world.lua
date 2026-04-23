@@ -21,6 +21,8 @@ local trackSceneRenderer = require("src.game.rendering.track_scene_renderer")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
+local JUNCTION_TRACK_OVERLAP = 4
+local JUNCTION_SIGNAL_GAP = 6
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -58,6 +60,265 @@ end
 
 local function dot(ax, ay, bx, by)
     return ax * bx + ay * by
+end
+
+local function getEdgeDirectionNearJunction(edge, mergePoint, startsAtJunction)
+    local points = edge and edge.path and edge.path.points or nil
+    if not points or #points <= 0 or not mergePoint then
+        return nil, nil
+    end
+
+    local anchorIndex = startsAtJunction and 1 or #points
+    local step = startsAtJunction and 1 or -1
+    local anchor = points[anchorIndex]
+    local baseX = anchor and anchor.x or mergePoint.x
+    local baseY = anchor and anchor.y or mergePoint.y
+
+    for index = anchorIndex + step, startsAtJunction and #points or 1, step do
+        local point = points[index]
+        if point then
+            local dx = point.x - baseX
+            local dy = point.y - baseY
+            local lengthSquared = dx * dx + dy * dy
+            if lengthSquared > 0.0001 then
+                return normalize(dx, dy)
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+local function getEdgeOuterPoint(edge, mergePoint)
+    local points = edge and edge.path and edge.path.points or nil
+    if not points or #points <= 0 then
+        return nil
+    end
+
+    local bestPoint = nil
+    local bestDistance = -1
+    local baseX = mergePoint and mergePoint.x or 0
+    local baseY = mergePoint and mergePoint.y or 0
+
+    for _, point in ipairs(points) do
+        local distance = distanceSquared(point.x, point.y, baseX, baseY)
+        if distance > bestDistance + 0.0001 then
+            bestDistance = distance
+            bestPoint = point
+        end
+    end
+
+    return bestPoint
+end
+
+local function getRelayFallbackOutputIndex(junction, inputIndex)
+    return clamp(inputIndex, 1, math.max(1, #(junction and junction.outputs or {})))
+end
+
+local function getCrossbarFallbackOutputIndex(junction, inputIndex)
+    local outputCount = math.max(1, #(junction and junction.outputs or {}))
+    return clamp(outputCount - inputIndex + 1, 1, outputCount)
+end
+
+local function compareEdgeOuterPoint(a, b)
+    if not a and not b then
+        return false
+    end
+    if not a then
+        return false
+    end
+    if not b then
+        return true
+    end
+
+    local xDiff = math.abs((a.outerPoint.x or 0) - (b.outerPoint.x or 0))
+    if xDiff > 0.0001 then
+        return (a.outerPoint.x or 0) < (b.outerPoint.x or 0)
+    end
+
+    local yDiff = math.abs((a.outerPoint.y or 0) - (b.outerPoint.y or 0))
+    if yDiff > 0.0001 then
+        return (a.outerPoint.y or 0) < (b.outerPoint.y or 0)
+    end
+
+    return (a.index or 0) < (b.index or 0)
+end
+
+local function buildSortedEntries(edges, mergePoint)
+    local entries = {}
+
+    for index, edge in ipairs(edges or {}) do
+        entries[#entries + 1] = {
+            index = index,
+            edge = edge,
+            outerPoint = getEdgeOuterPoint(edge, mergePoint),
+        }
+    end
+
+    table.sort(entries, compareEdgeOuterPoint)
+    return entries
+end
+
+local function angleFromMerge(point, mergePoint)
+    if not point or not mergePoint then
+        return 0
+    end
+
+    local dx = (point.x or 0) - mergePoint.x
+    local dy = (point.y or 0) - mergePoint.y
+    if math.atan2 then
+        return math.atan2(dy, dx)
+    end
+
+    if math.abs(dx) <= 0.0001 then
+        return dy >= 0 and (math.pi * 0.5) or (-math.pi * 0.5)
+    end
+
+    local angle = math.atan(dy / dx)
+    if dx < 0 then
+        angle = angle + math.pi
+    end
+    if angle > math.pi then
+        angle = angle - math.pi * 2
+    end
+    return angle
+end
+
+local function compareEdgeCycleOrder(a, b)
+    if not a and not b then
+        return false
+    end
+    if not a then
+        return false
+    end
+    if not b then
+        return true
+    end
+
+    local angleDiff = math.abs((a.angle or 0) - (b.angle or 0))
+    if angleDiff > 0.0001 then
+        return (a.angle or 0) < (b.angle or 0)
+    end
+
+    return compareEdgeOuterPoint(a, b)
+end
+
+local function buildCycleEntries(edges, mergePoint)
+    local entries = {}
+
+    for index, edge in ipairs(edges or {}) do
+        local outerPoint = getEdgeOuterPoint(edge, mergePoint)
+        entries[#entries + 1] = {
+            index = index,
+            edge = edge,
+            outerPoint = outerPoint,
+            angle = angleFromMerge(outerPoint, mergePoint),
+        }
+    end
+
+    table.sort(entries, compareEdgeCycleOrder)
+    return entries
+end
+
+local function getNextCycledInputIndex(junction)
+    local cycleEntries = buildCycleEntries(junction and junction.inputs or {}, junction and junction.mergePoint or nil)
+    if #cycleEntries <= 1 then
+        return 1
+    end
+
+    for orderIndex, entry in ipairs(cycleEntries) do
+        if entry.index == junction.activeInputIndex then
+            local nextEntry = cycleEntries[orderIndex + 1] or cycleEntries[1]
+            return nextEntry.index
+        end
+    end
+
+    return cycleEntries[1].index
+end
+
+local function getDirectionalOutputIndex(junction, inputIndex, controlType)
+    local outputs = junction and junction.outputs or {}
+    local inputs = junction and junction.inputs or {}
+    local inputEdge = inputs[inputIndex]
+    if not inputEdge or #outputs <= 0 then
+        return 1
+    end
+
+    local sortedInputs = buildSortedEntries(inputs, junction.mergePoint)
+    local sortedOutputs = buildSortedEntries(outputs, junction.mergePoint)
+    local inputRank = nil
+    for rank, entry in ipairs(sortedInputs) do
+        if entry.index == inputIndex then
+            inputRank = rank
+            break
+        end
+    end
+
+    if inputRank and #sortedOutputs > 0 then
+        local targetRank = inputRank
+        if controlType == "crossbar" then
+            targetRank = #sortedOutputs - inputRank + 1
+        end
+        targetRank = clamp(targetRank, 1, #sortedOutputs)
+        return sortedOutputs[targetRank].index
+    end
+
+    local inputDirX, inputDirY = getEdgeDirectionNearJunction(inputEdge, junction.mergePoint, false)
+    if not inputDirX or not inputDirY then
+        if controlType == "crossbar" then
+            return getCrossbarFallbackOutputIndex(junction, inputIndex)
+        end
+        return getRelayFallbackOutputIndex(junction, inputIndex)
+    end
+
+    local targetX = inputDirX
+    local targetY = -inputDirY
+    if controlType == "crossbar" then
+        targetX = -inputDirX
+        targetY = -inputDirY
+    end
+
+    local inputOuterPoint = getEdgeOuterPoint(inputEdge, junction.mergePoint)
+    local targetPointX = nil
+    local targetPointY = nil
+    if inputOuterPoint then
+        targetPointX = inputOuterPoint.x
+        targetPointY = (junction.mergePoint.y * 2) - inputOuterPoint.y
+        if controlType == "crossbar" then
+            targetPointX = (junction.mergePoint.x * 2) - inputOuterPoint.x
+        end
+    end
+
+    local bestIndex = nil
+    local bestDistance = math.huge
+    local bestScore = -math.huge
+    for outputIndex, outputEdge in ipairs(outputs) do
+        local outputDirX, outputDirY = getEdgeDirectionNearJunction(outputEdge, junction.mergePoint, true)
+        if outputDirX and outputDirY then
+            local score = dot(targetX, targetY, outputDirX, outputDirY)
+            local distance = math.huge
+            local outputOuterPoint = getEdgeOuterPoint(outputEdge, junction.mergePoint)
+            if targetPointX and targetPointY and outputOuterPoint then
+                distance = distanceSquared(outputOuterPoint.x, outputOuterPoint.y, targetPointX, targetPointY)
+            end
+
+            if distance + 0.0001 < bestDistance
+                or (math.abs(distance - bestDistance) <= 0.0001 and score > bestScore + 0.0001) then
+                bestDistance = distance
+                bestScore = score
+                bestIndex = outputIndex
+            end
+        end
+    end
+
+    if bestIndex then
+        return bestIndex
+    end
+
+    if controlType == "crossbar" then
+        return getCrossbarFallbackOutputIndex(junction, inputIndex)
+    end
+    return getRelayFallbackOutputIndex(junction, inputIndex)
 end
 
 local function carriagesOverlap(firstCar, secondCar, carriageLength, carriageHeight)
@@ -460,6 +721,10 @@ local function buildCubicCurvePoints(startPoint, controlPointA, controlPointB, e
     return points
 end
 
+local function getJunctionTrackClearance(crossingRadius)
+    return math.max(0, (crossingRadius or 0) - JUNCTION_TRACK_OVERLAP)
+end
+
 function world.new(viewportW, viewportH, levelSource)
     local self = setmetatable({}, world)
 
@@ -474,7 +739,8 @@ function world.new(viewportW, viewportH, levelSource)
     self.carriageCount = 4
     self.exitFadeDuration = 0.25
     self.crossingRadius = 40
-    self.junctionTrackClearance = self.crossingRadius + 4
+    self.junctionTrackClearance = getJunctionTrackClearance(self.crossingRadius)
+    self.junctionSignalGap = JUNCTION_SIGNAL_GAP
     self.collisionPoint = nil
     self.failureReason = nil
     self.timeRemaining = nil
@@ -773,7 +1039,7 @@ end
 function world:buildEdge(edgeDefinition)
     local color = copyColor(edgeDefinition.color)
     local path = buildPolyline(denormalizePoints(edgeDefinition.points or {}, self.viewport.w, self.viewport.h))
-    local signalDistance = math.max(path.length - (self.crossingRadius + 10), 0)
+    local signalDistance = math.max(path.length - (self.junctionTrackClearance + self.junctionSignalGap), 0)
     local stopDistance = math.max(signalDistance - (self.carriageLength + 12), 0)
     local stopX, stopY = pointOnPath(path, stopDistance)
     local signalX, signalY = pointOnPath(path, signalDistance)
@@ -866,7 +1132,7 @@ function world:buildJunction(definition, existing)
     }
 
     if junction.control.type == "relay" and #junction.outputs > 0 then
-        junction.activeOutputIndex = clamp(junction.activeInputIndex, 1, #junction.outputs)
+        self:syncRelayOutput(junction)
     elseif junction.control.type == "crossbar" and #junction.outputs > 0 then
         self:syncCrossbarOutput(junction)
     end
@@ -1020,13 +1286,12 @@ function world:getReachableOutputEdgesForInput(junction, inputEdgeId)
 
     local controlType = junction.control and junction.control.type or "direct"
     if controlType == "relay" then
-        local relayOutput = junction.outputs[clamp(inputIndex, 1, #junction.outputs)]
+        local relayOutput = junction.outputs[getDirectionalOutputIndex(junction, inputIndex, "relay")]
         return relayOutput and { relayOutput } or {}
     end
 
     if controlType == "crossbar" then
-        local mirroredOutputIndex = clamp(#junction.outputs - inputIndex + 1, 1, #junction.outputs)
-        local crossbarOutput = junction.outputs[mirroredOutputIndex]
+        local crossbarOutput = junction.outputs[getDirectionalOutputIndex(junction, inputIndex, "crossbar")]
         return crossbarOutput and { crossbarOutput } or {}
     end
 
@@ -1367,6 +1632,7 @@ function world:resize(viewportW, viewportH)
     self.viewport.w = viewportW
     self.viewport.h = viewportH
     self.crossingRadius = math.max(34, math.min(viewportW, viewportH) * 0.045)
+    self.junctionTrackClearance = getJunctionTrackClearance(self.crossingRadius)
     self.level = self:normalizeLevel(self.level)
     self:initializeLevel()
 end
@@ -1375,6 +1641,12 @@ function world:cycleInput(junction)
     if #junction.inputs <= 1 then
         junction.activeInputIndex = 1
         return false
+    end
+
+    local controlType = junction.control and junction.control.type or "direct"
+    if controlType == "relay" or controlType == "crossbar" then
+        junction.activeInputIndex = getNextCycledInputIndex(junction)
+        return true
     end
 
     junction.activeInputIndex = junction.activeInputIndex + 1
@@ -1404,7 +1676,7 @@ function world:syncRelayOutput(junction)
         return
     end
 
-    junction.activeOutputIndex = clamp(junction.activeInputIndex, 1, #junction.outputs)
+    junction.activeOutputIndex = getDirectionalOutputIndex(junction, junction.activeInputIndex, "relay")
 end
 
 function world:syncCrossbarOutput(junction)
@@ -1412,7 +1684,7 @@ function world:syncCrossbarOutput(junction)
         return
     end
 
-    junction.activeOutputIndex = clamp(#junction.outputs - junction.activeInputIndex + 1, 1, #junction.outputs)
+    junction.activeOutputIndex = getDirectionalOutputIndex(junction, junction.activeInputIndex, "crossbar")
 end
 
 local function isPlayPhaseOnlyControl(controlType)

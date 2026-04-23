@@ -25,6 +25,7 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
+    self.nextLinkedPointGroupId = 1
     self.selectedRouteId = nil
     self.selectedPointIndex = nil
     self.drag = nil
@@ -50,6 +51,9 @@ function mapEditor.new(viewportW, viewportH, level, options)
     self.statusText = nil
     self.statusTimer = 0
     self.intersections = {}
+    self.sharedLanes = {}
+    self.sharedLanesById = {}
+    self.sharedLaneByRouteSegment = {}
     self.importedJunctionState = {}
     self.trains = {}
     self.nextTrainId = 1
@@ -743,6 +747,61 @@ function mapEditor:removeEndpointIfUnused(endpointId)
     end
 end
 
+function mapEditor:rebuildEndpointColors(endpointId)
+    local endpoint = self:getEndpointById(endpointId)
+    if not endpoint then
+        return
+    end
+
+    local connectedColorIds = {}
+    for _, route in ipairs(self.routes) do
+        if route.startEndpointId == endpointId or route.endEndpointId == endpointId then
+            connectedColorIds[#connectedColorIds + 1] = route.colorId
+        end
+    end
+
+    if #connectedColorIds == 0 then
+        self:removeEndpointIfUnused(endpointId)
+        return
+    end
+
+    endpoint.colors = normalizeEndpointColors(endpoint.kind, connectedColorIds, connectedColorIds[1])
+end
+
+function mapEditor:removeRoute(routeId)
+    if not routeId then
+        return false
+    end
+
+    local removedRoute = nil
+    local removedIndex = nil
+
+    for routeIndex, route in ipairs(self.routes) do
+        if route.id == routeId then
+            removedRoute = route
+            removedIndex = routeIndex
+            break
+        end
+    end
+
+    if not removedRoute or not removedIndex then
+        return false
+    end
+
+    local startEndpointId = removedRoute.startEndpointId
+    local endEndpointId = removedRoute.endEndpointId
+    table.remove(self.routes, removedIndex)
+
+    if startEndpointId then
+        self:rebuildEndpointColors(startEndpointId)
+    end
+    if endEndpointId and endEndpointId ~= startEndpointId then
+        self:rebuildEndpointColors(endEndpointId)
+    end
+
+    return true
+end
+
 function mapEditor:updateRouteEndpointPoint(route, endpointKind)
     local endpoint = endpointKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     if not endpoint then
@@ -1142,11 +1201,15 @@ function mapEditor:resetFromMap(mapData, sourceInfo)
         self.editingMapUuid = nil
         self.endpoints = {}
         self.routes = {}
+        self.sharedLanes = {}
+        self.sharedLanesById = {}
+        self.sharedLaneByRouteSegment = {}
         self.trains = {}
         self.timeLimit = nil
         self.nextEndpointId = 1
         self.nextRouteId = 1
         self.nextSharedPointId = 1
+        self.nextLinkedPointGroupId = 1
         self.nextTrainId = 1
         self.importedJunctionState = {}
         self.drag = nil
@@ -1188,11 +1251,15 @@ function mapEditor:resetFromLevel(level)
     self.currentMapName = level and level.title or nil
     self.endpoints = {}
     self.routes = {}
+    self.sharedLanes = {}
+    self.sharedLanesById = {}
+    self.sharedLaneByRouteSegment = {}
     self.trains = self:synthesizeTrainsFromLevel(level)
     self.timeLimit = level and level.timeLimit or nil
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
+    self.nextLinkedPointGroupId = 1
     self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil

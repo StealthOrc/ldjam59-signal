@@ -1057,6 +1057,766 @@ function drawPlayInfoOverlay(game)
     end
 end
 
+local networkRequestJson = require("src.game.util.json")
+
+local NETWORK_REQUEST_METHOD_COLORS = {
+    GET = {
+        fill = { 0.12, 0.22, 0.34, 0.98 },
+        line = { 0.34, 0.84, 0.98, 1 },
+    },
+    POST = {
+        fill = { 0.1, 0.2, 0.15, 0.98 },
+        line = { 0.48, 0.92, 0.62, 1 },
+    },
+    DELETE = {
+        fill = { 0.22, 0.15, 0.12, 0.98 },
+        line = { 0.99, 0.78, 0.32, 1 },
+    },
+    DEFAULT = {
+        fill = { 0.12, 0.14, 0.18, 0.98 },
+        line = { 0.56, 0.72, 0.98, 1 },
+    },
+}
+
+local NETWORK_REQUEST_STATUS_COLORS = {
+    success = { 0.48, 0.92, 0.62, 1 },
+    pending = { 0.56, 0.72, 0.98, 1 },
+    error = { 0.99, 0.78, 0.32, 1 },
+}
+
+local function getNetworkRequestOverlayRect(game)
+    return {
+        x = NETWORK_REQUEST_OVERLAY.margin,
+        y = NETWORK_REQUEST_OVERLAY.margin,
+        w = game.viewport.w - (NETWORK_REQUEST_OVERLAY.margin * 2),
+        h = game.viewport.h - (NETWORK_REQUEST_OVERLAY.margin * 2),
+    }
+end
+
+local function getNetworkRequestOverlayCloseRect(game)
+    local overlayRect = getNetworkRequestOverlayRect(game)
+    return {
+        x = overlayRect.x + overlayRect.w - NETWORK_REQUEST_OVERLAY.closeButtonSize - NETWORK_REQUEST_OVERLAY.innerGap,
+        y = overlayRect.y + math.floor((NETWORK_REQUEST_OVERLAY.headerHeight - NETWORK_REQUEST_OVERLAY.closeButtonSize) * 0.5 + 0.5),
+        w = NETWORK_REQUEST_OVERLAY.closeButtonSize,
+        h = NETWORK_REQUEST_OVERLAY.closeButtonSize,
+    }
+end
+
+local function getNetworkRequestOverlayListRect(game)
+    local overlayRect = getNetworkRequestOverlayRect(game)
+    return {
+        x = overlayRect.x + NETWORK_REQUEST_OVERLAY.innerGap,
+        y = overlayRect.y + NETWORK_REQUEST_OVERLAY.headerHeight,
+        w = NETWORK_REQUEST_OVERLAY.listWidth,
+        h = overlayRect.h - NETWORK_REQUEST_OVERLAY.headerHeight - NETWORK_REQUEST_OVERLAY.footerHeight - NETWORK_REQUEST_OVERLAY.innerGap,
+    }
+end
+
+local function getNetworkRequestOverlayDetailRect(game)
+    local overlayRect = getNetworkRequestOverlayRect(game)
+    local listRect = getNetworkRequestOverlayListRect(game)
+    return {
+        x = listRect.x + listRect.w + NETWORK_REQUEST_OVERLAY.innerGap,
+        y = listRect.y,
+        w = overlayRect.x + overlayRect.w - (listRect.x + listRect.w) - (NETWORK_REQUEST_OVERLAY.innerGap * 2),
+        h = listRect.h,
+    }
+end
+
+local function getNetworkRequestOverlayListContentRect(game)
+    local listRect = getNetworkRequestOverlayListRect(game)
+    return {
+        x = listRect.x + NETWORK_REQUEST_OVERLAY.listPadding,
+        y = listRect.y + 44,
+        w = listRect.w - (NETWORK_REQUEST_OVERLAY.listPadding * 2) - NETWORK_REQUEST_OVERLAY.scrollbarWidth - NETWORK_REQUEST_OVERLAY.scrollbarInset,
+        h = listRect.h - 56,
+    }
+end
+
+local function getNetworkRequestOverlayDetailContentRect(game)
+    local detailRect = getNetworkRequestOverlayDetailRect(game)
+    return {
+        x = detailRect.x + NETWORK_REQUEST_OVERLAY.detailPadding,
+        y = detailRect.y + 50,
+        w = detailRect.w - (NETWORK_REQUEST_OVERLAY.detailPadding * 2) - NETWORK_REQUEST_OVERLAY.scrollbarWidth - NETWORK_REQUEST_OVERLAY.scrollbarInset,
+        h = detailRect.h - 66,
+    }
+end
+
+local function getSelectedNetworkRequestEntry(game)
+    local selectedEntry = game.networkRequestSelectedLogEntryId and game.networkRequestLogEntryById[game.networkRequestSelectedLogEntryId] or nil
+    if selectedEntry then
+        return selectedEntry
+    end
+
+    return game.networkRequestLogEntries[1]
+end
+
+local function getNetworkRequestMethodColors(method)
+    return NETWORK_REQUEST_METHOD_COLORS[tostring(method or "")] or NETWORK_REQUEST_METHOD_COLORS.DEFAULT
+end
+
+local function formatNetworkRequestDuration(durationMilliseconds)
+    local resolvedDurationMilliseconds = tonumber(durationMilliseconds or 0) or 0
+    if resolvedDurationMilliseconds < 1000 then
+        return string.format("%dms", resolvedDurationMilliseconds)
+    end
+
+    return string.format("%.2fs", resolvedDurationMilliseconds / 1000)
+end
+
+local function formatNetworkRequestStatusLabel(entry)
+    if type(entry) ~= "table" or entry.phase ~= "finished" then
+        return "Pending"
+    end
+
+    if tonumber(entry.status) then
+        return string.format("HTTP %d", tonumber(entry.status))
+    end
+
+    return entry.ok and "Complete" or "Error"
+end
+
+local function getNetworkRequestStatusColor(entry)
+    if type(entry) ~= "table" or entry.phase ~= "finished" then
+        return NETWORK_REQUEST_STATUS_COLORS.pending
+    end
+
+    if entry.ok then
+        return NETWORK_REQUEST_STATUS_COLORS.success
+    end
+
+    return NETWORK_REQUEST_STATUS_COLORS.error
+end
+
+local function serializeNetworkRequestValue(value)
+    local valueType = type(value)
+    if valueType == "nil" then
+        return ""
+    end
+
+    if valueType == "table" then
+        local ok, encodedValue = pcall(networkRequestJson.encode, value)
+        if ok then
+            return encodedValue
+        end
+    end
+
+    return tostring(value)
+end
+
+local function isArrayLikeTable(value)
+    if type(value) ~= "table" then
+        return false
+    end
+
+    local count = 0
+    local maxIndex = 0
+    for key, _ in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+            return false
+        end
+
+        count = count + 1
+        if key > maxIndex then
+            maxIndex = key
+        end
+    end
+
+    return count == maxIndex
+end
+
+local function getSortedNetworkRequestKeys(value)
+    local keys = {}
+    for key, _ in pairs(value or {}) do
+        keys[#keys + 1] = key
+    end
+
+    table.sort(keys, function(leftValue, rightValue)
+        local leftIsNumber = type(leftValue) == "number"
+        local rightIsNumber = type(rightValue) == "number"
+        if leftIsNumber and rightIsNumber then
+            return leftValue < rightValue
+        end
+        if leftIsNumber ~= rightIsNumber then
+            return leftIsNumber
+        end
+        return tostring(leftValue) < tostring(rightValue)
+    end)
+
+    return keys
+end
+
+local function formatNetworkRequestSimpleValue(value)
+    if type(value) == "string" then
+        return safeUiText(value, "")
+    end
+
+    if value == nil then
+        return "None"
+    end
+
+    return tostring(value)
+end
+
+local function appendPrettyNetworkRequestLines(lines, value, indentLevel)
+    local indent = string.rep("  ", indentLevel or 0)
+    local valueType = type(value)
+
+    if valueType ~= "table" then
+        lines[#lines + 1] = indent .. formatNetworkRequestSimpleValue(value)
+        return
+    end
+
+    local keys = getSortedNetworkRequestKeys(value)
+    if #keys == 0 then
+        lines[#lines + 1] = indent .. "{}"
+        return
+    end
+
+    local isArray = isArrayLikeTable(value)
+    for _, key in ipairs(keys) do
+        local entry = value[key]
+        local label = isArray and string.format("[%d]", key) or tostring(key)
+        if type(entry) == "table" then
+            lines[#lines + 1] = indent .. label .. ":"
+            appendPrettyNetworkRequestLines(lines, entry, (indentLevel or 0) + 1)
+        else
+            lines[#lines + 1] = indent .. label .. ": " .. formatNetworkRequestSimpleValue(entry)
+        end
+    end
+end
+
+local function formatNetworkRequestDisplayValue(value, fallback)
+    if type(value) ~= "table" then
+        local resolvedValue = serializeNetworkRequestValue(value)
+        if resolvedValue == "" then
+            return fallback or "None"
+        end
+        return safeUiText(resolvedValue, fallback or "None")
+    end
+
+    local lines = {}
+    appendPrettyNetworkRequestLines(lines, value, 0)
+    if #lines == 0 then
+        return fallback or "None"
+    end
+
+    return table.concat(lines, "\n")
+end
+
+local function getNetworkRequestDetailSectionText(section)
+    local title = safeUiText(section and section.title or "", "")
+    local text = safeUiText(section and section.text or "", "")
+    if title == "" then
+        return text
+    end
+    if text == "" then
+        return title
+    end
+
+    return string.format("%s: %s", title, text)
+end
+
+local function truncateTextToWidth(font, text, maxWidth)
+    local resolvedText = safeUiText(text, "")
+    if resolvedText == "" or font:getWidth(resolvedText) <= maxWidth then
+        return resolvedText
+    end
+
+    local ellipsis = "..."
+    local low = 0
+    local high = #resolvedText
+    local bestText = ellipsis
+
+    while low <= high do
+        local middle = math.floor((low + high) * 0.5)
+        local candidate = resolvedText:sub(1, middle) .. ellipsis
+        if font:getWidth(candidate) <= maxWidth then
+            bestText = candidate
+            low = middle + 1
+        else
+            high = middle - 1
+        end
+    end
+
+    return bestText
+end
+
+function ui.getNetworkRequestOverlayListScrollMetrics(game)
+    local entryCount = #(game and game.networkRequestLogEntries or {})
+    local visibleRows = NETWORK_REQUEST_OVERLAY.listVisibleRows
+    return {
+        visibleRows = visibleRows,
+        maxScroll = math.max(0, entryCount - visibleRows),
+        scrollStep = NETWORK_REQUEST_OVERLAY.listScrollStep,
+    }
+end
+
+function ui.getNetworkRequestOverlayRowRects(game)
+    if not game or not game.networkRequestOverlayVisible then
+        return {}
+    end
+
+    local contentRect = getNetworkRequestOverlayListContentRect(game)
+    local metrics = ui.getNetworkRequestOverlayListScrollMetrics(game)
+    local startIndex = math.floor(clamp(tonumber(game.networkRequestOverlayListScroll or 0) or 0, 0, metrics.maxScroll)) + 1
+    local lastIndex = math.min(#(game.networkRequestLogEntries or {}), startIndex + metrics.visibleRows - 1)
+    local rows = {}
+
+    for index = startIndex, lastIndex do
+        local visibleIndex = index - startIndex
+        local entry = game.networkRequestLogEntries[index]
+        rows[#rows + 1] = {
+            x = contentRect.x,
+            y = contentRect.y + (visibleIndex * (NETWORK_REQUEST_OVERLAY.rowHeight + NETWORK_REQUEST_OVERLAY.rowGap)),
+            w = contentRect.w,
+            h = NETWORK_REQUEST_OVERLAY.rowHeight,
+            requestDebugId = entry.requestDebugId,
+            entry = entry,
+        }
+    end
+
+    return rows
+end
+
+function ui.getNetworkRequestOverlayDetailSections(game)
+    local entry = getSelectedNetworkRequestEntry(game)
+    if not entry then
+        return {
+            {
+                title = "No backend requests yet.",
+                text = "Open an online feature, then press F9 to inspect it here.",
+                copyText = "",
+                copyLabel = "Request",
+            },
+        }
+    end
+
+    local sections = {
+        {
+            title = "Kind",
+            text = safeUiText(entry.requestKind ~= "" and entry.requestKind or "request", "request"),
+            copyText = tostring(entry.requestKind ~= "" and entry.requestKind or "request"),
+            copyLabel = "Kind",
+        },
+        {
+            title = "Method",
+            text = safeUiText(entry.method or "GET", "GET"),
+            copyText = tostring(entry.method or "GET"),
+            copyLabel = "Method",
+        },
+        {
+            title = "Status",
+            text = formatNetworkRequestStatusLabel(entry),
+            copyText = formatNetworkRequestStatusLabel(entry),
+            copyLabel = "Status",
+        },
+        {
+            title = "Duration",
+            text = formatNetworkRequestDuration(entry.durationMilliseconds),
+            copyText = formatNetworkRequestDuration(entry.durationMilliseconds),
+            copyLabel = "Duration",
+        },
+        {
+            title = "Request ID",
+            text = tostring(entry.requestDebugId or "n/a"),
+            copyText = tostring(entry.requestDebugId or ""),
+            copyLabel = "Request ID",
+        },
+        {
+            title = "Flow Request ID",
+            text = tostring(entry.flowRequestId or "n/a"),
+            copyText = tostring(entry.flowRequestId or ""),
+            copyLabel = "Flow Request ID",
+        },
+        {
+            title = "Route",
+            text = formatNetworkRequestDisplayValue(entry.route, "/"),
+            copyText = serializeNetworkRequestValue(entry.route),
+            copyLabel = "Route",
+        },
+        {
+            title = "URL",
+            text = formatNetworkRequestDisplayValue(entry.url, "None"),
+            copyText = serializeNetworkRequestValue(entry.url),
+            copyLabel = "URL",
+        },
+        {
+            title = "Started",
+            text = entry.startedAtUnixSeconds and os.date("%Y-%m-%d %H:%M:%S", entry.startedAtUnixSeconds) or "Unknown",
+            copyText = entry.startedAtUnixSeconds and os.date("%Y-%m-%d %H:%M:%S", entry.startedAtUnixSeconds) or "",
+            copyLabel = "Started",
+        },
+        {
+            title = "Headers",
+            text = formatNetworkRequestDisplayValue(entry.headers, "None"),
+            copyText = serializeNetworkRequestValue(entry.headers),
+            copyLabel = "Headers",
+        },
+        {
+            title = "Request Body",
+            text = formatNetworkRequestDisplayValue(entry.requestBody, "None"),
+            copyText = serializeNetworkRequestValue(entry.requestBody),
+            copyLabel = "Request Body",
+        },
+        {
+            title = "Response Body",
+            text = formatNetworkRequestDisplayValue(entry.responseBody, "None"),
+            copyText = serializeNetworkRequestValue(entry.responseBody),
+            copyLabel = "Response Body",
+        },
+    }
+
+    if entry.error and entry.error ~= "" then
+        table.insert(sections, 5, {
+            title = "Error",
+            text = safeUiText(entry.error, ""),
+            copyText = tostring(entry.error or ""),
+            copyLabel = "Error",
+        })
+    end
+
+    return sections
+end
+
+local function getNetworkRequestDetailSectionHeight(game, section, width)
+    love.graphics.setFont(game.fonts.small)
+    local textHeight = getWrappedLineCount(game.fonts.small, getNetworkRequestDetailSectionText(section), width) * game.fonts.small:getHeight()
+    return textHeight + NETWORK_REQUEST_OVERLAY.detailCardGap
+end
+
+function ui.getNetworkRequestOverlayDetailFieldRects(game)
+    if not game or not game.networkRequestOverlayVisible then
+        return {}
+    end
+
+    local contentRect = getNetworkRequestOverlayDetailContentRect(game)
+    local detailMetrics = ui.getNetworkRequestOverlayDetailScrollMetrics(game)
+    local sections = ui.getNetworkRequestOverlayDetailSections(game)
+    local currentY = contentRect.y - clamp(tonumber(game.networkRequestOverlayDetailScroll or 0) or 0, 0, detailMetrics.maxScroll)
+    local rects = {}
+
+    for _, section in ipairs(sections) do
+        local sectionHeight = getNetworkRequestDetailSectionHeight(game, section, contentRect.w)
+        local rect = {
+            x = contentRect.x,
+            y = currentY,
+            w = contentRect.w,
+            h = sectionHeight,
+            field = {
+                copyText = section.copyText,
+                copyLabel = section.copyLabel,
+            },
+        }
+
+        if rect.y + rect.h >= contentRect.y and rect.y <= contentRect.y + contentRect.h then
+            rects[#rects + 1] = rect
+        end
+
+        currentY = currentY + sectionHeight
+    end
+
+    return rects
+end
+
+function ui.getNetworkRequestOverlayDetailScrollMetrics(game)
+    local contentRect = getNetworkRequestOverlayDetailContentRect(game)
+    local totalHeight = 0
+    for _, section in ipairs(ui.getNetworkRequestOverlayDetailSections(game)) do
+        totalHeight = totalHeight + getNetworkRequestDetailSectionHeight(game, section, contentRect.w)
+    end
+
+    return {
+        viewHeight = contentRect.h,
+        contentHeight = totalHeight,
+        maxScroll = math.max(0, totalHeight - contentRect.h),
+        scrollStep = NETWORK_REQUEST_OVERLAY.detailScrollStep,
+    }
+end
+
+local function restoreScissor(previousScissorX, previousScissorY, previousScissorW, previousScissorH)
+    if previousScissorX == nil then
+        love.graphics.setScissor()
+        return
+    end
+
+    love.graphics.setScissor(previousScissorX, previousScissorY, previousScissorW, previousScissorH)
+end
+
+function ui.buildNetworkRequestDetailLines(game)
+    local entry = getSelectedNetworkRequestEntry(game)
+    if not entry then
+        return {
+            "No backend requests yet.",
+            "Open online features, then press F9 to inspect them here.",
+        }
+    end
+
+    return {
+        string.format("Kind: %s", safeUiText(entry.requestKind ~= "" and entry.requestKind or "request", "request")),
+        string.format("Method: %s", safeUiText(entry.method or "GET", "GET")),
+        string.format("Route: %s", safeUiText(entry.route or entry.url or "/", "/")),
+        string.format("URL: %s", safeUiText(entry.url or "None", "None")),
+    }
+end
+
+function ui.getNetworkRequestOverlayScrollTarget(game, x, y)
+    if not game or not game.networkRequestOverlayVisible then
+        return nil
+    end
+
+    if pointInRect(x, y, getNetworkRequestOverlayListRect(game)) then
+        return "list"
+    end
+
+    if pointInRect(x, y, getNetworkRequestOverlayDetailRect(game)) then
+        return "detail"
+    end
+
+    if pointInRect(x, y, getNetworkRequestOverlayRect(game)) then
+        return "overlay"
+    end
+
+    return nil
+end
+
+function ui.getNetworkRequestOverlayHit(game, x, y)
+    if not game or not game.networkRequestOverlayVisible then
+        return nil
+    end
+
+    local overlayRect = getNetworkRequestOverlayRect(game)
+    if not pointInRect(x, y, overlayRect) then
+        return { kind = "network_request_overlay_blocked" }
+    end
+
+    local closeRect = getNetworkRequestOverlayCloseRect(game)
+    if pointInRect(x, y, closeRect) then
+        return { kind = "network_request_overlay_close" }
+    end
+
+    for _, rowRect in ipairs(ui.getNetworkRequestOverlayRowRects(game)) do
+        if pointInRect(x, y, rowRect) then
+            return {
+                kind = "network_request_overlay_select",
+                requestDebugId = rowRect.requestDebugId,
+            }
+        end
+    end
+
+    for _, fieldRect in ipairs(ui.getNetworkRequestOverlayDetailFieldRects(game)) do
+        if pointInRect(x, y, fieldRect) and tostring(fieldRect.field.copyText or "") ~= "" then
+            return {
+                kind = "network_request_overlay_copy_field",
+                copyText = fieldRect.field.copyText,
+                copyLabel = fieldRect.field.copyLabel,
+            }
+        end
+    end
+
+    return { kind = "network_request_overlay_blocked" }
+end
+
+local function drawNetworkRequestScrollbar(trackRect, contentHeight, viewHeight, scrollOffset)
+    if contentHeight <= viewHeight or viewHeight <= 0 then
+        return
+    end
+
+    local graphics = love.graphics
+    local thumbHeight = math.max(24, math.floor((viewHeight / contentHeight) * trackRect.h + 0.5))
+    local thumbTravel = math.max(1, trackRect.h - thumbHeight)
+    local maxScroll = math.max(1, contentHeight - viewHeight)
+    local thumbY = trackRect.y + math.floor((thumbTravel * (scrollOffset / maxScroll)) + 0.5)
+
+    graphics.setColor(0.08, 0.1, 0.14, 0.98)
+    graphics.rectangle("fill", trackRect.x, trackRect.y, trackRect.w, trackRect.h, 5, 5)
+    graphics.setColor(0.24, 0.32, 0.4, 1)
+    graphics.rectangle("line", trackRect.x, trackRect.y, trackRect.w, trackRect.h, 5, 5)
+    graphics.setColor(0.56, 0.72, 0.98, 0.92)
+    graphics.rectangle("fill", trackRect.x + 1, thumbY, trackRect.w - 2, thumbHeight, 5, 5)
+end
+
+function ui.drawNetworkRequestOverlay(game)
+    if not game or not game.networkRequestOverlayVisible then
+        return
+    end
+
+    local graphics = love.graphics
+    local overlayRect = getNetworkRequestOverlayRect(game)
+    local listRect = getNetworkRequestOverlayListRect(game)
+    local detailRect = getNetworkRequestOverlayDetailRect(game)
+    local listContentRect = getNetworkRequestOverlayListContentRect(game)
+    local detailContentRect = getNetworkRequestOverlayDetailContentRect(game)
+    local closeRect = getNetworkRequestOverlayCloseRect(game)
+    local selectedEntry = getSelectedNetworkRequestEntry(game)
+    local listMetrics = ui.getNetworkRequestOverlayListScrollMetrics(game)
+    local detailMetrics = ui.getNetworkRequestOverlayDetailScrollMetrics(game)
+    local copyStatus = game.networkRequestOverlayCopyStatus or nil
+    local listScroll = clamp(tonumber(game.networkRequestOverlayListScroll or 0) or 0, 0, listMetrics.maxScroll)
+    local detailScroll = clamp(tonumber(game.networkRequestOverlayDetailScroll or 0) or 0, 0, detailMetrics.maxScroll)
+    local previousScissorX, previousScissorY, previousScissorW, previousScissorH = graphics.getScissor()
+
+    graphics.setColor(0, 0, 0, 0.72)
+    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+    drawMetalPanel(overlayRect, 0.98)
+
+    love.graphics.setFont(game.fonts.title)
+    graphics.setColor(0.97, 0.98, 1, 1)
+    graphics.print("Backend Inspector", overlayRect.x + NETWORK_REQUEST_OVERLAY.innerGap, overlayRect.y + 16)
+
+    love.graphics.setFont(game.fonts.small)
+    graphics.setColor(0.68, 0.74, 0.8, 1)
+    graphics.print("F9 closes this panel. Wheel scrolls the hovered pane.", overlayRect.x + NETWORK_REQUEST_OVERLAY.innerGap, overlayRect.y + 50)
+
+    graphics.setColor(0.08, 0.1, 0.14, 0.98)
+    graphics.rectangle("fill", listRect.x, listRect.y, listRect.w, listRect.h, 20, 20)
+    graphics.rectangle("fill", detailRect.x, detailRect.y, detailRect.w, detailRect.h, 20, 20)
+    graphics.setColor(0.26, 0.34, 0.42, 1)
+    graphics.rectangle("line", listRect.x, listRect.y, listRect.w, listRect.h, 20, 20)
+    graphics.rectangle("line", detailRect.x, detailRect.y, detailRect.w, detailRect.h, 20, 20)
+
+    drawButton(closeRect, "X", { 0.1, 0.14, 0.18, 0.98 }, { 0.3, 0.42, 0.54, 1 }, game.fonts.body)
+
+    love.graphics.setFont(game.fonts.body)
+    graphics.setColor(0.48, 0.92, 0.62, 1)
+    graphics.print("Requests", listRect.x + NETWORK_REQUEST_OVERLAY.listPadding, listRect.y + 14)
+    graphics.setColor(0.99, 0.78, 0.32, 1)
+    graphics.print("Metadata", detailRect.x + NETWORK_REQUEST_OVERLAY.detailPadding, detailRect.y + 14)
+
+    if selectedEntry then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.printf(
+            safeUiText(selectedEntry.method or "GET", "GET") .. " " .. safeUiText(selectedEntry.route or "/", "/"),
+            detailRect.x + NETWORK_REQUEST_OVERLAY.detailPadding,
+            detailRect.y + 18,
+            detailRect.w - (NETWORK_REQUEST_OVERLAY.detailPadding * 2),
+            "right"
+        )
+    end
+
+    graphics.setScissor(listContentRect.x, listContentRect.y, listContentRect.w, listContentRect.h)
+    for _, rowRect in ipairs(ui.getNetworkRequestOverlayRowRects(game)) do
+        local entry = rowRect.entry
+        local isSelected = selectedEntry and entry.requestDebugId == selectedEntry.requestDebugId
+        local methodColors = getNetworkRequestMethodColors(entry.method)
+        local statusColor = getNetworkRequestStatusColor(entry)
+        local rowFillColor = isSelected and { 0.12, 0.17, 0.24, 0.98 } or { 0.08, 0.11, 0.15, 0.98 }
+        local rowLineColor = isSelected and { 0.56, 0.72, 0.98, 1 } or { 0.22, 0.29, 0.36, 1 }
+        local rightColumnWidth = 116
+        local textX = rowRect.x + 98
+        local textWidth = rowRect.w - (textX - rowRect.x) - rightColumnWidth - 10
+        local routeText = truncateTextToWidth(game.fonts.body, entry.route or entry.url or "/", textWidth)
+        local urlText = truncateTextToWidth(game.fonts.small, entry.url or entry.route or "/", textWidth)
+        local kindText = truncateTextToWidth(game.fonts.small, entry.requestKind ~= "" and entry.requestKind or "request", textWidth)
+
+        graphics.setColor(rowFillColor[1], rowFillColor[2], rowFillColor[3], rowFillColor[4])
+        graphics.rectangle("fill", rowRect.x, rowRect.y, rowRect.w, rowRect.h, NETWORK_REQUEST_OVERLAY.rowRadius, NETWORK_REQUEST_OVERLAY.rowRadius)
+        graphics.setColor(rowLineColor[1], rowLineColor[2], rowLineColor[3], rowLineColor[4])
+        graphics.rectangle("line", rowRect.x, rowRect.y, rowRect.w, rowRect.h, NETWORK_REQUEST_OVERLAY.rowRadius, NETWORK_REQUEST_OVERLAY.rowRadius)
+
+        graphics.setColor(methodColors.fill[1], methodColors.fill[2], methodColors.fill[3], methodColors.fill[4])
+        graphics.rectangle("fill", rowRect.x + 12, rowRect.y + 12, NETWORK_REQUEST_OVERLAY.methodBadgeWidth, NETWORK_REQUEST_OVERLAY.methodBadgeHeight, 12, 12)
+        graphics.setColor(methodColors.line[1], methodColors.line[2], methodColors.line[3], methodColors.line[4])
+        graphics.rectangle("line", rowRect.x + 12, rowRect.y + 12, NETWORK_REQUEST_OVERLAY.methodBadgeWidth, NETWORK_REQUEST_OVERLAY.methodBadgeHeight, 12, 12)
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.printf(safeUiText(entry.method or "GET", "GET"), rowRect.x + 12, rowRect.y + 16, NETWORK_REQUEST_OVERLAY.methodBadgeWidth, "center")
+
+        love.graphics.setFont(game.fonts.body)
+        graphics.setColor(0.97, 0.98, 1, 1)
+        graphics.print(routeText, textX, rowRect.y + 10)
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.print(urlText, textX, rowRect.y + 34)
+        graphics.print(kindText, textX, rowRect.y + 52)
+
+        graphics.setColor(statusColor[1], statusColor[2], statusColor[3], statusColor[4])
+        graphics.printf(formatNetworkRequestStatusLabel(entry), rowRect.x + rowRect.w - rightColumnWidth, rowRect.y + 14, rightColumnWidth - 6, "right")
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.printf(formatNetworkRequestDuration(entry.durationMilliseconds), rowRect.x + rowRect.w - rightColumnWidth, rowRect.y + 40, rightColumnWidth - 6, "right")
+    end
+    restoreScissor(previousScissorX, previousScissorY, previousScissorW, previousScissorH)
+
+    local listContentHeight = math.max(
+        0,
+        (#(game.networkRequestLogEntries or {}) * (NETWORK_REQUEST_OVERLAY.rowHeight + NETWORK_REQUEST_OVERLAY.rowGap)) - NETWORK_REQUEST_OVERLAY.rowGap
+    )
+    local listTrackRect = {
+        x = listRect.x + listRect.w - NETWORK_REQUEST_OVERLAY.scrollbarWidth - NETWORK_REQUEST_OVERLAY.scrollbarInset,
+        y = listContentRect.y,
+        w = NETWORK_REQUEST_OVERLAY.scrollbarWidth,
+        h = listContentRect.h,
+    }
+    drawNetworkRequestScrollbar(
+        listTrackRect,
+        listContentHeight,
+        listContentRect.h,
+        listScroll * (NETWORK_REQUEST_OVERLAY.rowHeight + NETWORK_REQUEST_OVERLAY.rowGap)
+    )
+
+    local detailSections = ui.getNetworkRequestOverlayDetailSections(game)
+    graphics.setScissor(detailContentRect.x, detailContentRect.y, detailContentRect.w, detailContentRect.h)
+    local currentY = detailContentRect.y - detailScroll
+    for _, section in ipairs(detailSections) do
+        local sectionHeight = getNetworkRequestDetailSectionHeight(game, section, detailContentRect.w)
+        local sectionText = getNetworkRequestDetailSectionText(section)
+
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.84, 0.88, 0.92, 1)
+        graphics.printf(
+            sectionText,
+            detailContentRect.x,
+            currentY,
+            detailContentRect.w,
+            "left"
+        )
+
+        currentY = currentY + sectionHeight
+    end
+    restoreScissor(previousScissorX, previousScissorY, previousScissorW, previousScissorH)
+
+    local detailTrackRect = {
+        x = detailRect.x + detailRect.w - NETWORK_REQUEST_OVERLAY.scrollbarWidth - NETWORK_REQUEST_OVERLAY.scrollbarInset,
+        y = detailContentRect.y,
+        w = NETWORK_REQUEST_OVERLAY.scrollbarWidth,
+        h = detailContentRect.h,
+    }
+    drawNetworkRequestScrollbar(detailTrackRect, detailMetrics.contentHeight, detailMetrics.viewHeight, detailScroll)
+
+    love.graphics.setFont(game.fonts.small)
+    if copyStatus and copyStatus.message and copyStatus.message ~= "" then
+        if copyStatus.status == "error" then
+            graphics.setColor(0.99, 0.78, 0.32, 1)
+        else
+            graphics.setColor(0.56, 0.72, 0.98, 1)
+        end
+        graphics.printf(
+            copyStatus.message,
+            overlayRect.x + NETWORK_REQUEST_OVERLAY.innerGap,
+            overlayRect.y + overlayRect.h - NETWORK_REQUEST_OVERLAY.footerHeight + 10,
+            overlayRect.w - (NETWORK_REQUEST_OVERLAY.innerGap * 2),
+            "left"
+        )
+    else
+        graphics.setColor(0.68, 0.74, 0.8, 1)
+        graphics.printf(
+            string.format(
+                "Showing %d stored request(s). Click metadata text to copy the selected value.",
+                #(game.networkRequestLogEntries or {})
+            ),
+            overlayRect.x + NETWORK_REQUEST_OVERLAY.innerGap,
+            overlayRect.y + overlayRect.h - NETWORK_REQUEST_OVERLAY.footerHeight + 10,
+            overlayRect.w - (NETWORK_REQUEST_OVERLAY.innerGap * 2),
+            "left"
+        )
+    end
+end
+
 function drawCenteredOverlay(game, title, body, footer, accentColor)
     local graphics = love.graphics
     local accent = accentColor or { 0.48, 0.92, 0.62 }
