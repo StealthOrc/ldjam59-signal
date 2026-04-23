@@ -129,7 +129,6 @@ for _, label in ipairs(overlayLabels) do
     end
 end
 assertTrue(foundSharedLaneLabel, "shared output lane debug labels should list every member route")
-
 local previewUpperJunction = editor.previewWorld and editor.previewWorld.junctions and editor.previewWorld.junctions[upperIntersection.id]
 local previewLowerJunction = editor.previewWorld and editor.previewWorld.junctions and editor.previewWorld.junctions[lowerIntersection.id]
 

@@ -814,11 +814,46 @@ assert(replaysButton ~= nil, "level select should expose the Replays button rect
 assert(uploadButton ~= nil, "level select should expose the Upload button rect")
 assert(editButton ~= nil, "level select should expose the Edit button rect")
 assert(
-    startButton.x + startButton.w + 18 <= replaysButton.x,
-    "replays button should keep the configured gap from the start button"
+    replaysButton.x + replaysButton.w < startButton.x,
+    "replays button should stay to the left of start"
 )
-assertEqual(uploadButton.x, replaysButton.x + replaysButton.w + 18, "upload button stays directly to the right of replays")
-assertEqual(editButton.x, uploadButton.x + uploadButton.w + 18, "edit button stays directly to the right of upload")
+assert(uploadButton.x > startButton.x + startButton.w, "upload button should stay to the right of start")
+assert(editButton.x > uploadButton.x + uploadButton.w, "edit button should stay to the right of upload")
+
+local levelSelectButtonGameWithoutReplay = {
+    viewport = levelSelectButtonGame.viewport,
+    fonts = levelSelectButtonGame.fonts,
+    levelSelectMode = levelSelectButtonGame.levelSelectMode,
+    levelSelectFilter = levelSelectButtonGame.levelSelectFilter,
+    levelSelectSelectedId = levelSelectButtonGame.levelSelectSelectedId,
+    levelSelectSelectedMapUuid = levelSelectButtonGame.levelSelectSelectedMapUuid,
+    availableMaps = {
+        {
+            id = "campaign:map-1",
+            mapUuid = "",
+            mapHash = "",
+            mapKind = "campaign",
+            source = "builtin",
+            displayName = "Map One",
+            previewLevel = {
+                junctions = {},
+                trains = {},
+            },
+        },
+    },
+    isUploadSelectedMapAvailable = function()
+        return true
+    end,
+}
+
+local levelSelectButtonsWithoutReplay = ui.getLevelSelectActionButtons(levelSelectButtonGameWithoutReplay)
+local uploadButtonWithoutReplay = findButtonById(levelSelectButtonsWithoutReplay, "upload_map")
+local editButtonWithoutReplay = findButtonById(levelSelectButtonsWithoutReplay, "edit_map")
+
+assert(uploadButtonWithoutReplay ~= nil, "level select without replay should still expose the Upload button rect")
+assert(editButtonWithoutReplay ~= nil, "level select without replay should still expose the Edit button rect")
+assertEqual(uploadButtonWithoutReplay.x, uploadButton.x, "upload button stays fixed when replays are unavailable")
+assertEqual(editButtonWithoutReplay.x, editButton.x, "edit button stays fixed when replays are unavailable")
 
 local flippedLeaderboardGame = {
     viewport = { w = 1280, h = 720 },

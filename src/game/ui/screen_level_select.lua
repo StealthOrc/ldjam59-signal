@@ -629,18 +629,16 @@ getLevelSelectActionButtons = function(game)
     local selectedMap = selectedIndex and maps[selectedIndex] or nil
     local buttonY = bottomBarRect.y + math.floor((bottomBarRect.h - LEVEL_SELECT_ACTION_LAYOUT.buttonH) * 0.5 + 0.5)
     local buttons = {}
-    local sideInset = 24
-    local backButtonWidth = 120
+    local sideInset = LEVEL_SELECT_ACTION_LAYOUT.sideInset
+    local backButtonWidth = LEVEL_SELECT_ACTION_LAYOUT.backW
     local primarySpec
+    local leftButtonSpecs = {}
     local rightButtonSpecs = {}
 
-    buttons[#buttons + 1] = {
+    leftButtonSpecs[#leftButtonSpecs + 1] = {
         id = "back",
         label = "Back",
-        x = bottomBarRect.x + sideInset,
-        y = buttonY,
         w = backButtonWidth,
-        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
     }
 
     if game.levelSelectMode == "marketplace" then
@@ -659,7 +657,7 @@ getLevelSelectActionButtons = function(game)
         primarySpec = { id = "open_map", label = "Start", w = LEVEL_SELECT_ACTION_LAYOUT.startW }
 
         if selectedMap and selectedMap.mapUuid and selectedMap.mapUuid ~= "" and selectedMap.mapHash and selectedMap.mapHash ~= "" then
-            rightButtonSpecs[#rightButtonSpecs + 1] = {
+            leftButtonSpecs[#leftButtonSpecs + 1] = {
                 id = "open_replays",
                 label = "Replays",
                 w = LEVEL_SELECT_ACTION_LAYOUT.replaysW,
@@ -681,6 +679,14 @@ getLevelSelectActionButtons = function(game)
         }
     end
 
+    local totalLeftWidth = 0
+    for index, spec in ipairs(leftButtonSpecs) do
+        totalLeftWidth = totalLeftWidth + spec.w
+        if index > 1 then
+            totalLeftWidth = totalLeftWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+        end
+    end
+
     local totalRightWidth = 0
     for index, spec in ipairs(rightButtonSpecs) do
         totalRightWidth = totalRightWidth + spec.w
@@ -689,10 +695,23 @@ getLevelSelectActionButtons = function(game)
         end
     end
 
-    local currentX = bottomBarRect.x + bottomBarRect.w - sideInset - totalRightWidth
-    local rightButtonsStartX = currentX
+    local leftCurrentX = bottomBarRect.x + sideInset
+    for _, spec in ipairs(leftButtonSpecs) do
+        buttons[#buttons + 1] = {
+            id = spec.id,
+            label = spec.label,
+            x = leftCurrentX,
+            y = buttonY,
+            w = spec.w,
+            h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
+        }
+        leftCurrentX = leftCurrentX + spec.w + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+    end
+
+    local rightCurrentX = bottomBarRect.x + bottomBarRect.w - sideInset - totalRightWidth
+    local rightButtonsStartX = rightCurrentX
     local primaryPreferredX = math.floor(game.viewport.w * 0.5 - primarySpec.w * 0.5 + 0.5)
-    local primaryMinX = bottomBarRect.x + sideInset + backButtonWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+    local primaryMinX = bottomBarRect.x + sideInset + totalLeftWidth + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
     local primaryMaxX = rightButtonsStartX > 0
         and (rightButtonsStartX - LEVEL_SELECT_ACTION_LAYOUT.buttonGap - primarySpec.w)
         or primaryPreferredX
@@ -711,12 +730,12 @@ getLevelSelectActionButtons = function(game)
         buttons[#buttons + 1] = {
             id = spec.id,
             label = spec.label,
-            x = currentX,
+            x = rightCurrentX,
             y = buttonY,
             w = spec.w,
             h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
         }
-        currentX = currentX + spec.w + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
+        rightCurrentX = rightCurrentX + spec.w + LEVEL_SELECT_ACTION_LAYOUT.buttonGap
     end
 
     return buttons

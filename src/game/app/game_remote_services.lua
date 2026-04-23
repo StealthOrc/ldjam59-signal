@@ -102,6 +102,20 @@ function Game:getActiveOnlineConfig()
     return resolvedConfig
 end
 
+local function getOnlineModeConfigurationError(onlineConfig)
+    local errors = onlineConfig and onlineConfig.errors or nil
+    if type(errors) == "table" and #errors > 0 then
+        return table.concat(errors, " ")
+    end
+
+    return "The online marketplace is not configured."
+end
+
+function Game:isOnlineConfigAvailable()
+    local onlineConfig = self:reloadOnlineConfig()
+    return onlineConfig and onlineConfig.isConfigured == true
+end
+
 function Game:isPlayModeConfigured()
     local playMode = getProfilePlayMode(self.profile)
     return playMode == PLAY_MODE_ONLINE or playMode == PLAY_MODE_OFFLINE
@@ -342,6 +356,14 @@ end
 function Game:setPlayMode(playMode)
     if playMode ~= PLAY_MODE_ONLINE and playMode ~= PLAY_MODE_OFFLINE then
         return false, "Select online or offline mode before continuing."
+    end
+
+    if playMode == PLAY_MODE_ONLINE then
+        local onlineConfig = self:reloadOnlineConfig()
+        if not (onlineConfig and onlineConfig.isConfigured) then
+            self.profileModeSelection = PLAY_MODE_OFFLINE
+            return false, getOnlineModeConfigurationError(onlineConfig)
+        end
     end
 
     local previousPlayMode = self.profile.playMode

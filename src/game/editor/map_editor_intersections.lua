@@ -418,7 +418,6 @@ function mapEditor:shouldIgnoreSharedLaneMemberIntersection(firstRoute, firstSeg
 
     return false
 end
-
 function mapEditor:ensureSharedPointId(point)
     if not point.sharedPointId then
         point.sharedPointId = self.nextSharedPointId
