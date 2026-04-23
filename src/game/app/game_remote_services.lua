@@ -188,19 +188,79 @@ function Game:getLocalScoreEntry(mapUuid)
     return entry
 end
 
-function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank)
-    if not mapUuid or mapUuid == "" or type(scoreEntry) ~= "table" then
+function Game:buildLocalLeaderboardEntry(mapUuid, scoreEntry, rank, replayEntry)
+    if not mapUuid or mapUuid == "" then
         return nil
     end
+
+    local resolvedScoreEntry = type(scoreEntry) == "table" and scoreEntry or nil
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedScoreEntry and not resolvedReplayEntry then
+        return nil
+    end
+
+    local resolvedScore = tonumber(
+        resolvedReplayEntry and resolvedReplayEntry.score
+            or resolvedScoreEntry and resolvedScoreEntry.score
+            or 0
+    ) or 0
+    local resolvedRecordedAt = tonumber(
+        resolvedReplayEntry and resolvedReplayEntry.recordedAt
+            or resolvedScoreEntry and resolvedScoreEntry.recorded_at
+            or 0
+    ) or 0
 
     return {
         display_name = self.profile.playerDisplayName or "Unknown",
         player_uuid = getProfilePlayerUuid(self.profile),
-        score = tonumber(scoreEntry.score or 0) or 0,
+        score = resolvedScore,
         rank = rank or 1,
         map_uuid = mapUuid,
-        recorded_at = tonumber(scoreEntry.recorded_at or 0) or 0,
+        recorded_at = resolvedRecordedAt,
+        replay_uuid = resolvedReplayEntry and resolvedReplayEntry.replayUuid or "",
+        replay_file_path = resolvedReplayEntry and resolvedReplayEntry.replayFilePath or "",
+        duration_seconds = resolvedReplayEntry and resolvedReplayEntry.duration or 0,
     }
+end
+
+local function isBetterLocalReplayEntry(candidate, currentBest)
+    if currentBest == nil then
+        return true
+    end
+
+    local candidateScore = tonumber(candidate and candidate.score or 0) or 0
+    local currentBestScore = tonumber(currentBest and currentBest.score or 0) or 0
+    if candidateScore ~= currentBestScore then
+        return candidateScore > currentBestScore
+    end
+
+    local candidateRecordedAt = tonumber(candidate and candidate.recordedAt or 0) or 0
+    local currentBestRecordedAt = tonumber(currentBest and currentBest.recordedAt or 0) or 0
+    if candidateRecordedAt ~= currentBestRecordedAt then
+        return candidateRecordedAt < currentBestRecordedAt
+    end
+
+    return tostring(candidate and candidate.replayUuid or "") < tostring(currentBest and currentBest.replayUuid or "")
+end
+
+function Game:getBestLocalReplayEntry(mapUuid, mapHash)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    if resolvedMapUuid == "" then
+        return nil
+    end
+
+    local bestEntry = nil
+    for _, replayEntry in ipairs(self.localReplayIndex and self.localReplayIndex.replays or {}) do
+        if tostring(replayEntry.mapUuid or "") == resolvedMapUuid
+            and (resolvedMapHash == "" or tostring(replayEntry.mapHash or "") == resolvedMapHash)
+            and isBetterLocalReplayEntry(replayEntry, bestEntry)
+        then
+            bestEntry = replayEntry
+        end
+    end
+
+    return bestEntry
 end
 
 function Game:buildLocalLeaderboardPayload(mapUuid)
@@ -214,21 +274,35 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
 
     if mapUuid and mapUuid ~= "" then
         local scoreEntry = self:getLocalScoreEntry(mapUuid)
-        if not scoreEntry then
+        local replayEntry = self:getBestLocalReplayEntry(mapUuid)
+        if not scoreEntry and not replayEntry then
             return payload, nil
         end
 
-        local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1)
+        local localEntry = self:buildLocalLeaderboardEntry(mapUuid, scoreEntry, 1, replayEntry)
         payload.entries[1] = localEntry
-        return payload, tonumber(scoreEntry.recorded_at or 0) or 0
+        return payload, tonumber(localEntry and localEntry.recorded_at or 0) or 0
     end
 
     local entriesByMap = self.localScoreboard and self.localScoreboard.entries_by_map or {}
-    for entryMapUuid, scoreEntry in pairs(entriesByMap or {}) do
-        local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry)
+    local knownMapUuids = {}
+    for entryMapUuid in pairs(entriesByMap or {}) do
+        knownMapUuids[entryMapUuid] = true
+    end
+    for _, replayEntry in ipairs(self.localReplayIndex and self.localReplayIndex.replays or {}) do
+        local replayMapUuid = tostring(replayEntry.mapUuid or "")
+        if replayMapUuid ~= "" then
+            knownMapUuids[replayMapUuid] = true
+        end
+    end
+
+    for entryMapUuid in pairs(knownMapUuids) do
+        local scoreEntry = entriesByMap[entryMapUuid]
+        local replayEntry = self:getBestLocalReplayEntry(entryMapUuid)
+        local localEntry = self:buildLocalLeaderboardEntry(entryMapUuid, scoreEntry, nil, replayEntry)
         if localEntry then
             payload.entries[#payload.entries + 1] = localEntry
-            local recordedAt = tonumber(scoreEntry.recorded_at or 0) or 0
+            local recordedAt = tonumber(localEntry.recorded_at or 0) or 0
             if latestRecordedAt == nil or recordedAt > latestRecordedAt then
                 latestRecordedAt = recordedAt
             end
@@ -256,9 +330,10 @@ function Game:buildLocalLeaderboardPayload(mapUuid)
     return payload, latestRecordedAt
 end
 
-function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
+function Game:getLocalLevelSelectPreviewDisplayState(mapUuid, mapHash)
     local localScoreEntry = self:getLocalScoreEntry(mapUuid)
-    if not localScoreEntry then
+    local replayEntry = self:getBestLocalReplayEntry(mapUuid, mapHash)
+    if not localScoreEntry and not replayEntry then
         return {
             topEntries = {},
             pinnedPlayerEntry = nil,
@@ -273,7 +348,7 @@ function Game:getLocalLevelSelectPreviewDisplayState(mapUuid)
     end
 
     local localEntry = normalizeLeaderboardEntry(
-        self:buildLocalLeaderboardEntry(mapUuid, localScoreEntry, 1),
+        self:buildLocalLeaderboardEntry(mapUuid, localScoreEntry, 1, replayEntry),
         mapUuid,
         1
     )
@@ -758,7 +833,7 @@ function Game:getLevelSelectPreviewDisplayState(mapDescriptor)
     local mapUuid = resolvedMapDescriptor and resolvedMapDescriptor.mapUuid or nil
     local mapHash = resolvedMapDescriptor and resolvedMapDescriptor.mapHash or nil
     if self:isOfflineMode() then
-        return self:getLocalLevelSelectPreviewDisplayState(mapUuid)
+        return self:getLocalLevelSelectPreviewDisplayState(mapUuid, mapHash)
     end
 
     local cacheKey = buildLevelSelectPreviewCacheKey(mapUuid, mapHash)
