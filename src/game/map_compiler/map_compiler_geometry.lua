@@ -13,6 +13,9 @@ return function(mapCompiler, shared)
 
     setfenv(1, moduleEnvironment)
 
+local GEOMETRY_EPSILON = 0.0000001
+local COLLINEAR_POINT_TOLERANCE = 0.000001
+
 function distanceSquared(ax, ay, bx, by)
     local dx = ax - bx
     local dy = ay - by
@@ -86,7 +89,7 @@ function closestPointOnSegment(px, py, a, b)
     local abY = b.y - a.y
     local lengthSquared = abX * abX + abY * abY
 
-    if lengthSquared <= 0.0000001 then
+    if lengthSquared <= GEOMETRY_EPSILON then
         return a.x, a.y, 0, distanceSquared(px, py, a.x, a.y)
     end
 
@@ -126,7 +129,7 @@ function splitRouteAtPoint(routePoints, junctionPoint)
         local hitPoint = pointOnSegment(junctionPoint, a, b)
 
         if hitPoint then
-            if distanceSquared(prefix[#prefix].x, prefix[#prefix].y, hitPoint.x, hitPoint.y) > 0.0000001 then
+            if distanceSquared(prefix[#prefix].x, prefix[#prefix].y, hitPoint.x, hitPoint.y) > GEOMETRY_EPSILON then
                 prefix[#prefix + 1] = hitPoint
             end
             return prefix
@@ -146,7 +149,7 @@ function splitRouteSuffixAtPoint(routePoints, junctionPoint)
 
         if hitPoint then
             local suffix = { hitPoint }
-            if distanceSquared(hitPoint.x, hitPoint.y, b.x, b.y) > 0.0000001 then
+            if distanceSquared(hitPoint.x, hitPoint.y, b.x, b.y) > GEOMETRY_EPSILON then
                 suffix[#suffix + 1] = copyPoint(b)
             end
             for suffixIndex = pointIndex + 2, #routePoints do
@@ -180,7 +183,60 @@ end
 function extractRouteSegment(routePoints, startDistance, endDistance)
     local segmentPoints = {}
     local totalDistance = 0
-    local epsilon = 0.0000001
+
+    local function isRedundantInteriorPoint(previousPoint, point, nextPoint)
+        if not previousPoint or not point or not nextPoint then
+            return false
+        end
+
+        local previousToNextX = nextPoint.x - previousPoint.x
+        local previousToNextY = nextPoint.y - previousPoint.y
+        local previousToNextLengthSquared = previousToNextX * previousToNextX + previousToNextY * previousToNextY
+        if previousToNextLengthSquared <= GEOMETRY_EPSILON then
+            return false
+        end
+
+        local previousToPointX = point.x - previousPoint.x
+        local previousToPointY = point.y - previousPoint.y
+        local dot = previousToPointX * previousToNextX + previousToPointY * previousToNextY
+        if dot <= GEOMETRY_EPSILON or dot >= previousToNextLengthSquared - GEOMETRY_EPSILON then
+            return false
+        end
+
+        local cross = previousToPointX * previousToNextY - previousToPointY * previousToNextX
+        local distanceFromLineSquared = (cross * cross) / previousToNextLengthSquared
+        return distanceFromLineSquared <= COLLINEAR_POINT_TOLERANCE * COLLINEAR_POINT_TOLERANCE
+    end
+
+    local function simplifySegmentPoints(points)
+        if #points <= 2 then
+            return points
+        end
+
+        local simplifiedPoints = { points[1] }
+        for pointIndex = 2, #points - 1 do
+            local previousPoint = simplifiedPoints[#simplifiedPoints]
+            local point = points[pointIndex]
+            local nextPoint = points[pointIndex + 1]
+
+            if distanceSquared(previousPoint.x, previousPoint.y, point.x, point.y) > GEOMETRY_EPSILON
+                and not isRedundantInteriorPoint(previousPoint, point, nextPoint) then
+                simplifiedPoints[#simplifiedPoints + 1] = point
+            end
+        end
+
+        local finalPoint = points[#points]
+        if distanceSquared(
+                simplifiedPoints[#simplifiedPoints].x,
+                simplifiedPoints[#simplifiedPoints].y,
+                finalPoint.x,
+                finalPoint.y
+            ) > GEOMETRY_EPSILON then
+            simplifiedPoints[#simplifiedPoints + 1] = finalPoint
+        end
+
+        return simplifiedPoints
+    end
 
     for pointIndex = 1, #routePoints - 1 do
         local a = routePoints[pointIndex]
@@ -189,22 +245,34 @@ function extractRouteSegment(routePoints, startDistance, endDistance)
         local segmentStart = totalDistance
         local segmentEnd = totalDistance + length
 
-        if endDistance < segmentStart - epsilon then
+        if endDistance < segmentStart - GEOMETRY_EPSILON then
             break
         end
 
-        if startDistance <= segmentEnd + epsilon and endDistance >= segmentStart - epsilon and length > epsilon then
+        if startDistance <= segmentEnd + GEOMETRY_EPSILON
+            and endDistance >= segmentStart - GEOMETRY_EPSILON
+            and length > GEOMETRY_EPSILON then
             local localStart = math.max(0, startDistance - segmentStart)
             local localEnd = math.min(length, endDistance - segmentStart)
             local startPoint = interpolatePoint(a, b, localStart / length)
             local endPoint = interpolatePoint(a, b, localEnd / length)
 
             if #segmentPoints == 0
-                or distanceSquared(segmentPoints[#segmentPoints].x, segmentPoints[#segmentPoints].y, startPoint.x, startPoint.y) > epsilon then
+                or distanceSquared(
+                    segmentPoints[#segmentPoints].x,
+                    segmentPoints[#segmentPoints].y,
+                    startPoint.x,
+                    startPoint.y
+                ) > GEOMETRY_EPSILON then
                 segmentPoints[#segmentPoints + 1] = startPoint
             end
 
-            if distanceSquared(segmentPoints[#segmentPoints].x, segmentPoints[#segmentPoints].y, endPoint.x, endPoint.y) > epsilon then
+            if distanceSquared(
+                    segmentPoints[#segmentPoints].x,
+                    segmentPoints[#segmentPoints].y,
+                    endPoint.x,
+                    endPoint.y
+                ) > GEOMETRY_EPSILON then
                 segmentPoints[#segmentPoints + 1] = endPoint
             end
         end
@@ -212,7 +280,7 @@ function extractRouteSegment(routePoints, startDistance, endDistance)
         totalDistance = segmentEnd
     end
 
-    return segmentPoints
+    return simplifySegmentPoints(segmentPoints)
 end
 
 function getEndpointById(editorData, endpointId)

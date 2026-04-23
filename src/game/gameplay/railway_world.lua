@@ -21,6 +21,8 @@ local trackSceneRenderer = require("src.game.rendering.track_scene_renderer")
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
+local JUNCTION_TRACK_OVERLAP = 4
+local JUNCTION_SIGNAL_GAP = 6
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -460,6 +462,10 @@ local function buildCubicCurvePoints(startPoint, controlPointA, controlPointB, e
     return points
 end
 
+local function getJunctionTrackClearance(crossingRadius)
+    return math.max(0, (crossingRadius or 0) - JUNCTION_TRACK_OVERLAP)
+end
+
 function world.new(viewportW, viewportH, levelSource)
     local self = setmetatable({}, world)
 
@@ -474,7 +480,8 @@ function world.new(viewportW, viewportH, levelSource)
     self.carriageCount = 4
     self.exitFadeDuration = 0.25
     self.crossingRadius = 40
-    self.junctionTrackClearance = self.crossingRadius + 4
+    self.junctionTrackClearance = getJunctionTrackClearance(self.crossingRadius)
+    self.junctionSignalGap = JUNCTION_SIGNAL_GAP
     self.collisionPoint = nil
     self.failureReason = nil
     self.timeRemaining = nil
@@ -773,7 +780,7 @@ end
 function world:buildEdge(edgeDefinition)
     local color = copyColor(edgeDefinition.color)
     local path = buildPolyline(denormalizePoints(edgeDefinition.points or {}, self.viewport.w, self.viewport.h))
-    local signalDistance = math.max(path.length - (self.crossingRadius + 10), 0)
+    local signalDistance = math.max(path.length - (self.junctionTrackClearance + self.junctionSignalGap), 0)
     local stopDistance = math.max(signalDistance - (self.carriageLength + 12), 0)
     local stopX, stopY = pointOnPath(path, stopDistance)
     local signalX, signalY = pointOnPath(path, signalDistance)
@@ -1367,6 +1374,7 @@ function world:resize(viewportW, viewportH)
     self.viewport.w = viewportW
     self.viewport.h = viewportH
     self.crossingRadius = math.max(34, math.min(viewportW, viewportH) * 0.045)
+    self.junctionTrackClearance = getJunctionTrackClearance(self.crossingRadius)
     self.level = self:normalizeLevel(self.level)
     self:initializeLevel()
 end

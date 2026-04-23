@@ -18,11 +18,19 @@ function mapEditor:drawMagnet(route, point, magnetKind, selected)
     local endpoint = magnetKind == "start" and self:getRouteStartEndpoint(route) or self:getRouteEndEndpoint(route)
     local selectedColors = magnetKind == "end" and getEndpointColorIds(endpoint) or {}
     local endpointColorOption = (#selectedColors == 1) and getColorOptionById(selectedColors[1]) or nil
-    local width = magnetKind == "start" and 58 or 46
-    local height = 24
+    local width = magnetKind == "start" and START_MAGNET_DRAW_WIDTH or END_MAGNET_DRAW_WIDTH
+    local height = MAGNET_DRAW_HEIGHT
 
     graphics.setColor(0.08, 0.1, 0.14, 1)
-    graphics.rectangle("fill", point.x - width * 0.5 - 3, point.y - height * 0.5 - 3, width + 6, height + 6, 9, 9)
+    graphics.rectangle(
+        "fill",
+        point.x - width * 0.5 - MAGNET_DRAW_OUTLINE_PADDING,
+        point.y - height * 0.5 - MAGNET_DRAW_OUTLINE_PADDING,
+        width + MAGNET_DRAW_OUTLINE_PADDING * 2,
+        height + MAGNET_DRAW_OUTLINE_PADDING * 2,
+        9,
+        9
+    )
     if magnetKind == "end" and endpointColorOption then
         graphics.setColor(endpointColorOption.color[1], endpointColorOption.color[2], endpointColorOption.color[3], 1)
     else
@@ -56,7 +64,15 @@ function mapEditor:drawMagnet(route, point, magnetKind, selected)
     if selected then
         graphics.setColor(0.97, 0.98, 1, 1)
         graphics.setLineWidth(2)
-        graphics.rectangle("line", point.x - width * 0.5 - 8, point.y - height * 0.5 - 8, width + 16, height + 16, 12, 12)
+        graphics.rectangle(
+            "line",
+            point.x - width * 0.5 - MAGNET_SELECTION_PADDING,
+            point.y - height * 0.5 - MAGNET_SELECTION_PADDING,
+            width + MAGNET_SELECTION_PADDING * 2,
+            height + MAGNET_SELECTION_PADDING * 2,
+            12,
+            12
+        )
     end
 end
 
@@ -200,7 +216,7 @@ function mapEditor:drawRoute(route, selectedRouteId)
     end
 
     graphics.setLineStyle("smooth")
-    graphics.setLineJoin("none")
+    graphics.setLineJoin("bevel")
     graphics.setColor(0.11, 0.14, 0.18, 1)
     graphics.setLineWidth(selectedRouteId == route.id and 16 or 13)
     graphics.line(points)
@@ -219,13 +235,13 @@ function mapEditor:drawRoute(route, selectedRouteId)
             self:drawMagnet(route, point, "end", selected)
         else
             graphics.setColor(0.08, 0.1, 0.14, 1)
-            graphics.circle("fill", point.x, point.y, 11)
+            graphics.circle("fill", point.x, point.y, BEND_POINT_OUTER_RADIUS)
             graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
-            graphics.circle("fill", point.x, point.y, 8)
+            graphics.circle("fill", point.x, point.y, BEND_POINT_INNER_RADIUS)
             if selected then
                 graphics.setColor(0.97, 0.98, 1, 1)
                 graphics.setLineWidth(2)
-                graphics.circle("line", point.x, point.y, 16)
+                graphics.circle("line", point.x, point.y, BEND_POINT_SELECTION_RADIUS)
             end
         end
     end
@@ -291,13 +307,13 @@ function mapEditor:drawRouteHandles(route, selectedRouteId)
             local isSharedJunctionPoint = point.sharedPointId and self:getSharedPointGroupForPoint(route, pointIndex)
             if not isSharedJunctionPoint then
                 graphics.setColor(0.08, 0.1, 0.14, 1)
-                graphics.circle("fill", point.x, point.y, 11)
+                graphics.circle("fill", point.x, point.y, BEND_POINT_OUTER_RADIUS)
                 graphics.setColor(route.color[1], route.color[2], route.color[3], 1)
-                graphics.circle("fill", point.x, point.y, 8)
+                graphics.circle("fill", point.x, point.y, BEND_POINT_INNER_RADIUS)
                 if selected then
                     graphics.setColor(0.97, 0.98, 1, 1)
                     graphics.setLineWidth(2)
-                    graphics.circle("line", point.x, point.y, 16)
+                    graphics.circle("line", point.x, point.y, BEND_POINT_SELECTION_RADIUS)
                 end
             end
         end
