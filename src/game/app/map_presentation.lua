@@ -199,10 +199,43 @@ local function queueEdgeIfEarlier(queue, edgeSchedulesById, world, edge, startTi
     return true
 end
 
+local function tryScheduleJunctionArrival(junctionId, incomingByTargetId, incomingArrivalStateByJunctionId, junctionSchedulesById, outgoingBySourceId, queue, edgeSchedulesById, world)
+    if not junctionId or junctionSchedulesById[junctionId] then
+        return false
+    end
+
+    local incomingEdges = incomingByTargetId[junctionId] or {}
+    local arrivalState = incomingArrivalStateByJunctionId[junctionId]
+    if not arrivalState or arrivalState.completedCount < #incomingEdges then
+        return false
+    end
+
+    local arrivalTime = arrivalState.latestEndTime or 0
+    local ringStartTime = arrivalTime
+    local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
+    local iconStartTime = ringEndTime
+    local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
+    junctionSchedulesById[junctionId] = {
+        arrivalTime = arrivalTime,
+        ringStartTime = ringStartTime,
+        ringEndTime = ringEndTime,
+        iconStartTime = iconStartTime,
+        iconEndTime = iconEndTime,
+        entryAngle = arrivalState.entryAngle or (-math.pi * 0.5),
+    }
+
+    for _, outgoingEdge in ipairs(outgoingBySourceId[junctionId] or {}) do
+        queueEdgeIfEarlier(queue, edgeSchedulesById, world, outgoingEdge, ringEndTime)
+    end
+
+    return true
+end
+
 local function buildPresentationSchedule(world)
     local edges = {}
     local edgeById = {}
     local outgoingBySourceId = {}
+    local incomingByTargetId = {}
 
     for edgeId, edge in pairs(type(world) == "table" and world.edges or {}) do
         if type(edge) == "table" then
@@ -214,12 +247,17 @@ local function buildPresentationSchedule(world)
                 outgoingBySourceId[edge.sourceId] = outgoingBySourceId[edge.sourceId] or {}
                 outgoingBySourceId[edge.sourceId][#outgoingBySourceId[edge.sourceId] + 1] = edge
             end
+            if edge.targetType == "junction" and edge.targetId then
+                incomingByTargetId[edge.targetId] = incomingByTargetId[edge.targetId] or {}
+                incomingByTargetId[edge.targetId][#incomingByTargetId[edge.targetId] + 1] = edge
+            end
         end
     end
 
     local queue = {}
     local edgeSchedulesById = {}
     local junctionSchedulesById = {}
+    local incomingArrivalStateByJunctionId = {}
     local graphCompleteTime = 0
 
     for _, edge in ipairs(edges) do
@@ -234,41 +272,56 @@ local function buildPresentationSchedule(world)
         end
     end
 
+    local function processQueuedEdge(queuedEdge)
+        local edgeSchedule = edgeSchedulesById[queuedEdge.edgeId]
+        if not edgeSchedule or math.abs(edgeSchedule.startTime - queuedEdge.startTime) > 0.0001 then
+            return
+        end
+
+        local edge = edgeById[queuedEdge.edgeId]
+        graphCompleteTime = maxValue(graphCompleteTime, edgeSchedule.endTime)
+
+        if edge and edge.targetType == "junction" and edge.targetId then
+            local arrivalState = incomingArrivalStateByJunctionId[edge.targetId] or {
+                completedEdgeIds = {},
+                completedCount = 0,
+                latestEndTime = 0,
+                entryAngle = nil,
+            }
+            incomingArrivalStateByJunctionId[edge.targetId] = arrivalState
+
+            if not arrivalState.completedEdgeIds[edge.id] then
+                arrivalState.completedEdgeIds[edge.id] = true
+                arrivalState.completedCount = arrivalState.completedCount + 1
+            end
+
+            if edgeSchedule.endTime >= (arrivalState.latestEndTime or 0) - 0.0001 then
+                arrivalState.latestEndTime = edgeSchedule.endTime
+                arrivalState.entryAngle = getJunctionEntryAngle(edge)
+            end
+
+            if tryScheduleJunctionArrival(
+                edge.targetId,
+                incomingByTargetId,
+                incomingArrivalStateByJunctionId,
+                junctionSchedulesById,
+                outgoingBySourceId,
+                queue,
+                edgeSchedulesById,
+                world
+            ) then
+                graphCompleteTime = maxValue(graphCompleteTime, junctionSchedulesById[edge.targetId].iconEndTime)
+            end
+        end
+    end
+
     while true do
         local queuedEdge = popNextQueuedEdge(queue)
         if not queuedEdge then
             break
         end
 
-        local edgeSchedule = edgeSchedulesById[queuedEdge.edgeId]
-        if edgeSchedule and math.abs(edgeSchedule.startTime - queuedEdge.startTime) <= 0.0001 then
-            local edge = edgeById[queuedEdge.edgeId]
-            graphCompleteTime = maxValue(graphCompleteTime, edgeSchedule.endTime)
-
-            if edge and edge.targetType == "junction" and edge.targetId then
-                local arrivalTime = edgeSchedule.endTime
-                local existingJunctionSchedule = junctionSchedulesById[edge.targetId]
-                if not existingJunctionSchedule or arrivalTime < existingJunctionSchedule.arrivalTime - 0.0001 then
-                    local ringStartTime = arrivalTime
-                    local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
-                    local iconStartTime = ringEndTime
-                    local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
-                    junctionSchedulesById[edge.targetId] = {
-                        arrivalTime = arrivalTime,
-                        ringStartTime = ringStartTime,
-                        ringEndTime = ringEndTime,
-                        iconStartTime = iconStartTime,
-                        iconEndTime = iconEndTime,
-                        entryAngle = getJunctionEntryAngle(edge),
-                    }
-                    graphCompleteTime = maxValue(graphCompleteTime, iconEndTime)
-
-                    for _, outgoingEdge in ipairs(outgoingBySourceId[edge.targetId] or {}) do
-                        queueEdgeIfEarlier(queue, edgeSchedulesById, world, outgoingEdge, iconEndTime)
-                    end
-                end
-            end
-        end
+        processQueuedEdge(queuedEdge)
     end
 
     local scheduledFallbackEdge = false
@@ -277,7 +330,7 @@ local function buildPresentationSchedule(world)
             local fallbackStartTime = 0
             local sourceJunctionSchedule = edge.sourceId and junctionSchedulesById[edge.sourceId] or nil
             if sourceJunctionSchedule then
-                fallbackStartTime = sourceJunctionSchedule.iconEndTime
+                fallbackStartTime = sourceJunctionSchedule.ringEndTime
             end
             scheduledFallbackEdge = queueEdgeIfEarlier(queue, edgeSchedulesById, world, edge, fallbackStartTime) or scheduledFallbackEdge
         end
@@ -290,10 +343,7 @@ local function buildPresentationSchedule(world)
                 break
             end
 
-            local edgeSchedule = edgeSchedulesById[queuedEdge.edgeId]
-            if edgeSchedule then
-                graphCompleteTime = maxValue(graphCompleteTime, edgeSchedule.endTime)
-            end
+            processQueuedEdge(queuedEdge)
         end
     end
 

@@ -113,15 +113,15 @@ assertNear(
 )
 assertNear(
     state.edgeScheduleById.exit_a.startTime,
-    junctionSchedule.iconEndTime,
+    junctionSchedule.ringEndTime,
     0.0001,
-    "the first outgoing edge waits until the junction icon reveal finishes"
+    "the first outgoing edge waits until the junction ring reveal finishes"
 )
 assertNear(
     state.edgeScheduleById.exit_b.startTime,
-    junctionSchedule.iconEndTime,
+    junctionSchedule.ringEndTime,
     0.0001,
-    "parallel outgoing edges start together after the junction reveal"
+    "parallel outgoing edges start together once the junction ring finishes"
 )
 assertNear(
     state.uiReveal.startTime,
@@ -158,5 +158,99 @@ assertEqual(finishedEarly, false, "title-only mode remains active until the titl
 
 local finishedLate = mapPresentation.update(skipState, 5.0)
 assertEqual(finishedLate, true, "title-only mode finishes once the title animation ends")
+
+local mergeWaitWorld = {
+    edges = {
+        a_to_merge = {
+            id = "a_to_merge",
+            sourceType = "start",
+            targetType = "junction",
+            targetId = "merge_junction",
+            path = {
+                length = 120,
+                points = {
+                    { x = 0, y = 0 },
+                    { x = 120, y = 0 },
+                },
+            },
+        },
+        merge_to_second = {
+            id = "merge_to_second",
+            sourceType = "junction",
+            sourceId = "merge_junction",
+            targetType = "junction",
+            targetId = "second_junction",
+            path = {
+                length = 90,
+                points = {
+                    { x = 120, y = 0 },
+                    { x = 210, y = 0 },
+                },
+            },
+        },
+        b_to_second = {
+            id = "b_to_second",
+            sourceType = "start",
+            targetType = "junction",
+            targetId = "second_junction",
+            path = {
+                length = 220,
+                points = {
+                    { x = 0, y = 80 },
+                    { x = 220, y = 80 },
+                },
+            },
+        },
+        second_to_exit = {
+            id = "second_to_exit",
+            sourceType = "junction",
+            sourceId = "second_junction",
+            targetType = "exit",
+            path = {
+                length = 70,
+                points = {
+                    { x = 220, y = 40 },
+                    { x = 290, y = 40 },
+                },
+            },
+        },
+    },
+    getRenderedTrackWindow = function(_, edge)
+        return 0, edge.path.length
+    end,
+    getLevel = function()
+        return { title = "Merge Wait" }
+    end,
+    getInputEdgeGroups = function()
+        return {
+            { edge = { id = "a_to_merge" } },
+            { edge = { id = "b_to_second" } },
+        }
+    end,
+    getOutputBadgeGroups = function()
+        return {
+            { edge = { id = "second_to_exit" } },
+        }
+    end,
+}
+
+local mergeWaitState = mapPresentation.buildState(mergeWaitWorld, { mapKind = "campaign" }, { playerDisplayName = "Signal" })
+local secondJunctionSchedule = mergeWaitState.junctionScheduleById.second_junction
+assertEqual(secondJunctionSchedule ~= nil, true, "downstream junction gets a reveal schedule")
+assertNear(
+    secondJunctionSchedule.arrivalTime,
+    math.max(
+        mergeWaitState.edgeScheduleById.merge_to_second.endTime,
+        mergeWaitState.edgeScheduleById.b_to_second.endTime
+    ),
+    0.0001,
+    "a junction waits for all incoming edges to finish before its reveal begins"
+)
+assertNear(
+    mergeWaitState.edgeScheduleById.second_to_exit.startTime,
+    secondJunctionSchedule.ringEndTime,
+    0.0001,
+    "outgoing edges wait for the fully resolved downstream junction ring"
+)
 
 print("map presentation tests passed")
