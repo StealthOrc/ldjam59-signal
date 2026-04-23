@@ -171,6 +171,7 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
             end
 
             local insertIndex = segmentIndex + 1
+            hitPoint.authored = false
             table.insert(route.points, insertIndex, hitPoint)
             self:splitRouteSegmentStyle(route, segmentIndex)
             return insertIndex, route.points[insertIndex], true
@@ -190,12 +191,13 @@ function mapEditor:prepareIntersectionForDrag(intersection)
 
     for _, routeId in ipairs(intersection.routeIds or {}) do
         local route = self:getRouteById(routeId)
-        local pointIndex, point = self:ensureRoutePointAtIntersection(route, intersection)
+        local pointIndex, point, inserted = self:ensureRoutePointAtIntersection(route, intersection)
         if route and pointIndex and point then
             members[#members + 1] = {
                 route = route,
                 pointIndex = pointIndex,
                 point = point,
+                inserted = inserted == true,
             }
             if point.sharedPointId and not sharedPointId then
                 sharedPointId = point.sharedPointId
@@ -217,6 +219,9 @@ function mapEditor:prepareIntersectionForDrag(intersection)
             self:reassignSharedPointGroup(member.point.sharedPointId, sharedPointId)
         end
         member.point.sharedPointId = sharedPointId
+        if member.inserted then
+            member.point.authored = false
+        end
     end
     self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)
     self:rebuildIntersections()
@@ -246,6 +251,7 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
                 route = route,
                 pointIndex = pointIndex,
                 point = point,
+                inserted = inserted == true,
             }
             changed = changed or inserted
 
@@ -274,6 +280,9 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
             changed = true
         end
         member.point.sharedPointId = sharedPointId
+        if member.inserted then
+            member.point.authored = false
+        end
     end
 
     self:updateSharedPointGroup(sharedPointId, intersection.x, intersection.y)

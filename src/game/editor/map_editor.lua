@@ -247,6 +247,7 @@ local function copyPoint(point)
         x = point.x,
         y = point.y,
         sharedPointId = point.sharedPointId,
+        authored = point.authored ~= false,
     }
 end
 

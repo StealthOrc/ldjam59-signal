@@ -229,7 +229,7 @@ function mapEditor:pruneSharedPointsFromMagnet(route, magnetKind)
     if magnetKind == "start" then
         while #route.points > 2 do
             local point = route.points[2]
-            if not point or not point.sharedPointId then
+            if not point or not point.sharedPointId or point.authored ~= false then
                 break
             end
 
@@ -242,7 +242,7 @@ function mapEditor:pruneSharedPointsFromMagnet(route, magnetKind)
         while #route.points > 2 do
             local pointIndex = #route.points - 1
             local point = route.points[pointIndex]
-            if not point or not point.sharedPointId then
+            if not point or not point.sharedPointId or point.authored ~= false then
                 break
             end
 
