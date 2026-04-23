@@ -11,6 +11,16 @@ return function(Game, shared)
         end,
     }))
 
+local SCORE_SUBMIT_REQUEST_KIND_REPLAY = "replay_submit"
+local SCORE_SUBMIT_REQUEST_KIND_SCORE = "score_submit"
+local RESULTS_MESSAGE_REPLAY_UPLOAD_PENDING = "Uploading replay..."
+local RESULTS_MESSAGE_REPLAY_UPLOAD_TIMEOUT = "The replay upload timed out."
+local RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED = "The replay upload failed."
+local RESULTS_MESSAGE_SCORE_SUBMIT_PENDING = "Replay upload failed. Submitting the score only..."
+local RESULTS_MESSAGE_SCORE_SUBMIT_SUCCESS = "Replay upload failed, but the score was submitted."
+local RESULTS_MESSAGE_SCORE_SUBMIT_KEPT = "Replay upload failed. The score was valid, but it stayed outside the online leaderboard."
+local RESULTS_MESSAGE_SCORE_SUBMIT_FAILED = "Replay upload failed, and the score fallback also failed."
+
 function Game:reloadOnlineConfig()
     local loadedConfig = leaderboardClient.getConfig()
     if loadedConfig.isConfigured or not (self.onlineConfig and self.onlineConfig.isConfigured) then
@@ -345,12 +355,39 @@ function Game:clearOnlineRequestState()
     self.activeUploadMapDescriptor = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeScoreSubmitRequestKind = nil
+    self.activeScoreSubmitRequestSummary = nil
+    self.activeScoreSubmitRequestOnlineConfig = nil
+    self.activeScoreSubmitFallbackAttempted = false
     self.activeReplayDownloadRequestId = nil
     self.activeReplayDownloadRequestStartedAt = nil
     self.activeReplayDownloadMapDescriptor = nil
     self.activeReplayDownloadEntry = nil
     self.activeReplayDownloadRequestMapUuid = nil
     self.activeReplayDownloadRequestMapHash = nil
+end
+
+local function clearActiveScoreSubmitRequestContext(game)
+    game.activeScoreSubmitRequestId = nil
+    game.activeScoreSubmitRequestStartedAt = nil
+    game.activeScoreSubmitRequestKind = nil
+    game.activeScoreSubmitRequestSummary = nil
+    game.activeScoreSubmitRequestOnlineConfig = nil
+    game.activeScoreSubmitFallbackAttempted = false
+end
+
+local function clearActiveScoreSubmitRequestInFlight(game)
+    game.activeScoreSubmitRequestId = nil
+    game.activeScoreSubmitRequestStartedAt = nil
+    game.activeScoreSubmitRequestKind = nil
+end
+
+local function cloneActiveScoreSubmitConfig(onlineConfig)
+    return {
+        apiKey = onlineConfig.apiKey,
+        apiBaseUrl = onlineConfig.apiBaseUrl,
+        hmacSecret = onlineConfig.hmacSecret,
+    }
 end
 
 function Game:setPlayMode(playMode)
@@ -877,7 +914,8 @@ function Game:beginLeaderboardFetch(onlineConfig)
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
-            limit = LEADERBOARD_ENTRY_LIMIT,
+            player_uuid = getProfilePlayerUuid(self.profile),
+            size = LEADERBOARD_ENTRY_LIMIT,
             mapUuid = self.leaderboardMapUuid,
         },
     }))
@@ -917,10 +955,11 @@ function Game:beginLevelSelectPreviewFetch(onlineConfig, mapDescriptor)
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
-            limit = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
+            include_replay = true,
             mapUuid = mapUuid,
             mapHash = mapHash,
             player_uuid = getProfilePlayerUuid(self.profile),
+            size = LEVEL_SELECT_PREVIEW_ENTRY_LIMIT,
         },
     }))
 end
@@ -1263,20 +1302,30 @@ function Game:beginReplaySubmitRequest(onlineConfig, summary, replayRecord)
         return false
     end
 
+    local replayMapUuid = summary.mapUuid or (replayRecord and replayRecord.mapUuid) or nil
+    local replayMapHash = replayRecord and replayRecord.mapHash or summary.mapHash or nil
     self:ensureLeaderboardWorker()
     self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
     self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
     self.activeScoreSubmitRequestStartedAt = getNowSeconds()
+    self.activeScoreSubmitRequestKind = SCORE_SUBMIT_REQUEST_KIND_REPLAY
+    self.activeScoreSubmitRequestSummary = {
+        finalScore = tonumber(summary.finalScore or 0) or 0,
+        mapHash = replayMapHash,
+        mapUuid = replayMapUuid,
+    }
+    self.activeScoreSubmitRequestOnlineConfig = cloneActiveScoreSubmitConfig(onlineConfig)
+    self.activeScoreSubmitFallbackAttempted = false
     self.leaderboardRequestChannel:push(json.encode({
-        kind = "replay_submit",
+        kind = SCORE_SUBMIT_REQUEST_KIND_REPLAY,
         requestId = self.activeScoreSubmitRequestId,
         config = {
             apiKey = onlineConfig.apiKey,
             apiBaseUrl = onlineConfig.apiBaseUrl,
             hmacSecret = onlineConfig.hmacSecret,
-            mapUuid = summary.mapUuid or (replayRecord and replayRecord.mapUuid) or nil,
-            mapHash = replayRecord and replayRecord.mapHash or nil,
-            mode = "replay_submit",
+            mapUuid = replayMapUuid,
+            mapHash = replayMapHash,
+            mode = SCORE_SUBMIT_REQUEST_KIND_REPLAY,
             playerDisplayName = self.profile.playerDisplayName,
             player_uuid = getProfilePlayerUuid(self.profile),
             score = summary.finalScore or 0,
@@ -1284,6 +1333,58 @@ function Game:beginReplaySubmitRequest(onlineConfig, summary, replayRecord)
         },
     }))
     return true
+end
+
+function Game:beginScoreSubmitRequest(onlineConfig, summary)
+    if self.activeScoreSubmitRequestId ~= nil then
+        return false
+    end
+
+    local resolvedSummary = type(summary) == "table" and summary or nil
+    if not resolvedSummary then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.activeScoreSubmitRequestId = self.remoteWriteRequestSequence
+    self.activeScoreSubmitRequestStartedAt = getNowSeconds()
+    self.activeScoreSubmitRequestKind = SCORE_SUBMIT_REQUEST_KIND_SCORE
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = SCORE_SUBMIT_REQUEST_KIND_SCORE,
+        requestId = self.activeScoreSubmitRequestId,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            hmacSecret = onlineConfig.hmacSecret,
+            mapUuid = resolvedSummary.mapUuid,
+            mapHash = resolvedSummary.mapHash,
+            mode = SCORE_SUBMIT_REQUEST_KIND_SCORE,
+            playerDisplayName = self.profile.playerDisplayName,
+            player_uuid = getProfilePlayerUuid(self.profile),
+            score = resolvedSummary.finalScore or 0,
+        },
+    }))
+    return true
+end
+
+function Game:attemptScoreSubmitFallback()
+    if self.activeScoreSubmitFallbackAttempted == true then
+        return false
+    end
+
+    local onlineConfig = self.activeScoreSubmitRequestOnlineConfig
+    local summary = self.activeScoreSubmitRequestSummary
+    if type(onlineConfig) ~= "table" or type(summary) ~= "table" then
+        return false
+    end
+
+    self.activeScoreSubmitFallbackAttempted = true
+    self.resultsOnlineState = {
+        status = "pending",
+        message = RESULTS_MESSAGE_SCORE_SUBMIT_PENDING,
+    }
+    return self:beginScoreSubmitRequest(onlineConfig, summary)
 end
 
 function Game:applyMarketplaceFetchResult(response, scopeKey)
@@ -1420,11 +1521,17 @@ function Game:updateLeaderboardFetchState()
             end
 
             if self.activeScoreSubmitRequestId ~= nil then
-                self.activeScoreSubmitRequestId = nil
-                self.activeScoreSubmitRequestStartedAt = nil
+                local requestKind = self.activeScoreSubmitRequestKind
+                clearActiveScoreSubmitRequestInFlight(self)
+                if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                    return
+                end
+                clearActiveScoreSubmitRequestContext(self)
                 self.resultsOnlineState = {
                     status = "error",
-                    message = threadError,
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and (RESULTS_MESSAGE_SCORE_SUBMIT_FAILED .. " " .. tostring(threadError))
+                        or threadError,
                 }
             end
 
@@ -1529,11 +1636,17 @@ function Game:updateLeaderboardFetchState()
     if self.activeScoreSubmitRequestId ~= nil and self.activeScoreSubmitRequestStartedAt ~= nil then
         local elapsedSeconds = getNowSeconds() - self.activeScoreSubmitRequestStartedAt
         if elapsedSeconds >= ONLINE_WRITE_TIMEOUT_SECONDS then
-            self.activeScoreSubmitRequestId = nil
-            self.activeScoreSubmitRequestStartedAt = nil
+            local requestKind = self.activeScoreSubmitRequestKind
+            clearActiveScoreSubmitRequestInFlight(self)
+            if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                return
+            end
+            clearActiveScoreSubmitRequestContext(self)
             self.resultsOnlineState = {
                 status = "error",
-                message = "The replay upload timed out.",
+                message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                    and RESULTS_MESSAGE_SCORE_SUBMIT_FAILED
+                    or RESULTS_MESSAGE_REPLAY_UPLOAD_TIMEOUT,
             }
         end
     end
@@ -1655,21 +1768,42 @@ function Game:updateLeaderboardFetchState()
                 end
                 self:showUploadFailureMessage(uploadOrigin, failureMessage)
             end
-        elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_submit" and decodedResponse.requestId == self.activeScoreSubmitRequestId then
-            self.activeScoreSubmitRequestId = nil
-            self.activeScoreSubmitRequestStartedAt = nil
+        elseif type(decodedResponse) == "table"
+            and decodedResponse.requestId == self.activeScoreSubmitRequestId
+            and (
+                decodedResponse.kind == SCORE_SUBMIT_REQUEST_KIND_REPLAY
+                or decodedResponse.kind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+            )
+        then
+            local requestKind = self.activeScoreSubmitRequestKind
+            clearActiveScoreSubmitRequestInFlight(self)
             if decodedResponse.ok and type(decodedResponse.payload) == "table" then
                 self.resultsOnlineState = {
                     status = decodedResponse.status == 202 and "kept" or "submitted",
-                    message = decodedResponse.status == 202
-                        and "Replay was valid, but it was outside the online top 10 for this map revision."
-                        or "Replay uploaded successfully.",
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and (
+                            decodedResponse.status == 202
+                                and RESULTS_MESSAGE_SCORE_SUBMIT_KEPT
+                                or RESULTS_MESSAGE_SCORE_SUBMIT_SUCCESS
+                        )
+                        or (
+                            decodedResponse.status == 202
+                                and "Replay was valid, but it was outside the online top 10 for this map revision."
+                                or "Replay uploaded successfully."
+                        ),
                 }
                 self:updateLevelSelectPreviewCacheFromSubmit(decodedResponse.payload)
+                clearActiveScoreSubmitRequestContext(self)
             else
+                if requestKind == SCORE_SUBMIT_REQUEST_KIND_REPLAY and self:attemptScoreSubmitFallback() then
+                    return
+                end
+                clearActiveScoreSubmitRequestContext(self)
                 self.resultsOnlineState = {
                     status = "error",
-                    message = decodedResponse.error or "The replay upload failed.",
+                    message = requestKind == SCORE_SUBMIT_REQUEST_KIND_SCORE
+                        and string.format("%s %s", RESULTS_MESSAGE_SCORE_SUBMIT_FAILED, tostring(decodedResponse.error or RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED))
+                        or tostring(decodedResponse.error or RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED),
                 }
             end
         elseif type(decodedResponse) == "table" and decodedResponse.kind == "replay_fetch" and decodedResponse.requestId == self.activeReplayDownloadRequestId then

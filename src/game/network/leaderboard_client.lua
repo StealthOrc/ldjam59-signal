@@ -75,14 +75,31 @@ function leaderboardClient.fetchLeaderboard(requestOptions, config)
         return nil, configError
     end
 
-    local limit = math.max(1, tonumber(requestOptions.limit or DEFAULT_LEADERBOARD_LIMIT) or DEFAULT_LEADERBOARD_LIMIT)
+    local size = math.max(1, tonumber(requestOptions.size or requestOptions.limit or DEFAULT_LEADERBOARD_LIMIT) or DEFAULT_LEADERBOARD_LIMIT)
     local mapUuid = tostring(requestOptions.mapUuid or "")
     local endpointPath
 
     if mapUuid ~= "" then
-        endpointPath = string.format("/api/maps/%s/leaderboard?limit=%d", mapUuid, limit)
+        endpointPath = string.format("/api/maps/%s/leaderboard?size=%d", mapUuid, size)
+        local playerUuid = tostring(requestOptions.player_uuid or "")
+        if playerUuid ~= "" then
+            endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+        end
+
+        local mapHash = tostring(requestOptions.mapHash or requestOptions.map_hash or "")
+        if mapHash ~= "" then
+            endpointPath = endpointPath .. "&map_hash=" .. urlEncode(mapHash)
+        end
+
+        if requestOptions.includeReplay == true or requestOptions.include_replay == true then
+            endpointPath = endpointPath .. "&include_replay=true"
+        end
     else
-        endpointPath = string.format("/api/leaderboard?limit=%d", limit)
+        endpointPath = string.format("/api/leaderboard?size=%d", size)
+        local playerUuid = tostring(requestOptions.player_uuid or "")
+        if playerUuid ~= "" then
+            endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+        end
     end
 
     return getJson(resolvedConfig, endpointPath)
@@ -130,6 +147,10 @@ function leaderboardClient.submitScore(submission, config)
         display_name = tostring(submission.playerDisplayName or ""),
         score = tonumber(submission.score or 0) or 0,
     }
+    local mapHash = tostring(submission.mapHash or submission.map_hash or "")
+    if mapHash ~= "" then
+        payload.map_hash = mapHash
+    end
 
     return postJson(resolvedConfig, endpointPath, payload)
 end

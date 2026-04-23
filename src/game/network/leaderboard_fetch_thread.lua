@@ -8,6 +8,7 @@ local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
 local REQUEST_KIND_FAVORITE_MAP = "favorite_map"
 local REQUEST_KIND_REPLAY_SUBMIT = "replay_submit"
+local REQUEST_KIND_SCORE_SUBMIT = "score_submit"
 local REQUEST_KIND_REPLAY_FETCH = "replay_fetch"
 local REQUEST_KIND_UPLOAD_MAP = "upload_map"
 
@@ -19,7 +20,13 @@ local function fetchLeaderboardEntries(config)
 end
 
 local function fetchLeaderboardPreview(config)
-    local topPayload, topError = leaderboardClient.fetchReplayMetadata(config, config)
+    local topPayload, topError = leaderboardClient.fetchLeaderboard({
+        include_replay = true,
+        mapHash = config.mapHash or config.map_hash,
+        mapUuid = config.mapUuid,
+        player_uuid = config.player_uuid,
+        size = config.size or config.limit,
+    }, config)
     if not topPayload then
         return nil, topError
     end
@@ -47,6 +54,10 @@ end
 
 local function submitReplay(config, requestId)
     return leaderboardClient.submitReplay(config, config)
+end
+
+local function submitScore(config, requestId)
+    return leaderboardClient.submitScore(config, config)
 end
 
 local function fetchReplayRecord(config)
@@ -106,6 +117,16 @@ while true do
         local payload, requestError, statusCode = submitReplay(request.config or {}, request.requestId)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_REPLAY_SUBMIT,
+            requestId = request.requestId,
+            ok = payload ~= nil,
+            payload = payload,
+            error = requestError,
+            status = statusCode,
+        }))
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_SCORE_SUBMIT then
+        local payload, requestError, statusCode = submitScore(request.config or {}, request.requestId)
+        responseChannel:push(json.encode({
+            kind = REQUEST_KIND_SCORE_SUBMIT,
             requestId = request.requestId,
             ok = payload ~= nil,
             payload = payload,

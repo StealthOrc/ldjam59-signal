@@ -583,6 +583,20 @@ function getLevelSelectLeaderboardVisibleEntries(topEntries, pinnedPlayerEntry, 
     local visibleTopEntries = {}
     local visiblePinnedPlayerEntry = pinnedPlayerEntry
     local visibleTopEntryLimit = resolvedMaxRows
+    local pinnedPlayerUuid = tostring(
+        visiblePinnedPlayerEntry
+            and (visiblePinnedPlayerEntry.playerUuid or visiblePinnedPlayerEntry.player_uuid)
+            or ""
+    )
+
+    if pinnedPlayerUuid ~= "" then
+        for _, entry in ipairs(topEntries or {}) do
+            if tostring(entry and (entry.playerUuid or entry.player_uuid) or "") == pinnedPlayerUuid then
+                visiblePinnedPlayerEntry = nil
+                break
+            end
+        end
+    end
 
     if visiblePinnedPlayerEntry and visibleTopEntryLimit > 0 then
         visibleTopEntryLimit = visibleTopEntryLimit - 1
