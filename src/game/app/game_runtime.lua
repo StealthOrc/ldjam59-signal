@@ -514,6 +514,7 @@ function Game.new()
     self.networkRequestOverlayCopyStatus = nil
     self.playGuide = nil
     self.playGuideTransition = nil
+    self.mapPresentation = nil
     self.pendingReplayPreparationInteractions = {}
     self.replayRecorder = nil
     self.replayRecord = nil
@@ -688,6 +689,7 @@ local shared = {
 
 require("src.game.app.game_remote_services")(Game, shared)
 require("src.game.app.game_profile_and_results")(Game, shared)
+require("src.game.app.game_map_presentation")(Game, shared)
 require("src.game.app.game_screen_flow")(Game, shared)
 require("src.game.app.game_runtime_handlers")(Game, shared)
 

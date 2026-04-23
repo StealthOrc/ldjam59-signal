@@ -881,9 +881,11 @@ function Game:startMap(mapDescriptor, options)
     self.replayDragActive = false
     self.replayDragTime = nil
     self.pendingReplayPreparationInteractions = {}
+    self.mapPresentation = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.playGuide = self:buildPlayGuideState(mapData.level)
     self.playGuideTransition = nil
+    self:beginMapPresentation(mapDescriptor)
     self.screen = "play"
     return true
 end
@@ -946,7 +948,7 @@ function Game:isPreparingRun()
 end
 
 function Game:startPlayPhase()
-    if not self.world or self.playPhase ~= "prepare" or self.playGuide then
+    if not self.world or self.playPhase ~= "prepare" or self.playGuide or self.mapPresentation then
         return false
     end
 

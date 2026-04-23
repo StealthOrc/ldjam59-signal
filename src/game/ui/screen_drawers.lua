@@ -672,6 +672,244 @@ function ui.drawPlay(game)
     local allowHoverTooltip = (not game.playGuideTransition) and (not activeGuideStep or activeGuideStep.allowHoverTooltip == true)
     local headerHintLines = ui.getPlayHeaderHintLines(game)
     local headerHintX = 24
+    local presentationState = game.mapPresentation
+    local introState = game.playPhase == "prepare" and presentationState and presentationState.titleOnly ~= true and presentationState or nil
+    local titleOverlayState = presentationState
+        and (presentationState.elapsed or 0) < (((presentationState.titleSequence or {}).endTime) or 0)
+        and presentationState
+        or nil
+
+    local function clamp01(value)
+        return clamp(value or 0, 0, 1)
+    end
+
+    local function easeInCubic(t)
+        local clamped = clamp01(t)
+        return clamped * clamped * clamped
+    end
+
+    local function easeOutCubic(t)
+        local clamped = clamp01(t)
+        local inverse = 1 - clamped
+        return 1 - inverse * inverse * inverse
+    end
+
+    local function easeOutBack(t)
+        local clamped = clamp01(t)
+        local s = 1.70158
+        local value = clamped - 1
+        return 1 + value * value * ((s + 1) * value + s)
+    end
+
+    local function getTimedProgress(startTime, duration)
+        return clamp01(((introState and introState.elapsed or 0) - (startTime or 0)) / math.max(0.0001, duration or 0))
+    end
+
+    local function withTranslatedDraw(offsetX, offsetY, drawFn)
+        graphics.push()
+        graphics.translate(offsetX or 0, offsetY or 0)
+        drawFn()
+        graphics.pop()
+    end
+
+    local function getBorderSlideOffset(rect, progress)
+        local eased = easeOutBack(progress)
+        local viewport = game.viewport or { w = 1280, h = 720 }
+        local leftDistance = rect.x
+        local rightDistance = viewport.w - (rect.x + rect.w)
+        local topDistance = rect.y
+        local bottomDistance = viewport.h - (rect.y + rect.h)
+        local bestDistance = leftDistance
+        local border = "left"
+
+        if rightDistance < bestDistance then
+            bestDistance = rightDistance
+            border = "right"
+        end
+        if topDistance < bestDistance then
+            bestDistance = topDistance
+            border = "top"
+        end
+        if bottomDistance < bestDistance then
+            border = "bottom"
+        end
+
+        local startOffsetX = 0
+        local startOffsetY = 0
+        if border == "left" then
+            startOffsetX = -rect.x - rect.w - 28
+        elseif border == "right" then
+            startOffsetX = viewport.w - rect.x + 28
+        elseif border == "top" then
+            startOffsetY = -rect.y - rect.h - 28
+        else
+            startOffsetY = viewport.h - rect.y + 28
+        end
+
+        return startOffsetX * (1 - eased), startOffsetY * (1 - eased)
+    end
+
+    local function drawIntroTitle()
+        if not titleOverlayState then
+            return
+        end
+
+        local sequence = titleOverlayState.titleSequence or {}
+        local centerX = (game.viewport and game.viewport.w or 1280) * 0.5
+        local centerY = (game.viewport and game.viewport.h or 720) / 6
+        local titleFont = game.fonts.title
+        local subtitleFont = game.fonts.body
+        local subtitleGap = 8
+        local titleHeight = titleFont:getHeight()
+        local subtitleHeight = titleOverlayState.subtitle ~= "" and subtitleFont:getHeight() or 0
+        local totalHeight = titleHeight + (titleOverlayState.subtitle ~= "" and (subtitleGap + subtitleHeight) or 0)
+        local titleCenterY = centerY - totalHeight * 0.5 + titleHeight * 0.5
+        local subtitleCenterY = titleCenterY + titleHeight * 0.5 + subtitleGap + subtitleHeight * 0.5
+
+        local function drawMovingLine(text, font, lineCenterY, delay, alphaScale)
+            if not text or text == "" then
+                return
+            end
+
+            local localElapsed = (titleOverlayState.elapsed or 0) - (delay or 0)
+            if localElapsed <= 0 then
+                return
+            end
+
+            local enterDuration = sequence.enterDuration or 0.55
+            local holdDuration = sequence.holdDuration or 2.0
+            local exitDuration = sequence.exitDuration or 0.55
+            local travelDistance = sequence.travelDistance or 420
+            local alpha = 0
+            local centerOffsetX = 0
+
+            if localElapsed < enterDuration then
+                local progress = easeOutCubic(localElapsed / enterDuration)
+                centerOffsetX = (1 - progress) * travelDistance
+                alpha = progress
+            elseif localElapsed < enterDuration + holdDuration then
+                centerOffsetX = 0
+                alpha = 1
+            elseif localElapsed < enterDuration + holdDuration + exitDuration then
+                local progress = easeInCubic((localElapsed - enterDuration - holdDuration) / exitDuration)
+                centerOffsetX = -travelDistance * progress
+                alpha = 1 - progress
+            else
+                return
+            end
+
+            alpha = alpha * (alphaScale or 1)
+            love.graphics.setFont(font)
+            local drawX = math.floor(centerX - font:getWidth(text) * 0.5 + centerOffsetX + 0.5)
+            local drawY = math.floor(lineCenterY - font:getHeight() * 0.5 + 0.5)
+            graphics.setColor(0.02, 0.03, 0.05, alpha * 0.55)
+            graphics.print(text, drawX + 4, drawY + 4)
+            graphics.setColor(0.97, 0.98, 1, alpha)
+            graphics.print(text, drawX, drawY)
+        end
+
+        drawMovingLine(titleOverlayState.title or "Untitled Map", titleFont, titleCenterY, 0, 1)
+        drawMovingLine(titleOverlayState.subtitle or "", subtitleFont, subtitleCenterY, sequence.lineDelay or 0.18, 0.94)
+    end
+
+    if introState then
+        local uiReveal = introState.uiReveal or {}
+        local topProgress = getTimedProgress(uiReveal.startTime or 0, uiReveal.duration or 0.52)
+        if topProgress > 0 then
+            local topOffsetY = -140 * (1 - easeOutBack(topProgress))
+            local backRect = getPlayBackRect(game)
+            local startRect = getPlayStartRect()
+            drawButton(
+                {
+                    x = backRect.x,
+                    y = backRect.y + topOffsetY,
+                    w = backRect.w,
+                    h = backRect.h,
+                },
+                getRunBackLabel(game),
+                { 0.09, 0.11, 0.15, 0.98 },
+                { 0.3, 0.36, 0.42, 1 },
+                game.fonts.small
+            )
+            drawButton(
+                {
+                    x = startRect.x,
+                    y = startRect.y + topOffsetY,
+                    w = startRect.w,
+                    h = startRect.h,
+                },
+                "Start Run",
+                { 0.12, 0.17, 0.2, 0.98 },
+                { 0.48, 0.92, 0.62, 1 },
+                game.fonts.body
+            )
+            love.graphics.setFont(game.fonts.small)
+            graphics.setColor(0.84, 0.88, 0.92, 1)
+            graphics.printf(
+                "Preparation Phase: set your routes, then start the clock.",
+                0,
+                34 + topOffsetY,
+                game.viewport.w,
+                "center"
+            )
+        end
+
+        for index, badge in ipairs(outputGroups) do
+            local progress = getTimedProgress(
+                (uiReveal.startTime or 0) + ((index - 1) * (uiReveal.cardStagger or 0)),
+                uiReveal.duration or 0.52
+            )
+            if progress > 0 then
+                local rect = getOutputBadgeRect(game, badge.edge, badge)
+                local offsetX, offsetY = getBorderSlideOffset(rect, progress)
+                withTranslatedDraw(offsetX, offsetY, function()
+                    drawOutputBadge(game, badge)
+                end)
+            end
+        end
+
+        for index, group in ipairs(inputGroups) do
+            local progress = getTimedProgress(
+                (uiReveal.startTime or 0) + ((index - 1) * (uiReveal.cardStagger or 0)),
+                uiReveal.duration or 0.52
+            )
+            if progress > 0 then
+                local rect = getInputPrepCardRect(game, group.edge, #(group.trains or {}), inputGroups)
+                local offsetX, offsetY = getBorderSlideOffset(rect, progress)
+                withTranslatedDraw(offsetX, offsetY, function()
+                    drawInputPrepCard(game, group)
+                end)
+            end
+        end
+
+        local textAlpha = getTimedProgress(
+            (uiReveal.startTime or 0) + (uiReveal.textFadeDelay or 0.1),
+            uiReveal.textFadeDuration or 0.32
+        )
+        if textAlpha > 0 then
+            love.graphics.setFont(game.fonts.small)
+            local lineHeight = game.fonts.small:getHeight() + 6
+            local hintBlockHeight = #headerHintLines * lineHeight
+            local headerHintY = math.floor((game.viewport.h - hintBlockHeight) * 0.5 + 0.5)
+            graphics.setColor(0.72, 0.78, 0.84, 0.96 * textAlpha)
+            for index, hintLine in ipairs(headerHintLines) do
+                graphics.print(hintLine, headerHintX, headerHintY + ((index - 1) * lineHeight))
+            end
+
+            if not activeGuideStep then
+                local blinkAlpha = 0.3
+                if love and love.timer and love.timer.getTime then
+                    blinkAlpha = (math.sin(love.timer.getTime() * 4.8) > 0) and 1 or 0.3
+                end
+                graphics.setColor(1, 1, 1, blinkAlpha * textAlpha)
+                graphics.printf("Press Spacebar to Start", 0, game.viewport.h - 86, game.viewport.w, "center")
+            end
+        end
+
+        drawIntroTitle()
+
+        return
+    end
 
     for _, badge in ipairs(outputGroups) do
         drawOutputBadge(game, badge)
@@ -724,6 +962,7 @@ function ui.drawPlay(game)
     if game.playPhase == "prepare" and not game.playOverlayMode and game.playHoverInfo and allowHoverTooltip then
         drawPlayTooltip(game, game.playHoverInfo)
     end
+    drawIntroTitle()
 end
 
 function ui.drawResults(game)

@@ -100,6 +100,13 @@ function Game:update(dt)
         return
     end
 
+    if self.mapPresentation then
+        self:updateMapPresentation(dt)
+        if self:isMapPresentationActive() then
+            return
+        end
+    end
+
     if self.playPhase ~= "play" then
         return
     end
@@ -141,7 +148,7 @@ function Game:draw()
         self.replayRuntime.playbackWorld:draw()
         ui.drawReplay(self)
     elseif self.screen == "play" and self.world then
-        self.world:draw()
+        self.world:draw(self:getMapPresentationDrawOptions())
         ui.drawPlay(self)
     end
 
@@ -459,6 +466,16 @@ function Game:keypressed(key)
         return
     end
 
+    if self:isMapPresentationActive() then
+        if key == "space" or key == "return" then
+            self:skipMapPresentation()
+            return
+        end
+        if key ~= "m" and key ~= "e" and key ~= "r" then
+            return
+        end
+    end
+
     if key == "f2" then
         self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "help" then
@@ -763,6 +780,11 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self:isMapPresentationActive() then
+        self:skipMapPresentation()
+        return
+    end
+
     if button == 1 and self.playOverlayMode == "debug" then
         local overlayHit = ui.getPlayOverlayHit and ui.getPlayOverlayHit(self, viewportX, viewportY) or nil
         if overlayHit and overlayHit.kind == "copy_debug_value" then
@@ -847,6 +869,10 @@ function Game:mousemoved(x, y, dx, dy)
 
     if self.screen == "editor" then
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
+        return
+    end
+
+    if self.screen == "play" and self:isMapPresentationActive() then
         return
     end
 

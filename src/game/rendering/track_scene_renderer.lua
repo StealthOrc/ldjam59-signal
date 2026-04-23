@@ -120,6 +120,116 @@ local function buildCubicCurvePoints(startPoint, controlPointA, controlPointB, e
     return points
 end
 
+local function appendPoint(points, x, y)
+    local lastPoint = points[#points]
+    if lastPoint and math.abs((lastPoint.x or 0) - x) <= 0.001 and math.abs((lastPoint.y or 0) - y) <= 0.001 then
+        return
+    end
+
+    points[#points + 1] = {
+        x = x,
+        y = y,
+    }
+end
+
+local function buildPathSlice(scene, path, startDistance, endDistance)
+    local points = {}
+    local clampedStart = clamp(startDistance or 0, 0, path.length)
+    local clampedEnd = clamp(endDistance or path.length, 0, path.length)
+
+    if clampedEnd <= clampedStart then
+        local x, y = scene:pointOnPath(path, clampedStart)
+        appendPoint(points, x, y)
+        return points
+    end
+
+    local startX, startY = scene:pointOnPath(path, clampedStart)
+    local endX, endY = scene:pointOnPath(path, clampedEnd)
+    appendPoint(points, startX, startY)
+
+    for _, segment in ipairs(path.segments or {}) do
+        local segmentEndDistance = (segment.startDistance or 0) + (segment.length or 0)
+        if segmentEndDistance > clampedStart and segmentEndDistance < clampedEnd then
+            appendPoint(points, segment.b.x, segment.b.y)
+        end
+    end
+
+    appendPoint(points, endX, endY)
+    return points
+end
+
+local function getRenderedTrackPoints(scene, track, revealProgress)
+    local resolvedRevealProgress = revealProgress == nil and 1 or clamp(revealProgress, 0, 1)
+    if resolvedRevealProgress <= 0 then
+        return {}
+    end
+    if resolvedRevealProgress >= 0.999 then
+        return scene:getRenderedTrackPoints(track)
+    end
+
+    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
+    local visibleLength = math.max(0, (endDistance or 0) - (startDistance or 0))
+    return buildPathSlice(scene, track.path, startDistance, startDistance + visibleLength * resolvedRevealProgress)
+end
+
+local function easeOutBack(t)
+    local s = 1.70158
+    local value = t - 1
+    return 1 + value * value * ((s + 1) * value + s)
+end
+
+local function getPresentationTrackRevealProgress(presentation, edgeId)
+    local schedule = presentation and presentation.edgeScheduleById and presentation.edgeScheduleById[edgeId] or nil
+    if not schedule then
+        return 1
+    end
+
+    local duration = math.max(0.0001, (schedule.endTime or 0) - (schedule.startTime or 0))
+    return clamp(((presentation.elapsed or 0) - (schedule.startTime or 0)) / duration, 0, 1)
+end
+
+local function getPresentationJunctionState(presentation, junctionId)
+    local schedule = presentation and presentation.junctionScheduleById and presentation.junctionScheduleById[junctionId] or nil
+    if not schedule then
+        return nil
+    end
+
+    local elapsed = presentation.elapsed or 0
+    if elapsed < (schedule.arrivalTime or 0) then
+        return nil
+    end
+
+    local ringDuration = math.max(0.0001, (schedule.ringEndTime or 0) - (schedule.ringStartTime or 0))
+    local iconDuration = math.max(0.0001, (schedule.iconEndTime or 0) - (schedule.iconStartTime or 0))
+    local ringProgress = clamp((elapsed - (schedule.ringStartTime or 0)) / ringDuration, 0, 1)
+    local iconProgress = clamp((elapsed - (schedule.iconStartTime or 0)) / iconDuration, 0, 1)
+
+    return {
+        ringProgress = ringProgress,
+        iconProgress = iconProgress,
+        iconScaleMultiplier = 0.18 + 0.82 * easeOutBack(iconProgress),
+        entryAngle = schedule.entryAngle or (-math.pi * 0.5),
+    }
+end
+
+local function drawPresentationJunctionRing(graphics, scene, junction, presentationState)
+    local activeInput = junction.inputs[junction.activeInputIndex]
+    local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
+    local activeInputColor = activeInput and activeInput.color or activeOutputColor
+    local x = junction.mergePoint.x
+    local y = junction.mergePoint.y
+    local radius = junction.crossingRadius
+    local startAngle = presentationState.entryAngle or (-math.pi * 0.5)
+    local endAngle = startAngle + math.pi * 2 * clamp(presentationState.ringProgress or 0, 0, 1)
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.42)
+    graphics.circle("fill", x, y, radius - 3)
+    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.92)
+    graphics.setLineWidth(3)
+    graphics.arc("line", x, y, radius, startAngle, endAngle)
+    graphics.setLineWidth(1)
+end
+
 local function getTimerRatio(armed, remaining, duration)
     if duration <= 0 then
         return armed and 1 or 0
@@ -553,12 +663,13 @@ function renderer.drawStripedTrack(_, points, width, stripeColors, alpha)
     end
 end
 
-function renderer.drawInputTrack(scene, track, isActive)
+function renderer.drawInputTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
     local stripeColors = buildTrackStripeColors(track.colors, isActive)
-    local renderedPoints = scene:getRenderedTrackPoints(track)
+    local revealProgress = drawState and drawState.revealProgress or nil
+    local renderedPoints = getRenderedTrackPoints(scene, track, revealProgress)
     if #renderedPoints < 2 then
         return
     end
@@ -577,10 +688,12 @@ function renderer.drawInputTrack(scene, track, isActive)
         renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    end
 end
 
-function renderer.drawStandaloneTrack(scene, track, isActive)
+function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
     local trackColor = isActive and track.color or track.darkColor
     local trackAlpha = isActive and 0.96 or 0.72
@@ -590,7 +703,8 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
         stripeColors = buildTrackStripeColors(track.colors, isActive)
     end
 
-    local renderedPoints = scene:getRenderedTrackPoints(track)
+    local revealProgress = drawState and drawState.revealProgress or nil
+    local renderedPoints = getRenderedTrackPoints(scene, track, revealProgress)
     if #renderedPoints < 2 then
         return
     end
@@ -609,15 +723,18 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
         renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    end
 end
 
-function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
+function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawState)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
     local color = scene:getOutputDisplayColor(junction, outputIndex, isActive)
     local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
-    local renderedPoints = scene:getRenderedTrackPoints(outputTrack)
+    local revealProgress = drawState and drawState.revealProgress or nil
+    local renderedPoints = getRenderedTrackPoints(scene, outputTrack, revealProgress)
     if #renderedPoints < 2 then
         return
     end
@@ -636,14 +753,17 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
         renderer.drawTrackLine(scene, points, scene.sharedWidth, color, isActive and 0.98 or 0.7)
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, outputTrack, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, isActive)
+    end
 end
 
-function renderer.drawControlOverlay(scene, junction)
+function renderer.drawControlOverlay(scene, junction, options)
     local graphics = love.graphics
     local control = junction.control
     local inputColor, inputStripeColors = getJunctionInputStyle(junction)
-    local iconScale = getControlIconScale(control)
+    local resolvedOptions = options or {}
+    local iconScale = getControlIconScale(control) * (resolvedOptions.iconScaleMultiplier or 1)
 
     if control.type == "direct" then
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
@@ -811,14 +931,33 @@ function renderer.drawActiveRouteIndicator(scene, junction, activeInput, activeO
     graphics.line(curvePoints)
 end
 
-function renderer.drawCrossing(scene, junction)
+function renderer.drawCrossing(scene, junction, options)
     local graphics = love.graphics
+    local resolvedOptions = options or {}
+    local presentationState = resolvedOptions.presentation
     local activeInput = junction.inputs[junction.activeInputIndex]
     local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local activeInputColor = activeInput and activeInput.color or activeOutputColor
     local x = junction.mergePoint.x
     local y = junction.mergePoint.y
     local inputStripeColors = activeInput and buildTrackStripeColors(activeInput.colors, true) or nil
+
+    if presentationState then
+        if (presentationState.ringProgress or 0) < 0.999 then
+            drawPresentationJunctionRing(graphics, scene, junction, presentationState)
+            return
+        end
+
+        if (presentationState.iconProgress or 0) <= 0.001 then
+            drawJunctionCircle(graphics, junction, activeInputColor, inputStripeColors)
+            return
+        end
+
+        renderer.drawControlOverlay(scene, junction, {
+            iconScaleMultiplier = presentationState.iconScaleMultiplier or 1,
+        })
+        return
+    end
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
     graphics.circle("fill", x, y, junction.crossingRadius)
@@ -913,6 +1052,7 @@ end
 function renderer.drawScene(scene, options)
     local graphics = love.graphics
     local drawOptions = options or {}
+    local presentation = drawOptions.presentation
     local highlightedEdgeIds = drawOptions.highlightedEdgeIds or scene:getHighlightedEdgeIds()
     local drawnEdgeIds = {}
 
@@ -926,7 +1066,17 @@ function renderer.drawScene(scene, options)
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
             if outputTrack and not drawnEdgeIds[outputTrack.id] then
-                renderer.drawOutputTrack(scene, junction, outputIndex, highlightedEdgeIds[outputTrack.id] == true)
+                local drawState = presentation and {
+                    revealProgress = getPresentationTrackRevealProgress(presentation, outputTrack.id),
+                    showMarkers = false,
+                } or nil
+                renderer.drawOutputTrack(
+                    scene,
+                    junction,
+                    outputIndex,
+                    presentation and true or highlightedEdgeIds[outputTrack.id] == true,
+                    drawState
+                )
                 drawnEdgeIds[outputTrack.id] = true
             end
         end
@@ -936,7 +1086,16 @@ function renderer.drawScene(scene, options)
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
             if inputTrack and not drawnEdgeIds[inputTrack.id] then
-                renderer.drawInputTrack(scene, inputTrack, highlightedEdgeIds[inputTrack.id] == true)
+                local drawState = presentation and {
+                    revealProgress = getPresentationTrackRevealProgress(presentation, inputTrack.id),
+                    showMarkers = false,
+                } or nil
+                renderer.drawInputTrack(
+                    scene,
+                    inputTrack,
+                    presentation and true or highlightedEdgeIds[inputTrack.id] == true,
+                    drawState
+                )
                 drawnEdgeIds[inputTrack.id] = true
             end
         end
@@ -944,17 +1103,32 @@ function renderer.drawScene(scene, options)
 
     for _, track in pairs(scene.edges or {}) do
         if track and not drawnEdgeIds[track.id] then
-            renderer.drawStandaloneTrack(scene, track, highlightedEdgeIds[track.id] == true)
+            local drawState = presentation and {
+                revealProgress = getPresentationTrackRevealProgress(presentation, track.id),
+                showMarkers = false,
+            } or nil
+            renderer.drawStandaloneTrack(
+                scene,
+                track,
+                presentation and true or highlightedEdgeIds[track.id] == true,
+                drawState
+            )
+            drawnEdgeIds[track.id] = true
         end
     end
 
     for _, junction in ipairs(scene.junctionOrder or {}) do
-        renderer.drawCrossing(scene, junction)
+        local presentationState = presentation and getPresentationJunctionState(presentation, junction.id) or nil
+        if not presentation or presentationState then
+            renderer.drawCrossing(scene, junction, presentationState and { presentation = presentationState } or nil)
+        end
     end
 
-    for _, junction in ipairs(scene.junctionOrder or {}) do
-        for inputIndex = 1, #junction.inputs do
-            renderer.drawTrackSignal(scene, junction, inputIndex)
+    if not presentation then
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            for inputIndex = 1, #junction.inputs do
+                renderer.drawTrackSignal(scene, junction, inputIndex)
+            end
         end
     end
 
@@ -964,8 +1138,10 @@ function renderer.drawScene(scene, options)
         end
     end
 
-    for _, junction in ipairs(scene.junctionOrder or {}) do
-        renderer.drawOutputSelector(scene, junction)
+    if not presentation then
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            renderer.drawOutputSelector(scene, junction)
+        end
     end
 
     if drawOptions.drawCollision ~= false then
