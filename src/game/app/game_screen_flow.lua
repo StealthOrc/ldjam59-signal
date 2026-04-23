@@ -303,7 +303,44 @@ function Game:openSelectedLevelSelectReplay()
         return false
     end
 
-    local replayRecord, replayError = replayStorage.load(replayEntry.replayFilePath)
+    return self:openLevelSelectReplayEntry(selectedMap, replayEntry)
+end
+
+function Game:openLevelSelectReplayEntry(mapDescriptor, replayEntry)
+    local selectedMap = type(mapDescriptor) == "table" and mapDescriptor or self:getSelectedLevelMap()
+    if not selectedMap then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "Select a map before opening a replay.")
+        return false
+    end
+
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedReplayEntry then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "No local replay is available for this entry yet."
+        )
+        return false
+    end
+
+    local replayFilePath = tostring(resolvedReplayEntry.replayFilePath or "")
+    if replayFilePath == "" then
+        local replayUuid = tostring(resolvedReplayEntry.replayUuid or "")
+        local indexedReplayEntry = mapReplayIndexStorage.getReplayByUuid(self.localReplayIndex, replayUuid)
+        if indexedReplayEntry then
+            resolvedReplayEntry = indexedReplayEntry
+            replayFilePath = tostring(indexedReplayEntry.replayFilePath or "")
+        end
+    end
+
+    if replayFilePath == "" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected replay file could not be found locally."
+        )
+        return false
+    end
+
+    local replayRecord, replayError = replayStorage.load(replayFilePath)
     if not replayRecord then
         self:setLevelSelectActionState(
             LEVEL_SELECT_ACTION_STATUS_ERROR,

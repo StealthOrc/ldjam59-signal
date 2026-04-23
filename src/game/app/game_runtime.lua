@@ -283,6 +283,9 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
         return nil
     end
 
+    local replayUuid = entry.replay_uuid or entry.replayUuid or ""
+    local replayFilePath = entry.replay_file_path or entry.replayFilePath or ""
+
     return {
         playerDisplayName = entry.display_name or entry.player_display_name or "Unknown",
         playerUuid = entry.player_uuid or "",
@@ -293,9 +296,10 @@ local function normalizeLeaderboardEntry(entry, fallbackMapUuid, fallbackRank)
         recordedAt = entry.recorded_at or entry.updated_at,
         createdAt = entry.created_at,
         updatedAt = entry.updated_at,
-        replayUuid = entry.replay_uuid or entry.replayUuid or "",
+        replayUuid = replayUuid,
+        replayFilePath = replayFilePath,
         durationSeconds = tonumber(entry.duration_seconds or entry.durationSeconds or 0) or 0,
-        hasReplay = tostring(entry.replay_uuid or entry.replayUuid or "") ~= "",
+        hasReplay = tostring(replayUuid) ~= "" or tostring(replayFilePath) ~= "",
     }
 end
 

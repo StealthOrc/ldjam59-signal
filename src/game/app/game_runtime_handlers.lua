@@ -670,6 +670,8 @@ function Game:mousepressed(x, y, button)
                         "Online replay playback is not configured."
                     )
                 end
+            else
+                self:openLevelSelectReplayEntry(hit.map, hit.replayEntry)
             end
         elseif hit.kind == "open_replays" then
             self:setLevelSelectSelection(hit.map)
