@@ -20,6 +20,7 @@ function ui.drawMenu(game)
     local modeToggleProgress = 0
     local menuTitle = "Out of Signal"
     local menuElapsed = game.getMenuIntroElapsed and game:getMenuIntroElapsed() or 0
+    local backgroundTitleState = game.getMenuBackgroundReplayTitleState and game:getMenuBackgroundReplayTitleState() or nil
     local titleEnterDuration = 0.55
     local buttonRevealDuration = 0.52
     local buttonStagger = 0.07
@@ -39,6 +40,11 @@ function ui.drawMenu(game)
         local s = 1.70158
         local value = clamped - 1
         return 1 + value * value * ((s + 1) * value + s)
+    end
+
+    local function easeInCubic(t)
+        local clamped = clamp01(t)
+        return clamped * clamped * clamped
     end
 
     local function withTranslatedDraw(offsetX, offsetY, drawFn)
@@ -90,12 +96,76 @@ function ui.drawMenu(game)
         return clamp01((menuElapsed - revealStart) / buttonRevealDuration)
     end
 
-    graphics.setColor(0.05, 0.07, 0.1, 1)
-    graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+    if not (game.hasMenuBackgroundReplay and game:hasMenuBackgroundReplay()) then
+        graphics.setColor(0.05, 0.07, 0.1, 1)
+        graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
 
-    graphics.setColor(0, 0, 0, 0.22)
-    graphics.circle("fill", 200, 140, 180)
-    graphics.circle("fill", 1080, 560, 220)
+        graphics.setColor(0, 0, 0, 0.22)
+        graphics.circle("fill", 200, 140, 180)
+        graphics.circle("fill", 1080, 560, 220)
+    else
+        graphics.setColor(0.02, 0.03, 0.04, 0.42)
+        graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
+    end
+
+    if backgroundTitleState then
+        local sequence = backgroundTitleState.titleSequence or {}
+        local centerX = (game.viewport and game.viewport.w or 1280) * 0.5
+        local centerY = (game.viewport and game.viewport.h or 720) / 6
+        local titleFont = game.fonts.title
+        local subtitleFont = game.fonts.body
+        local subtitleGap = 8
+        local titleHeight = titleFont:getHeight()
+        local hasSubtitle = backgroundTitleState.subtitle ~= nil and backgroundTitleState.subtitle ~= ""
+        local subtitleHeight = hasSubtitle and subtitleFont:getHeight() or 0
+        local totalHeight = titleHeight + (hasSubtitle and (subtitleGap + subtitleHeight) or 0)
+        local titleCenterY = centerY - totalHeight * 0.5 + titleHeight * 0.5
+        local subtitleCenterY = titleCenterY + titleHeight * 0.5 + subtitleGap + subtitleHeight * 0.5
+
+        local function drawMovingLine(text, font, lineCenterY, delay, alphaScale)
+            if not text or text == "" then
+                return
+            end
+
+            local localElapsed = (backgroundTitleState.elapsed or 0) - (delay or 0)
+            if localElapsed <= 0 then
+                return
+            end
+
+            local enterDuration = sequence.enterDuration or 0.55
+            local holdDuration = sequence.holdDuration or 2.0
+            local exitDuration = sequence.exitDuration or 0.55
+            local travelDistance = sequence.travelDistance or 420
+            local alpha = 0
+            local centerOffsetX = 0
+
+            if localElapsed < enterDuration then
+                local progress = easeOutCubic(localElapsed / enterDuration)
+                centerOffsetX = (1 - progress) * travelDistance
+                alpha = progress
+            elseif localElapsed < enterDuration + holdDuration then
+                alpha = 1
+            elseif localElapsed < enterDuration + holdDuration + exitDuration then
+                local progress = easeInCubic((localElapsed - enterDuration - holdDuration) / exitDuration)
+                centerOffsetX = -travelDistance * progress
+                alpha = 1 - progress
+            else
+                return
+            end
+
+            alpha = alpha * (alphaScale or 1)
+            love.graphics.setFont(font)
+            local drawX = math.floor(centerX - font:getWidth(text) * 0.5 + centerOffsetX + 0.5)
+            local drawY = math.floor(lineCenterY - font:getHeight() * 0.5 + 0.5)
+            graphics.setColor(0.02, 0.03, 0.05, alpha * 0.55)
+            graphics.print(text, drawX + 4, drawY + 4)
+            graphics.setColor(0.97, 0.98, 1, alpha)
+            graphics.print(text, drawX, drawY)
+        end
+
+        drawMovingLine(backgroundTitleState.title or "Untitled Map", titleFont, titleCenterY, 0, 1)
+        drawMovingLine(backgroundTitleState.subtitle or "", subtitleFont, subtitleCenterY, sequence.lineDelay or 0.18, 0.94)
+    end
 
     do
         local enterDuration = 0.55

@@ -1,0 +1,7 @@
+version = 1
+replayId = "campaign-ambient-simple-beginning"
+mapUuid = "3206710d-793f-474e-957a-fdb721926f52"
+mapTitle = "A Simple Beginning"
+createdAt = "2026-04-23T00:00:00Z"
+duration = 9
+endReason = "ambient"

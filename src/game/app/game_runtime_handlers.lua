@@ -69,6 +69,11 @@ function Game:update(dt)
     self:updateLeaderboardFetchState()
     self:updatePlayGuideTransition(dt)
 
+    if self.screen == "menu" then
+        self:updateMenuBackgroundReplay(dt)
+        return
+    end
+
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
         return
@@ -131,6 +136,9 @@ function Game:draw()
     love.graphics.scale(self.renderScale, self.renderScale)
 
     if self.screen == "menu" then
+        if self:hasMenuBackgroundReplay() then
+            self.menuBackgroundReplay.replayRuntime.playbackWorld:draw(self:getMenuBackgroundReplayDrawOptions())
+        end
         ui.drawMenu(self)
     elseif self.screen == "profile_setup" then
         ui.drawProfileSetup(self)

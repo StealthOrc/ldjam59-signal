@@ -746,6 +746,7 @@ function Game:openMenu()
     self.menuTitleAnimationStartedAt = love.timer.getTime()
     self.menuIntroSkipStartedAt = nil
     self.menuIntroSkipFromElapsed = nil
+    self:resetMenuBackgroundReplayLoop()
     self.levelSelectIssue = nil
     self:closeLevelSelectReplayOverlay()
     self.levelSelectHoverId = nil

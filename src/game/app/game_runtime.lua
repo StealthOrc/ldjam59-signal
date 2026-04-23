@@ -500,6 +500,8 @@ function Game.new()
     self.menuTitleAnimationStartedAt = love.timer.getTime()
     self.menuIntroSkipStartedAt = nil
     self.menuIntroSkipFromElapsed = nil
+    self.menuBackgroundReplay = nil
+    self.menuBackgroundReplayLastPath = nil
     if getProfilePlayMode(self.profile) == PLAY_MODE_ONLINE and not self.onlineConfig.isConfigured then
         self.profile.playMode = PLAY_MODE_OFFLINE
         self.profileModeSelection = PLAY_MODE_OFFLINE
@@ -559,6 +561,9 @@ function Game.new()
 
     self:updateRenderTransform()
     self:refreshMaps()
+    if self.screen == "menu" and self.resetMenuBackgroundReplayLoop then
+        self:resetMenuBackgroundReplayLoop()
+    end
 
     return self
 end
@@ -694,6 +699,7 @@ local shared = {
 require("src.game.app.game_remote_services")(Game, shared)
 require("src.game.app.game_profile_and_results")(Game, shared)
 require("src.game.app.game_map_presentation")(Game, shared)
+require("src.game.app.game_menu_background")(Game, shared)
 require("src.game.app.game_screen_flow")(Game, shared)
 require("src.game.app.game_runtime_handlers")(Game, shared)
 

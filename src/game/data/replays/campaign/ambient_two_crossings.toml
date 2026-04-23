@@ -1,0 +1,7 @@
+version = 1
+replayId = "campaign-ambient-two-crossings"
+mapUuid = "16b6e4e1-cafc-4f02-8285-11dc7e2f5d75"
+mapTitle = "Two Crossings"
+createdAt = "2026-04-23T00:00:00Z"
+duration = 10
+endReason = "ambient"
