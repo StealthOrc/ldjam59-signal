@@ -10,6 +10,8 @@ local TRACK_REVEAL_PIXELS_PER_SECOND = 560
 local TRACK_REVEAL_MIN_DURATION = 0.16
 local JUNCTION_RING_DURATION = 0.18
 local JUNCTION_ICON_DURATION = 0.32
+local TRACK_STATE_BLEND_DURATION = 0.42
+local SIGNAL_POP_DURATION = 0.42
 local UI_REVEAL_DELAY = 0.08
 local UI_REVEAL_DURATION = 0.52
 local UI_CARD_STAGGER = 0.07
@@ -333,7 +335,14 @@ function mapPresentation.buildState(world, descriptor, profile)
     end
 
     local uiRevealStartTime = graphCompleteTime + UI_REVEAL_DELAY
-    local finishTime = math.max(titleEndTime, uiRevealStartTime + UI_REVEAL_DURATION + maxCardDelay)
+    local trackStateBlendEndTime = graphCompleteTime + TRACK_STATE_BLEND_DURATION
+    local signalPopEndTime = graphCompleteTime + SIGNAL_POP_DURATION
+    local finishTime = math.max(
+        titleEndTime,
+        uiRevealStartTime + UI_REVEAL_DURATION + maxCardDelay,
+        trackStateBlendEndTime,
+        signalPopEndTime
+    )
     local allEdgeIds = {}
     for edgeId in pairs(edgeSchedulesById) do
         allEdgeIds[edgeId] = true
@@ -361,6 +370,16 @@ function mapPresentation.buildState(world, descriptor, profile)
             maxCardDelay = maxCardDelay,
         },
         graphCompleteTime = graphCompleteTime,
+        trackStateBlend = {
+            startTime = graphCompleteTime,
+            duration = TRACK_STATE_BLEND_DURATION,
+            endTime = trackStateBlendEndTime,
+        },
+        signalPop = {
+            startTime = graphCompleteTime,
+            duration = SIGNAL_POP_DURATION,
+            endTime = signalPopEndTime,
+        },
         edgeScheduleById = edgeSchedulesById,
         junctionScheduleById = junctionSchedulesById,
         allEdgeIds = allEdgeIds,

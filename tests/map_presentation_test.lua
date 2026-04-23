@@ -129,6 +129,23 @@ assertNear(
     0.0001,
     "ui reveal begins shortly after the track presentation finishes"
 )
+assertNear(
+    state.trackStateBlend.startTime,
+    state.graphCompleteTime,
+    0.0001,
+    "track state blending starts when the graph reveal finishes"
+)
+assertNear(
+    state.signalPop.startTime,
+    state.graphCompleteTime,
+    0.0001,
+    "signal pop-in starts when the graph reveal finishes"
+)
+assertEqual(
+    state.finishTime >= state.signalPop.endTime,
+    true,
+    "presentation remains alive until the signal pop finishes"
+)
 
 local skipState = mapPresentation.buildState(fakeWorld, { mapKind = "campaign" }, { playerDisplayName = "Signal" })
 skipState.elapsed = 1.1

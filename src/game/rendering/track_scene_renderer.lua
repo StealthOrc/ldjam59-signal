@@ -32,6 +32,18 @@ local function clamp(value, minValue, maxValue)
     return value
 end
 
+local function lerp(a, b, t)
+    return a + (b - a) * clamp(t or 0, 0, 1)
+end
+
+local function mixColor(fromColor, toColor, t)
+    return {
+        lerp((fromColor and fromColor[1]) or 0, (toColor and toColor[1]) or 0, t),
+        lerp((fromColor and fromColor[2]) or 0, (toColor and toColor[2]) or 0, t),
+        lerp((fromColor and fromColor[3]) or 0, (toColor and toColor[3]) or 0, t),
+    }
+end
+
 local function copyColor(color)
     if not color then
         return { 0.8, 0.8, 0.8 }
@@ -69,7 +81,9 @@ local function buildTrackStripeColors(colorIds, isActive)
         return nil
     end
 
-    local brightness = isActive and 1 or 0.58
+    local brightness = type(isActive) == "number"
+        and lerp(0.58, 1, isActive)
+        or (isActive and 1 or 0.58)
     local colors = {}
     for _, colorId in ipairs(colorIds or {}) do
         local color = getColorById(colorId)
@@ -176,6 +190,46 @@ local function easeOutBack(t)
     local s = 1.70158
     local value = t - 1
     return 1 + value * value * ((s + 1) * value + s)
+end
+
+local function getPresentationTimedProgress(presentation, transition)
+    local schedule = presentation and presentation[transition] or nil
+    if not schedule then
+        return nil
+    end
+
+    local duration = math.max(0.0001, tonumber(schedule.duration or ((schedule.endTime or 0) - (schedule.startTime or 0))) or 0.0001)
+    return clamp(((presentation.elapsed or 0) - (schedule.startTime or 0)) / duration, 0, 1)
+end
+
+local function getPresentationTrackActivityMix(presentation, finalIsActive)
+    if not presentation then
+        return finalIsActive and 1 or 0
+    end
+
+    if finalIsActive then
+        return 1
+    end
+
+    local transitionProgress = getPresentationTimedProgress(presentation, "trackStateBlend") or 0
+    return 1 - transitionProgress
+end
+
+local function getPresentationSignalState(presentation)
+    if not presentation then
+        return nil
+    end
+
+    local progress = getPresentationTimedProgress(presentation, "signalPop")
+    if not progress or progress <= 0.001 then
+        return nil
+    end
+
+    return {
+        progress = progress,
+        alpha = progress,
+        scaleMultiplier = 0.18 + 0.82 * easeOutBack(progress),
+    }
 end
 
 local function getPresentationTrackRevealProgress(presentation, edgeId)
@@ -575,7 +629,8 @@ end
 
 function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
     local startDistance, endDistance = scene:getRenderedTrackWindow(track)
-    local alpha = isActive and 0.95 or 0.78
+    local activityMix = type(isActive) == "number" and clamp(isActive, 0, 1) or (isActive and 1 or 0)
+    local alpha = lerp(0.78, 0.95, activityMix)
 
     for _, section in ipairs(track.styleSections or {}) do
         local roadTypeConfig = roadTypes.getConfig(section.roadType)
@@ -665,9 +720,13 @@ end
 
 function renderer.drawInputTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
-    local stripeColors = buildTrackStripeColors(track.colors, isActive)
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local trackColor = mixColor(track.darkColor, track.color, activityMix)
+    local trackAlpha = lerp(0.72, 0.96, activityMix)
+    local stripeColors = buildTrackStripeColors(track.colors, activityMix)
     local revealProgress = drawState and drawState.revealProgress or nil
     local renderedPoints = getRenderedTrackPoints(scene, track, revealProgress)
     if #renderedPoints < 2 then
@@ -689,18 +748,22 @@ function renderer.drawInputTrack(scene, track, isActive, drawState)
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix)
     end
 end
 
 function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local trackColor = mixColor(track.darkColor, track.color, activityMix)
+    local trackAlpha = lerp(0.72, 0.96, activityMix)
     local stripeColors = nil
 
     if not track.adoptInputColor then
-        stripeColors = buildTrackStripeColors(track.colors, isActive)
+        stripeColors = buildTrackStripeColors(track.colors, activityMix)
     end
 
     local revealProgress = drawState and drawState.revealProgress or nil
@@ -724,15 +787,21 @@ function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix)
     end
 end
 
 function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawState)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
-    local color = scene:getOutputDisplayColor(junction, outputIndex, isActive)
-    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local activeColor = scene:getOutputDisplayColor(junction, outputIndex, true)
+    local inactiveColor = scene:getOutputDisplayColor(junction, outputIndex, false)
+    local color = mixColor(inactiveColor, activeColor, activityMix)
+    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, activityMix) or nil
     local revealProgress = drawState and drawState.revealProgress or nil
     local renderedPoints = getRenderedTrackPoints(scene, outputTrack, revealProgress)
     if #renderedPoints < 2 then
@@ -748,13 +817,13 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawSt
     graphics.line(points)
 
     if stripeColors then
-        renderer.drawStripedTrack(scene, points, scene.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
+        renderer.drawStripedTrack(scene, points, scene.sharedWidth, stripeColors, lerp(0.7, 0.98, activityMix))
     else
-        renderer.drawTrackLine(scene, points, scene.sharedWidth, color, isActive and 0.98 or 0.7)
+        renderer.drawTrackLine(scene, points, scene.sharedWidth, color, lerp(0.7, 0.98, activityMix))
     end
 
     if not drawState or drawState.showMarkers ~= false then
-        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, isActive)
+        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, activityMix)
     end
 end
 
@@ -988,18 +1057,24 @@ function renderer.drawOutputSelector(scene, junction)
     end
 end
 
-function renderer.drawTrackSignal(_, junction, inputIndex)
+function renderer.drawTrackSignal(_, junction, inputIndex, options)
     local graphics = love.graphics
+    local resolvedOptions = options or {}
     local track = junction.inputs[inputIndex]
     local signalPoint = track.signalPoint
+    if not signalPoint then
+        return
+    end
     local pulse = 0.5 + 0.5 * math.sin(love.timer.getTime() * 6 + inputIndex)
-    local signalRadius = 12 + pulse * 3
+    local scaleMultiplier = resolvedOptions.scaleMultiplier or 1
+    local alphaMultiplier = resolvedOptions.alphaMultiplier or 1
+    local signalRadius = (12 + pulse * 3) * scaleMultiplier
 
     graphics.setLineWidth(6)
     if inputIndex == junction.activeInputIndex then
-        graphics.setColor(0.42, 0.92, 0.54, 1)
+        graphics.setColor(0.42, 0.92, 0.54, alphaMultiplier)
     else
-        graphics.setColor(0.92, 0.26, 0.2, 1)
+        graphics.setColor(0.92, 0.26, 0.2, alphaMultiplier)
     end
     graphics.circle("fill", signalPoint.x, signalPoint.y, signalRadius)
 end
@@ -1066,15 +1141,17 @@ function renderer.drawScene(scene, options)
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
             if outputTrack and not drawnEdgeIds[outputTrack.id] then
+                local actualActive = highlightedEdgeIds[outputTrack.id] == true
                 local drawState = presentation and {
                     revealProgress = getPresentationTrackRevealProgress(presentation, outputTrack.id),
                     showMarkers = false,
+                    activityMix = getPresentationTrackActivityMix(presentation, actualActive),
                 } or nil
                 renderer.drawOutputTrack(
                     scene,
                     junction,
                     outputIndex,
-                    presentation and true or highlightedEdgeIds[outputTrack.id] == true,
+                    actualActive,
                     drawState
                 )
                 drawnEdgeIds[outputTrack.id] = true
@@ -1086,14 +1163,16 @@ function renderer.drawScene(scene, options)
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
             if inputTrack and not drawnEdgeIds[inputTrack.id] then
+                local actualActive = highlightedEdgeIds[inputTrack.id] == true
                 local drawState = presentation and {
                     revealProgress = getPresentationTrackRevealProgress(presentation, inputTrack.id),
                     showMarkers = false,
+                    activityMix = getPresentationTrackActivityMix(presentation, actualActive),
                 } or nil
                 renderer.drawInputTrack(
                     scene,
                     inputTrack,
-                    presentation and true or highlightedEdgeIds[inputTrack.id] == true,
+                    actualActive,
                     drawState
                 )
                 drawnEdgeIds[inputTrack.id] = true
@@ -1103,14 +1182,16 @@ function renderer.drawScene(scene, options)
 
     for _, track in pairs(scene.edges or {}) do
         if track and not drawnEdgeIds[track.id] then
+            local actualActive = highlightedEdgeIds[track.id] == true
             local drawState = presentation and {
                 revealProgress = getPresentationTrackRevealProgress(presentation, track.id),
                 showMarkers = false,
+                activityMix = getPresentationTrackActivityMix(presentation, actualActive),
             } or nil
             renderer.drawStandaloneTrack(
                 scene,
                 track,
-                presentation and true or highlightedEdgeIds[track.id] == true,
+                actualActive,
                 drawState
             )
             drawnEdgeIds[track.id] = true
@@ -1124,7 +1205,16 @@ function renderer.drawScene(scene, options)
         end
     end
 
-    if not presentation then
+    if presentation then
+        local signalState = getPresentationSignalState(presentation)
+        if signalState then
+            for _, junction in ipairs(scene.junctionOrder or {}) do
+                for inputIndex = 1, #junction.inputs do
+                    renderer.drawTrackSignal(scene, junction, inputIndex, signalState)
+                end
+            end
+        end
+    else
         for _, junction in ipairs(scene.junctionOrder or {}) do
             for inputIndex = 1, #junction.inputs do
                 renderer.drawTrackSignal(scene, junction, inputIndex)
