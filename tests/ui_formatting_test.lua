@@ -980,6 +980,39 @@ local leaderboardReplayHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 2
 assertEqual(leaderboardReplayHit.kind, "open_leaderboard_replay", "flipped leaderboard rows open replays when replay metadata exists")
 assertEqual(leaderboardReplayHit.replayEntry.replayUuid, "replay-1", "flipped leaderboard row hit returns the replay metadata entry")
 
+local leaderboardScreenGame = {
+    viewport = { w = 1280, h = 720 },
+    leaderboardMapUuid = nil,
+    leaderboardState = {
+        entries = {
+            {
+                rank = 1,
+                playerDisplayName = "Runner",
+                playerUuid = "player-1",
+                score = 24.609,
+                mapUuid = "map-uuid-1",
+                replayUuid = "replay-1",
+                recordedAt = 1710000000,
+                hasReplay = true,
+            },
+            {
+                rank = 2,
+                playerDisplayName = "Walker",
+                playerUuid = "player-2",
+                score = 21.111,
+                mapUuid = "map-uuid-2",
+                recordedAt = 1710000100,
+                hasReplay = false,
+            },
+        },
+    },
+}
+
+local leaderboardRecordHit = ui.getLeaderboardReplayHitAt(leaderboardScreenGame, 640, 248)
+assertEqual(leaderboardRecordHit.entry.replayUuid, "replay-1", "leaderboard rows open replays when replay metadata exists")
+local leaderboardRecordMiss = ui.getLeaderboardReplayHitAt(leaderboardScreenGame, 640, 290)
+assertEqual(leaderboardRecordMiss, nil, "leaderboard rows without replay metadata do not open replays")
+
 local leaderboardCardBackgroundHit = ui.getLevelSelectHit(flippedLeaderboardGame, 640, 190, 1)
 assertEqual(
     leaderboardCardBackgroundHit.kind,
