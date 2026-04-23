@@ -108,7 +108,6 @@ function mapEditor:getExportData()
                 x = point.x / self.mapSize.w,
                 y = point.y / self.mapSize.h,
                 sharedPointId = point.sharedPointId,
-                linkedPointGroupId = point.linkedPointGroupId,
             }
         end
 
@@ -163,13 +162,9 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.mapSize = sanitizeMapSize(editorData and editorData.mapSize)
     self.endpoints = {}
     self.routes = {}
-    self.sharedLanes = {}
-    self.sharedLanesById = {}
-    self.sharedLaneByRouteSegment = {}
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
-    self.nextLinkedPointGroupId = 1
     self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil
@@ -208,13 +203,9 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
                 x = point.x * self.mapSize.w,
                 y = point.y * self.mapSize.h,
                 sharedPointId = point.sharedPointId,
-                linkedPointGroupId = point.linkedPointGroupId,
             }
             if point.sharedPointId and point.sharedPointId >= self.nextSharedPointId then
                 self.nextSharedPointId = point.sharedPointId + 1
-            end
-            if point.linkedPointGroupId and point.linkedPointGroupId >= self.nextLinkedPointGroupId then
-                self.nextLinkedPointGroupId = point.linkedPointGroupId + 1
             end
         end
 
