@@ -191,6 +191,11 @@ function mapEditor:segmentsCoincide(firstStart, firstEnd, secondStart, secondEnd
 end
 
 function mapEditor:getCoincidentSegmentMembers(route, segmentIndex)
+    local indexedMembers = self:getSharedLaneMembers(route, segmentIndex)
+    if #indexedMembers > 0 then
+        return indexedMembers
+    end
+
     local members = {}
     local pointA = route and route.points and route.points[segmentIndex] or nil
     local pointB = route and route.points and route.points[segmentIndex + 1] or nil
@@ -727,6 +732,8 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
         moved = true,
         isMagnet = true,
         magnetKind = magnetKind,
+        pickupMode = true,
+        awaitingPickupRelease = true,
     }
     self:closeColorPicker()
     self:rebuildIntersections()
@@ -1682,7 +1689,7 @@ function mapEditor:mousepressed(screenX, screenY, button)
             pointIndex = insertedMember.pointIndex,
             startMouseX = x,
             startMouseY = y,
-            moved = true,
+            moved = false,
             isMagnet = false,
             magnetKind = nil,
         }
@@ -1856,12 +1863,7 @@ function mapEditor:mousereleased(screenX, screenY, button)
         local startPoint = route.points[1]
         local endPoint = route.points[#route.points]
         if distanceSquared(startPoint.x, startPoint.y, endPoint.x, endPoint.y) < 40 * 40 then
-            for routeIndex, candidate in ipairs(self.routes) do
-                if candidate.id == route.id then
-                    table.remove(self.routes, routeIndex)
-                    break
-                end
-            end
+            self:removeRoute(route.id)
             self:clearSelection()
             self:showStatus("Route discarded because it was too short.")
         else
@@ -1874,8 +1876,9 @@ function mapEditor:mousereleased(screenX, screenY, button)
             self:mergeEndpointInto(route, self.drag.magnetKind, target)
         end
     elseif route and self.drag.kind == "point" and self.drag.moved then
+        local draggedPoint = route.points[self.drag.pointIndex]
         local targetRoute, targetPointIndex, targetPoint = self:findBendPointAt(x, y, route.id, self.drag.pointIndex)
-        if targetRoute and targetPointIndex then
+        if draggedPoint and not draggedPoint.linkedPointGroupId and targetRoute and targetPointIndex then
             local blockedByOriginalGroup = self.drag.splitOriginSharedPointId
                 and targetPoint
                 and targetPoint.sharedPointId == self.drag.splitOriginSharedPointId

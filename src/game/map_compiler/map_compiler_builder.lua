@@ -244,11 +244,7 @@ function buildCompiledLevel(mapName, editorData)
             local styleSections = buildRouteStyleSections(route, sourceNode.distance, targetNode.distance)
             local primaryRoadType = styleSections[1] and styleSections[1].roadType or roadTypes.DEFAULT_ID
             local edgeColorIds = nil
-            if targetEndpoint and #(targetEndpoint.colors or {}) > 0 then
-                edgeColorIds = copyArray(targetEndpoint.colors or {})
-            elseif sourceEndpoint and #(sourceEndpoint.colors or {}) > 0 then
-                edgeColorIds = copyArray(sourceEndpoint.colors or {})
-            elseif route.color then
+            if route.color then
                 edgeColorIds = { route.color }
             else
                 edgeColorIds = {}

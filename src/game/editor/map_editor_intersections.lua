@@ -24,8 +24,9 @@ function mapEditor:findIntersectionHit(x, y)
     return nil
 end
 
-function mapEditor:getMagnetHitRadius()
-    return MAGNET_HIT_RADIUS
+function mapEditor:getMagnetHitRadius(magnetKind)
+    local width = magnetKind == "end" and END_MAGNET_DRAW_WIDTH or START_MAGNET_DRAW_WIDTH
+    return math.max(width * 0.5, MAGNET_DRAW_HEIGHT * 0.5)
 end
 
 function mapEditor:findPointHit(x, y)
@@ -48,7 +49,7 @@ function mapEditor:findPointHit(x, y)
 
                 local hit = false
                 if isMagnet then
-                    local radius = self:getMagnetHitRadius()
+                    local radius = self:getMagnetHitRadius(magnetKind)
                     hit = distanceSquared(x, y, point.x, point.y) <= radius * radius
                 else
                     local radius = self:getPointHitRadius()
@@ -272,10 +273,14 @@ function mapEditor:collapseRoutesForLinkedPointGroup(linkedPointGroupId)
         while pointIndex <= #route.points - 1 do
             local point = route.points[pointIndex]
             local previousPoint = route.points[pointIndex - 1]
+            local nextPoint = route.points[pointIndex + 1]
+            local matchesPreviousPoint = previousPoint
+                and distanceSquared(point.x, point.y, previousPoint.x, previousPoint.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+            local matchesNextPoint = nextPoint
+                and distanceSquared(point.x, point.y, nextPoint.x, nextPoint.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED
 
             if point.linkedPointGroupId == linkedPointGroupId
-                and previousPoint
-                and distanceSquared(point.x, point.y, previousPoint.x, previousPoint.y) <= INTERNAL_POINT_MATCH_DISTANCE_SQUARED then
+                and (matchesPreviousPoint or matchesNextPoint) then
                 table.remove(route.points, pointIndex)
                 self:mergeRouteSegmentStyle(route, pointIndex)
             else
@@ -376,6 +381,43 @@ function mapEditor:isPassThroughOverlapIntersection(intersection)
     return memberCount >= 2 and #neighborPoints <= 2
 end
 
+function mapEditor:isInteriorSegmentIntersectionHit(route, segmentIndex, hitPoint)
+    local firstPoint = route and route.points and route.points[segmentIndex] or nil
+    local secondPoint = route and route.points and route.points[segmentIndex + 1] or nil
+    if not firstPoint or not secondPoint or not hitPoint then
+        return false
+    end
+
+    return distanceSquared(hitPoint.x, hitPoint.y, firstPoint.x, firstPoint.y) > INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+        and distanceSquared(hitPoint.x, hitPoint.y, secondPoint.x, secondPoint.y) > INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+end
+
+function mapEditor:shouldIgnoreSharedLaneMemberIntersection(firstRoute, firstSegmentIndex, secondRoute, secondSegmentIndex, hitPoint)
+    local function isIgnored(lane, laneRoute, laneSegmentIndex, memberRoute, memberSegmentIndex)
+        if not lane or #(lane.members or {}) <= 1 then
+            return false
+        end
+
+        if not lane.routeLookup or not lane.routeLookup[memberRoute.id] then
+            return false
+        end
+
+        return self:isInteriorSegmentIntersectionHit(laneRoute, laneSegmentIndex, hitPoint)
+            and self:isInteriorSegmentIntersectionHit(memberRoute, memberSegmentIndex, hitPoint)
+    end
+
+    local firstLane = self:getSharedLaneForSegment(firstRoute, firstSegmentIndex)
+    if isIgnored(firstLane, firstRoute, firstSegmentIndex, secondRoute, secondSegmentIndex) then
+        return true
+    end
+
+    local secondLane = self:getSharedLaneForSegment(secondRoute, secondSegmentIndex)
+    if isIgnored(secondLane, secondRoute, secondSegmentIndex, firstRoute, firstSegmentIndex) then
+        return true
+    end
+
+    return false
+end
 function mapEditor:ensureSharedPointId(point)
     if not point.sharedPointId then
         point.sharedPointId = self.nextSharedPointId
@@ -601,8 +643,13 @@ end
 
 function mapEditor:getIntersectionHitRadius(intersection)
     local baseRadius = intersection and intersection.unsupported and INTERSECTION_UNSUPPORTED_HIT_RADIUS or INTERSECTION_HIT_RADIUS
-    if not (intersection and intersection.unsupported) and self.previewWorld and self.previewWorld.crossingRadius then
-        baseRadius = math.max(INTERSECTION_HIT_RADIUS, self.previewWorld.crossingRadius - 4)
+    if not (intersection and intersection.unsupported) and self.previewWorld then
+        local junctionTrackClearance = self.previewWorld.junctionTrackClearance
+        if junctionTrackClearance then
+            baseRadius = math.max(INTERSECTION_HIT_RADIUS, junctionTrackClearance)
+        elseif self.previewWorld.crossingRadius then
+            baseRadius = math.max(INTERSECTION_HIT_RADIUS, self.previewWorld.crossingRadius - 4)
+        end
     end
     return baseRadius
 end
@@ -670,7 +717,8 @@ function mapEditor:getSegmentEndpointInset(route, pointIndex)
     end
 
     if pointIndex == 1 or pointIndex == #route.points then
-        return self:getMagnetHitRadius()
+        local magnetKind = pointIndex == 1 and "start" or "end"
+        return self:getMagnetHitRadius(magnetKind)
     end
 
     if point.sharedPointId then
@@ -726,7 +774,7 @@ function mapEditor:getHitboxOverlayEntries()
                 local entry = nil
 
                 if pointIndex == 1 then
-                    local radius = self:getMagnetHitRadius()
+                    local radius = self:getMagnetHitRadius("start")
                     entry = {
                         kind = "circle",
                         x = point.x,
@@ -735,7 +783,7 @@ function mapEditor:getHitboxOverlayEntries()
                     }
                     label = string.format("%s start", routeName)
                 elseif pointIndex == #route.points then
-                    local radius = self:getMagnetHitRadius()
+                    local radius = self:getMagnetHitRadius("end")
                     entry = {
                         kind = "circle",
                         x = point.x,
@@ -798,10 +846,16 @@ function mapEditor:getHitboxOverlayEntries()
         for segmentIndex = 1, #route.points - 1 do
             local polygon = self:buildSegmentHitboxPolygon(route, segmentIndex)
             if polygon then
+                local sharedLane = self:getSharedLaneForSegment(route, segmentIndex)
+                local label = string.format("%s segment %d", routeName, segmentIndex)
+                if sharedLane and #(sharedLane.members or {}) > 1 then
+                    label = self:getSharedLaneDebugName(sharedLane)
+                end
+
                 entries[#entries + 1] = {
                     kind = "polygon",
                     points = polygon.points,
-                    label = string.format("%s segment %d", routeName, segmentIndex),
+                    label = label,
                     labelX = polygon.labelX,
                     labelY = polygon.labelY,
                 }
@@ -842,12 +896,7 @@ function mapEditor:deleteSelection()
         return
     end
 
-    for routeIndex, route in ipairs(self.routes) do
-        if route.id == selectedRoute.id then
-            table.remove(self.routes, routeIndex)
-            break
-        end
-    end
+    self:removeRoute(selectedRoute.id)
 
     self:clearSelection()
     self:rebuildIntersections()
@@ -1108,6 +1157,8 @@ function mapEditor:rebuildIntersections(passIndex)
     local previousIntersections = self.intersections or {}
     local grouped = {}
 
+    self:rebuildSharedLaneIndex()
+
     for firstIndex = 1, #self.routes - 1 do
         local firstRoute = self.routes[firstIndex]
         for secondIndex = firstIndex + 1, #self.routes do
@@ -1121,6 +1172,16 @@ function mapEditor:rebuildIntersections(passIndex)
                     local hit = segmentIntersection(a, b, c, d)
 
                     if hit then
+                        if self:shouldIgnoreSharedLaneMemberIntersection(
+                            firstRoute,
+                            firstSegmentIndex,
+                            secondRoute,
+                            secondSegmentIndex,
+                            hit
+                        ) then
+                            goto continue_segment_pair
+                        end
+
                         local groupX = math.floor(hit.x / INTERSECTION_GROUP_BUCKET + 0.5) * INTERSECTION_GROUP_BUCKET
                         local groupY = math.floor(hit.y / INTERSECTION_GROUP_BUCKET + 0.5) * INTERSECTION_GROUP_BUCKET
                         local groupKey = groupX .. ":" .. groupY
@@ -1151,6 +1212,8 @@ function mapEditor:rebuildIntersections(passIndex)
                             entry.routeIds[#entry.routeIds + 1] = secondRoute.id
                         end
                     end
+
+                    ::continue_segment_pair::
                 end
             end
         end
@@ -1239,6 +1302,8 @@ function mapEditor:rebuildIntersections(passIndex)
         end
     end
 
+    self:rebuildSharedLaneIndex()
+    self:restoreLinkedPointGroupsForRoutes()
     self:refreshValidation()
 end
 

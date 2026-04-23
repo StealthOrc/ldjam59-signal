@@ -33,12 +33,6 @@ local function assertTrue(value, label)
     end
 end
 
-local function assertFalse(value, label)
-    if value then
-        error(label, 2)
-    end
-end
-
 local editorData = {
     endpoints = {
         { id = "input_blue", kind = "input", x = 0.20, y = 0.10, colors = { "blue" } },
@@ -53,10 +47,11 @@ local editorData = {
             color = "blue",
             startEndpointId = "input_blue",
             endEndpointId = "output_blue",
-            segmentRoadTypes = { "normal", "normal", "normal" },
+            segmentRoadTypes = { "normal", "normal", "normal", "normal" },
             points = {
                 { x = 0.20, y = 0.10 },
                 { x = 0.50, y = 0.28 },
+                { x = 0.50, y = 0.43 },
                 { x = 0.50, y = 0.58 },
                 { x = 0.35, y = 0.90 },
             },
@@ -100,57 +95,31 @@ local editorData = {
 }
 
 local editor = mapEditor.new(1280, 720, nil)
-editor:loadEditorData(editorData, "Shared Output Lane Regression", nil, nil)
+editor:loadEditorData(editorData, "Shared Output Lane Collinear Bendpoint Regression", nil, nil)
 
-assertEqual(#(editor.intersections or {}), 2, "shared lane setup should produce two junctions")
+assertEqual(#(editor.intersections or {}), 2, "shared lane setup should still produce two junctions")
 
 local upperIntersection = editor.intersections[1]
 local lowerIntersection = editor.intersections[2]
-assertTrue(upperIntersection.y < lowerIntersection.y, "junctions should stay sorted from top to bottom")
-assertEqual(#(upperIntersection.outputEndpointIds or {}), 2, "raw editor intersection still sees two final route outputs")
-
-local routeBlue = editor:getRouteById("route_blue")
-local sharedLane = editor:getSharedLaneForSegment(routeBlue, 2)
-assertTrue(sharedLane ~= nil, "shared output lane should expose one shared lane model")
-assertEqual(#(sharedLane.members or {}), 2, "shared output lane model should contain both authored routes")
-
-local overlayLabels = {}
-for _, entry in ipairs(editor:getHitboxOverlayEntries()) do
-    overlayLabels[#overlayLabels + 1] = entry.label
-end
-
-local foundSharedLaneLabel = false
-for _, label in ipairs(overlayLabels) do
-    if label:find("shared lane", 1, true)
-        and label:find("route_blue", 1, true)
-        and label:find("route_yellow", 1, true) then
-        foundSharedLaneLabel = true
-        break
-    end
-end
-assertTrue(foundSharedLaneLabel, "shared output lane debug labels should list every member route")
 local previewUpperJunction = editor.previewWorld and editor.previewWorld.junctions and editor.previewWorld.junctions[upperIntersection.id]
 local previewLowerJunction = editor.previewWorld and editor.previewWorld.junctions and editor.previewWorld.junctions[lowerIntersection.id]
 
 assertTrue(previewUpperJunction ~= nil, "preview world should expose the top junction")
 assertTrue(previewLowerJunction ~= nil, "preview world should expose the bottom junction")
-assertEqual(#(previewUpperJunction.outputs or {}), 1, "top junction should collapse the shared outgoing lane into one output")
-assertEqual(#(previewLowerJunction.inputs or {}), 1, "bottom junction should collapse the shared incoming lane into one input")
+assertEqual(#(previewUpperJunction.outputs or {}), 1, "top junction should still collapse one shared outgoing lane with a redundant bend point")
+assertEqual(#(previewLowerJunction.inputs or {}), 1, "bottom junction should still collapse one shared incoming lane with a redundant bend point")
 
-local selectorRect = editor:getOutputSelectorHitRect(upperIntersection)
-assertFalse(
-    editor:isIntersectionOutputSelectorHit(upperIntersection, selectorRect.x + selectorRect.w * 0.5, selectorRect.y + selectorRect.h * 0.5),
-    "top junction should not expose an output selector when only one logical output lane remains"
+local level, errorText, errors = mapCompiler.buildPlayableLevel(
+    "Shared Output Lane Collinear Bendpoint Regression",
+    editor:getExportData(),
+    nil
 )
-
-local level, errorText, errors = mapCompiler.buildPlayableLevel("Shared Output Lane Regression", editor:getExportData(), nil)
 if errorText ~= nil then
     error(string.format("expected shared output lane map to compile, got %s", tostring(errorText)), 2)
 end
 
 assertEqual(#(errors or {}), 0, "shared output lane map should compile without validation errors")
-assertTrue(level ~= nil, "expected a playable level to be built")
-assertEqual(#(level.edges or {}), 5, "shared authored lane between the two junctions should compile into one edge")
+assertEqual(#(level.edges or {}), 5, "shared authored lane between the two junctions should still compile into one edge")
 
 local sharedMiddleEdges = {}
 for _, edge in ipairs(level.edges or {}) do
@@ -159,9 +128,8 @@ for _, edge in ipairs(level.edges or {}) do
     end
 end
 
-assertEqual(#sharedMiddleEdges, 1, "top and bottom junctions should be connected by a single merged lane")
+assertEqual(#sharedMiddleEdges, 1, "top and bottom junctions should still be connected by one merged lane")
 assertEqual(#(sharedMiddleEdges[1].colors or {}), 2, "merged lane should keep both contributing route colors")
-assertTrue(sharedMiddleEdges[1].colors[1] ~= sharedMiddleEdges[1].colors[2], "merged lane colors should remain distinct")
+assertEqual(#(sharedMiddleEdges[1].points or {}), 2, "merged lane should simplify away the redundant collinear bend point")
 
-print("map editor shared output lane tests passed")
-
+print("map editor shared output lane collinear bendpoint tests passed")

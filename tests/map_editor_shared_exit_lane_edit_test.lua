@@ -131,6 +131,29 @@ assertEqual(#routeBlue.segmentRoadTypes, 2, "blue route road type entries should
 assertEqual(#routeYellow.segmentRoadTypes, 2, "yellow route road type entries should collapse after removing the linked bend point")
 assertEqual(#(editor.intersections or {}), 1, "removing a linked bend point should not disturb the real junction count")
 
+local restoredSharedLane = editor:getSharedLaneForSegment(routeBlue, 2)
+assertTrue(restoredSharedLane ~= nil, "removing a linked bend point should restore the shared lane index entry")
+assertEqual(#(restoredSharedLane.members or {}), 2, "removing a linked bend point should restore one shared lane with both routes")
+
+local overlayLabels = {}
+for _, entry in ipairs(editor:getHitboxOverlayEntries()) do
+    if entry.kind == "polygon" then
+        overlayLabels[#overlayLabels + 1] = entry.label
+    end
+end
+
+local foundSharedLaneLabel = false
+for _, label in ipairs(overlayLabels) do
+    if string.find(label, "shared lane", 1, true) then
+        foundSharedLaneLabel = true
+        break
+    end
+end
+assertTrue(foundSharedLaneLabel, "removing a linked bend point should show the restored segment as a shared lane in hitbox debug mode")
+
+local restoredPreviewJunction = editor.previewWorld and editor.previewWorld.junctions and editor.previewWorld.junctions[editor.intersections[1].id]
+assertTrue(restoredPreviewJunction ~= nil, "preview world should still expose the merged junction after removing the linked bend point")
+assertEqual(#(restoredPreviewJunction.outputs or {}), 1, "removing a linked bend point should restore one compiled shared output")
 print("map editor shared exit lane edit tests passed")
 
 

@@ -19,6 +19,7 @@ local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
 local TRACK_STRIPE_LENGTH = 14
 local OUTPUT_SELECTOR_RADIUS = 15
+local TRACK_LINE_JOIN = "bevel"
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -565,7 +566,7 @@ function renderer.drawInputTrack(scene, track, isActive)
     local points = flattenPoints(renderedPoints)
 
     graphics.setLineStyle("rough")
-    graphics.setLineJoin("none")
+    graphics.setLineJoin(TRACK_LINE_JOIN)
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.trackWidth + 10)
     graphics.line(points)
@@ -597,7 +598,7 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
     local points = flattenPoints(renderedPoints)
 
     graphics.setLineStyle("rough")
-    graphics.setLineJoin("none")
+    graphics.setLineJoin(TRACK_LINE_JOIN)
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.trackWidth + 10)
     graphics.line(points)
@@ -623,7 +624,8 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
 
     local points = flattenPoints(renderedPoints)
 
-    graphics.setLineJoin("none")
+    graphics.setLineStyle("rough")
+    graphics.setLineJoin(TRACK_LINE_JOIN)
     graphics.setColor(0.17, 0.21, 0.24, 0.95)
     graphics.setLineWidth(scene.sharedWidth + 10)
     graphics.line(points)
@@ -799,6 +801,7 @@ function renderer.drawActiveRouteIndicator(scene, junction, activeInput, activeO
     graphics.circle("fill", x, y, coverRadius)
 
     graphics.setLineStyle("rough")
+    graphics.setLineJoin(TRACK_LINE_JOIN)
     graphics.setLineWidth(routeOutlineWidth)
     graphics.setColor(0.12, 0.15, 0.18, 1)
     graphics.line(curvePoints)
@@ -828,7 +831,11 @@ function renderer.drawCrossing(scene, junction)
     end
 
     renderer.drawControlOverlay(scene, junction)
+end
 
+function renderer.drawOutputSelector(scene, junction)
+    local graphics = love.graphics
+    local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local selectorX, selectorY, selectorRadius = renderer.getOutputSelectorLayout(junction)
     if selectorX then
         local selectorScale = getSelectorIconScale(junction)
@@ -932,11 +939,6 @@ function renderer.drawScene(scene, options)
             end
         end
 
-        renderer.drawCrossing(scene, junction)
-
-        for inputIndex = 1, #junction.inputs do
-            renderer.drawTrackSignal(scene, junction, inputIndex)
-        end
     end
 
     for _, track in pairs(scene.edges or {}) do
@@ -945,10 +947,24 @@ function renderer.drawScene(scene, options)
         end
     end
 
+    for _, junction in ipairs(scene.junctionOrder or {}) do
+        renderer.drawCrossing(scene, junction)
+    end
+
+    for _, junction in ipairs(scene.junctionOrder or {}) do
+        for inputIndex = 1, #junction.inputs do
+            renderer.drawTrackSignal(scene, junction, inputIndex)
+        end
+    end
+
     if drawOptions.drawTrains ~= false then
         for _, train in ipairs(scene.trains or {}) do
             renderer.drawTrain(scene, train)
         end
+    end
+
+    for _, junction in ipairs(scene.junctionOrder or {}) do
+        renderer.drawOutputSelector(scene, junction)
     end
 
     if drawOptions.drawCollision ~= false then

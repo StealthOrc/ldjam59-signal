@@ -163,6 +163,9 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.mapSize = sanitizeMapSize(editorData and editorData.mapSize)
     self.endpoints = {}
     self.routes = {}
+    self.sharedLanes = {}
+    self.sharedLanesById = {}
+    self.sharedLaneByRouteSegment = {}
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
