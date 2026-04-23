@@ -743,6 +743,10 @@ function Game:openMenu()
     end
 
     self.screen = "menu"
+    self.menuTitleAnimationStartedAt = love.timer.getTime()
+    self.menuIntroSkipStartedAt = nil
+    self.menuIntroSkipFromElapsed = nil
+    self:resetMenuBackgroundReplayLoop()
     self.levelSelectIssue = nil
     self:closeLevelSelectReplayOverlay()
     self.levelSelectHoverId = nil
@@ -758,6 +762,61 @@ function Game:openMenu()
     self.replayDragActive = false
     self.replayDragTime = nil
     self:refreshMaps()
+end
+
+local MENU_TITLE_ENTER_DURATION = 0.55
+local MENU_BUTTON_REVEAL_DURATION = 0.52
+local MENU_BUTTON_STAGGER = 0.07
+local MENU_BUTTON_COUNT = 5
+local MENU_SKIP_FINISH_DURATION = 0.16
+
+local function clamp01(value)
+    if value < 0 then
+        return 0
+    end
+    if value > 1 then
+        return 1
+    end
+    return value
+end
+
+local function easeOutCubic(t)
+    local clamped = clamp01(t)
+    local inverse = 1 - clamped
+    return 1 - inverse * inverse * inverse
+end
+
+function Game:getMenuIntroTotalDuration()
+    return MENU_TITLE_ENTER_DURATION
+        + MENU_BUTTON_REVEAL_DURATION
+        + (MENU_BUTTON_STAGGER * math.max(0, MENU_BUTTON_COUNT - 1))
+end
+
+function Game:getMenuIntroElapsed()
+    local totalDuration = self:getMenuIntroTotalDuration()
+    local now = love.timer.getTime()
+    local skipStartedAt = tonumber(self.menuIntroSkipStartedAt or 0) or 0
+    if skipStartedAt > 0 then
+        local skipFromElapsed = tonumber(self.menuIntroSkipFromElapsed or 0) or 0
+        local skipProgress = clamp01((now - skipStartedAt) / MENU_SKIP_FINISH_DURATION)
+        return skipFromElapsed + ((totalDuration - skipFromElapsed) * easeOutCubic(skipProgress))
+    end
+
+    local startedAt = tonumber(self.menuTitleAnimationStartedAt or 0) or 0
+    return math.max(0, math.min(totalDuration, now - startedAt))
+end
+
+function Game:isMenuIntroActive()
+    return self.screen == "menu" and self:getMenuIntroElapsed() < self:getMenuIntroTotalDuration()
+end
+
+function Game:skipMenuIntro()
+    if self.menuIntroSkipStartedAt then
+        return
+    end
+
+    self.menuIntroSkipFromElapsed = self:getMenuIntroElapsed()
+    self.menuIntroSkipStartedAt = love.timer.getTime()
 end
 
 function Game:openLevelSelect()
@@ -881,9 +940,11 @@ function Game:startMap(mapDescriptor, options)
     self.replayDragActive = false
     self.replayDragTime = nil
     self.pendingReplayPreparationInteractions = {}
+    self.mapPresentation = nil
     self.world = world.new(self.viewport.w, self.viewport.h, mapData.level)
     self.playGuide = self:buildPlayGuideState(mapData.level)
     self.playGuideTransition = nil
+    self:beginMapPresentation(mapDescriptor)
     self.screen = "play"
     return true
 end
@@ -946,7 +1007,7 @@ function Game:isPreparingRun()
 end
 
 function Game:startPlayPhase()
-    if not self.world or self.playPhase ~= "prepare" or self.playGuide then
+    if not self.world or self.playPhase ~= "prepare" or self.playGuide or self.mapPresentation then
         return false
     end
 

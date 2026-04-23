@@ -69,6 +69,11 @@ function Game:update(dt)
     self:updateLeaderboardFetchState()
     self:updatePlayGuideTransition(dt)
 
+    if self.screen == "menu" then
+        self:updateMenuBackgroundReplay(dt)
+        return
+    end
+
     if self.screen == "level_select" then
         self:updateLevelSelectAnimation(dt)
         return
@@ -100,6 +105,13 @@ function Game:update(dt)
         return
     end
 
+    if self.mapPresentation then
+        self:updateMapPresentation(dt)
+        if self:isMapPresentationActive() then
+            return
+        end
+    end
+
     if self.playPhase ~= "play" then
         return
     end
@@ -124,6 +136,9 @@ function Game:draw()
     love.graphics.scale(self.renderScale, self.renderScale)
 
     if self.screen == "menu" then
+        if self:hasMenuBackgroundReplay() then
+            self.menuBackgroundReplay.replayRuntime.playbackWorld:draw(self:getMenuBackgroundReplayDrawOptions())
+        end
         ui.drawMenu(self)
     elseif self.screen == "profile_setup" then
         ui.drawProfileSetup(self)
@@ -141,7 +156,7 @@ function Game:draw()
         self.replayRuntime.playbackWorld:draw()
         ui.drawReplay(self)
     elseif self.screen == "play" and self.world then
-        self.world:draw()
+        self.world:draw(self:getMapPresentationDrawOptions())
         ui.drawPlay(self)
     end
 
@@ -255,6 +270,13 @@ function Game:keypressed(key)
     end
 
     if self.screen == "menu" then
+        if self:isMenuIntroActive() then
+            if key == "space" then
+                self:skipMenuIntro()
+            end
+            return
+        end
+
         if key == "return" or key == "space" then
             self:openLevelSelect()
         elseif key == "e" then
@@ -459,6 +481,16 @@ function Game:keypressed(key)
         return
     end
 
+    if self:isMapPresentationActive() then
+        if key == "space" or key == "return" then
+            self:skipMapPresentation()
+            return
+        end
+        if key ~= "m" and key ~= "e" and key ~= "r" then
+            return
+        end
+    end
+
     if key == "f2" then
         self.playOverlayCopyStatus = nil
         if self.playOverlayMode == "help" then
@@ -577,16 +609,32 @@ function Game:mousepressed(x, y, button)
     end
 
     if self.screen == "menu" then
+        if self:isMenuIntroActive() then
+            self:skipMenuIntro()
+            return
+        end
+
         local action = ui.getMenuActionAt(self, viewportX, viewportY)
         if action == "play" then
+            self.menuStatusMessage = nil
             self:openLevelSelect()
         elseif action == "leaderboard" then
+            self.menuStatusMessage = nil
             self:openLeaderboard({ returnScreen = "menu" })
+        elseif action == "set_play_mode_online" then
+            local ok, message = self:setPlayMode(PLAY_MODE_ONLINE)
+            self.menuStatusMessage = ok and nil or message
+        elseif action == "set_play_mode_offline" then
+            local ok, message = self:setPlayMode(PLAY_MODE_OFFLINE)
+            self.menuStatusMessage = ok and nil or message
         elseif action == "toggle_play_mode" then
-            self:togglePlayMode()
+            local ok, message = self:togglePlayMode()
+            self.menuStatusMessage = ok and nil or message
         elseif action == "editor" then
+            self.menuStatusMessage = nil
             self:openEditorBlank()
         elseif action == "quit" then
+            self.menuStatusMessage = nil
             love.event.quit()
         end
         return
@@ -763,6 +811,11 @@ function Game:mousepressed(x, y, button)
         return
     end
 
+    if self:isMapPresentationActive() then
+        self:skipMapPresentation()
+        return
+    end
+
     if button == 1 and self.playOverlayMode == "debug" then
         local overlayHit = ui.getPlayOverlayHit and ui.getPlayOverlayHit(self, viewportX, viewportY) or nil
         if overlayHit and overlayHit.kind == "copy_debug_value" then
@@ -847,6 +900,10 @@ function Game:mousemoved(x, y, dx, dy)
 
     if self.screen == "editor" then
         self.editor:mousemoved(viewportX, viewportY, dx, dy)
+        return
+    end
+
+    if self.screen == "play" and self:isMapPresentationActive() then
         return
     end
 

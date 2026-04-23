@@ -556,10 +556,12 @@ function world:drawCollisionMarker()
     return trackSceneRenderer.drawCollisionMarker(self)
 end
 
-function world:draw()
-    return trackSceneRenderer.drawScene(self, {
-        backgroundColor = { 0.08, 0.1, 0.12, 1 },
-    })
+function world:draw(drawOptions)
+    local options = drawOptions or {}
+    if options.backgroundColor == nil then
+        options.backgroundColor = { 0.08, 0.1, 0.12, 1 }
+    end
+    return trackSceneRenderer.drawScene(self, options)
 end
 
 

@@ -18,6 +18,8 @@ local CROSSBAR_FLASH_DURATION = 0.28
 local SPRING_RELEASE_DURATION = 0.42
 local ROAD_PATTERN_OUTLINE = { 0.04, 0.05, 0.07, 0.98 }
 local ROAD_PATTERN_FILL = { 0.97, 0.98, 1.0, 0.94 }
+local TRACK_DECORATOR_REVEAL_DELAY = 0.08
+local TRACK_DECORATOR_POP_DURATION = 0.50
 local TRACK_STRIPE_LENGTH = 14
 local OUTPUT_SELECTOR_RADIUS = 15
 local TRACK_LINE_JOIN = "bevel"
@@ -30,6 +32,18 @@ local function clamp(value, minValue, maxValue)
         return maxValue
     end
     return value
+end
+
+local function lerp(a, b, t)
+    return a + (b - a) * clamp(t or 0, 0, 1)
+end
+
+local function mixColor(fromColor, toColor, t)
+    return {
+        lerp((fromColor and fromColor[1]) or 0, (toColor and toColor[1]) or 0, t),
+        lerp((fromColor and fromColor[2]) or 0, (toColor and toColor[2]) or 0, t),
+        lerp((fromColor and fromColor[3]) or 0, (toColor and toColor[3]) or 0, t),
+    }
 end
 
 local function copyColor(color)
@@ -69,7 +83,9 @@ local function buildTrackStripeColors(colorIds, isActive)
         return nil
     end
 
-    local brightness = isActive and 1 or 0.58
+    local brightness = type(isActive) == "number"
+        and lerp(0.58, 1, isActive)
+        or (isActive and 1 or 0.58)
     local colors = {}
     for _, colorId in ipairs(colorIds or {}) do
         local color = getColorById(colorId)
@@ -118,6 +134,210 @@ local function buildCubicCurvePoints(startPoint, controlPointA, controlPointB, e
     end
 
     return points
+end
+
+local function appendPoint(points, x, y)
+    local lastPoint = points[#points]
+    if lastPoint and math.abs((lastPoint.x or 0) - x) <= 0.001 and math.abs((lastPoint.y or 0) - y) <= 0.001 then
+        return
+    end
+
+    points[#points + 1] = {
+        x = x,
+        y = y,
+    }
+end
+
+local function buildPathSlice(scene, path, startDistance, endDistance)
+    local points = {}
+    local clampedStart = clamp(startDistance or 0, 0, path.length)
+    local clampedEnd = clamp(endDistance or path.length, 0, path.length)
+
+    if clampedEnd <= clampedStart then
+        local x, y = scene:pointOnPath(path, clampedStart)
+        appendPoint(points, x, y)
+        return points
+    end
+
+    local startX, startY = scene:pointOnPath(path, clampedStart)
+    local endX, endY = scene:pointOnPath(path, clampedEnd)
+    appendPoint(points, startX, startY)
+
+    for _, segment in ipairs(path.segments or {}) do
+        local segmentEndDistance = (segment.startDistance or 0) + (segment.length or 0)
+        if segmentEndDistance > clampedStart and segmentEndDistance < clampedEnd then
+            appendPoint(points, segment.b.x, segment.b.y)
+        end
+    end
+
+    appendPoint(points, endX, endY)
+    return points
+end
+
+local function getTrackRenderWindow(scene, track, drawState)
+    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
+    local revealProgress = drawState and drawState.revealProgress or nil
+    local outroProgress = drawState and drawState.outroProgress or nil
+
+    if outroProgress ~= nil then
+        local clampedOutroProgress = clamp(outroProgress, 0, 1)
+        if clampedOutroProgress >= 0.999 then
+            return nil, nil
+        end
+
+        local midpoint = (startDistance + endDistance) * 0.5
+        local animatedStartDistance = lerp(startDistance, midpoint, clampedOutroProgress)
+        local animatedEndDistance = lerp(endDistance, midpoint, clampedOutroProgress)
+        if animatedEndDistance - animatedStartDistance <= 0.001 then
+            return nil, nil
+        end
+
+        return animatedStartDistance, animatedEndDistance
+    end
+
+    local resolvedRevealProgress = revealProgress == nil and 1 or clamp(revealProgress, 0, 1)
+    if resolvedRevealProgress <= 0 then
+        return nil, nil
+    end
+    if resolvedRevealProgress >= 0.999 then
+        return startDistance, endDistance
+    end
+
+    local visibleLength = math.max(0, (endDistance or 0) - (startDistance or 0))
+    return startDistance, startDistance + visibleLength * resolvedRevealProgress
+end
+
+local function easeOutBack(t)
+    local s = 1.70158
+    local value = t - 1
+    return 1 + value * value * ((s + 1) * value + s)
+end
+
+local function easeOutSpring(t)
+    local clamped = clamp(t or 0, 0, 1)
+    if clamped <= 0.001 then
+        return 0
+    end
+    if clamped >= 0.999 then
+        return 1
+    end
+
+    local c4 = (2 * math.pi) / 3
+    return math.pow(2, -10 * clamped) * math.sin((clamped * 10 - 0.75) * c4) + 1
+end
+
+local function getPresentationTimedProgress(presentation, transition)
+    local schedule = presentation and presentation[transition] or nil
+    if not schedule then
+        return nil
+    end
+
+    local duration = math.max(0.0001, tonumber(schedule.duration or ((schedule.endTime or 0) - (schedule.startTime or 0))) or 0.0001)
+    return clamp(((presentation.elapsed or 0) - (schedule.startTime or 0)) / duration, 0, 1)
+end
+
+local function getPresentationTrackActivityMix(presentation, finalIsActive)
+    if not presentation then
+        return finalIsActive and 1 or 0
+    end
+
+    if finalIsActive then
+        return 1
+    end
+
+    local transitionProgress = getPresentationTimedProgress(presentation, "trackStateBlend") or 0
+    return 1 - transitionProgress
+end
+
+local function getPresentationSignalState(presentation)
+    if not presentation then
+        return nil
+    end
+
+    local progress = getPresentationTimedProgress(presentation, "signalPop")
+    if not progress or progress <= 0.001 then
+        return nil
+    end
+
+    return {
+        progress = progress,
+        alpha = progress,
+        scaleMultiplier = 0.18 + 0.82 * easeOutBack(progress),
+    }
+end
+
+local function getPresentationTrackRevealProgress(presentation, edgeId)
+    local schedule = presentation and presentation.edgeScheduleById and presentation.edgeScheduleById[edgeId] or nil
+    if not schedule then
+        return 1
+    end
+
+    local duration = math.max(0.0001, (schedule.endTime or 0) - (schedule.startTime or 0))
+    return clamp(((presentation.elapsed or 0) - (schedule.startTime or 0)) / duration, 0, 1)
+end
+
+local function getPresentationTrackDecoratorState(presentation, edgeId)
+    local schedule = presentation and presentation.edgeScheduleById and presentation.edgeScheduleById[edgeId] or nil
+    if not schedule then
+        return nil
+    end
+
+    local duration = math.max(0.0001, (schedule.endTime or 0) - (schedule.startTime or 0))
+    local startTime = (schedule.startTime or 0) + math.min(TRACK_DECORATOR_REVEAL_DELAY, duration * 0.35)
+
+    return {
+        elapsed = presentation.elapsed or 0,
+        startTime = startTime,
+        duration = duration,
+        frontProgress = clamp(((presentation.elapsed or 0) - startTime) / duration, 0, 1),
+        popDuration = TRACK_DECORATOR_POP_DURATION,
+    }
+end
+
+local function getPresentationJunctionState(presentation, junctionId)
+    local schedule = presentation and presentation.junctionScheduleById and presentation.junctionScheduleById[junctionId] or nil
+    if not schedule then
+        return nil
+    end
+
+    local elapsed = presentation.elapsed or 0
+    if elapsed < (schedule.arrivalTime or 0) then
+        return nil
+    end
+
+    local ringDuration = math.max(0.0001, (schedule.ringEndTime or 0) - (schedule.ringStartTime or 0))
+    local iconDuration = math.max(0.0001, (schedule.iconEndTime or 0) - (schedule.iconStartTime or 0))
+    local selectorDuration = math.max(0.0001, (schedule.selectorEndTime or 0) - (schedule.selectorStartTime or 0))
+    local ringProgress = clamp((elapsed - (schedule.ringStartTime or 0)) / ringDuration, 0, 1)
+    local iconProgress = clamp((elapsed - (schedule.iconStartTime or 0)) / iconDuration, 0, 1)
+    local selectorProgress = clamp((elapsed - (schedule.selectorStartTime or 0)) / selectorDuration, 0, 1)
+
+    return {
+        ringProgress = ringProgress,
+        iconProgress = iconProgress,
+        iconScaleMultiplier = 0.18 + 0.82 * easeOutBack(iconProgress),
+        selectorProgress = selectorProgress,
+        selectorScaleMultiplier = 0.06 + 0.94 * easeOutSpring(selectorProgress),
+        entryAngle = schedule.entryAngle or (-math.pi * 0.5),
+    }
+end
+
+local function drawPresentationJunctionRing(graphics, scene, junction, presentationState)
+    local activeInput = junction.inputs[junction.activeInputIndex]
+    local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
+    local activeInputColor = activeInput and activeInput.color or activeOutputColor
+    local x = junction.mergePoint.x
+    local y = junction.mergePoint.y
+    local radius = junction.crossingRadius
+    local startAngle = presentationState.entryAngle or (-math.pi * 0.5)
+    local endAngle = startAngle + math.pi * 2 * clamp(presentationState.ringProgress or 0, 0, 1)
+
+    graphics.setColor(0.05, 0.06, 0.08, 0.42)
+    graphics.circle("fill", x, y, radius - 3)
+    graphics.setColor(activeInputColor[1], activeInputColor[2], activeInputColor[3], 0.92)
+    graphics.setLineWidth(3)
+    graphics.arc("line", x, y, radius, startAngle, endAngle)
+    graphics.setLineWidth(1)
 end
 
 local function getTimerRatio(armed, remaining, duration)
@@ -463,15 +683,34 @@ function renderer.drawTrackPatternSegment(_, startX, startY, endX, endY, alpha, 
     graphics.line(startX, startY, endX, endY)
 end
 
-function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
-    local startDistance, endDistance = scene:getRenderedTrackWindow(track)
-    local alpha = isActive and 0.95 or 0.78
+local function scalePointFromCenter(centerX, centerY, pointX, pointY, scale)
+    return centerX + (pointX - centerX) * scale, centerY + (pointY - centerY) * scale
+end
+
+function renderer.drawTrackRoadTypeMarkers(scene, track, isActive, drawState)
+    local startDistance = drawState and drawState.renderStartDistance or nil
+    local endDistance = drawState and drawState.renderEndDistance or nil
+    if startDistance == nil or endDistance == nil then
+        startDistance, endDistance = scene:getRenderedTrackWindow(track)
+    end
+    if endDistance <= startDistance then
+        return
+    end
+
+    local activityMix = type(isActive) == "number" and clamp(isActive, 0, 1) or (isActive and 1 or 0)
+    local alpha = lerp(0.78, 0.95, activityMix)
+    local fullStartDistance, fullEndDistance = scene:getRenderedTrackWindow(track)
+    local fullVisibleLength = math.max(0.0001, (fullEndDistance or 0) - (fullStartDistance or 0))
+    local decoratorPresentation = drawState and drawState.decoratorPresentation or nil
+    local decoratorEndDistance = decoratorPresentation
+        and (fullStartDistance + fullVisibleLength * decoratorPresentation.frontProgress)
+        or endDistance
 
     for _, section in ipairs(track.styleSections or {}) do
         local roadTypeConfig = roadTypes.getConfig(section.roadType)
         if roadTypeConfig.pattern ~= "plain" then
             local sectionStartDistance = math.max(startDistance, section.startDistance)
-            local sectionEndDistance = math.min(endDistance, section.endDistance)
+            local sectionEndDistance = math.min(endDistance, section.endDistance, decoratorEndDistance)
             local markerDistance = sectionStartDistance + roadTypeConfig.markerSpacing * 0.5
             local markerSize = roadTypeConfig.markerSize
             local outlineWidth = roadTypeConfig.markerWidth + 2
@@ -483,6 +722,24 @@ function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
                 local directionY = math.sin(angle)
                 local normalX = -directionY
                 local normalY = directionX
+                local markerAlpha = alpha
+                local markerScale = 1
+
+                if decoratorPresentation then
+                    local markerFraction = clamp((markerDistance - fullStartDistance) / fullVisibleLength, 0, 1)
+                    local markerStartTime = decoratorPresentation.startTime + decoratorPresentation.duration * markerFraction
+                    local popupProgress = clamp(
+                        (decoratorPresentation.elapsed - markerStartTime) / math.max(0.0001, decoratorPresentation.popDuration),
+                        0,
+                        1
+                    )
+                    if popupProgress <= 0.001 then
+                        markerDistance = markerDistance + roadTypeConfig.markerSpacing
+                        goto continue_marker
+                    end
+
+                    markerScale = 0.06 + 0.94 * easeOutSpring(popupProgress)
+                end
 
                 if roadTypeConfig.pattern == "chevron" then
                     local tipX = markerX + directionX * markerSize
@@ -491,17 +748,23 @@ function renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
                     local leftY = markerY - normalY * markerSize * 0.7
                     local rightX = markerX + normalX * markerSize * 0.7
                     local rightY = markerY + normalY * markerSize * 0.7
-                    renderer.drawTrackPatternSegment(scene, leftX, leftY, tipX, tipY, alpha, outlineWidth, fillWidth)
-                    renderer.drawTrackPatternSegment(scene, rightX, rightY, tipX, tipY, alpha, outlineWidth, fillWidth)
+                    tipX, tipY = scalePointFromCenter(markerX, markerY, tipX, tipY, markerScale)
+                    leftX, leftY = scalePointFromCenter(markerX, markerY, leftX, leftY, markerScale)
+                    rightX, rightY = scalePointFromCenter(markerX, markerY, rightX, rightY, markerScale)
+                    renderer.drawTrackPatternSegment(scene, leftX, leftY, tipX, tipY, markerAlpha, outlineWidth, fillWidth)
+                    renderer.drawTrackPatternSegment(scene, rightX, rightY, tipX, tipY, markerAlpha, outlineWidth, fillWidth)
                 elseif roadTypeConfig.pattern == "crossbar" then
                     local startX = markerX - normalX * markerSize
                     local startY = markerY - normalY * markerSize
                     local endX = markerX + normalX * markerSize
                     local endY = markerY + normalY * markerSize
-                    renderer.drawTrackPatternSegment(scene, startX, startY, endX, endY, alpha, outlineWidth, fillWidth)
+                    startX, startY = scalePointFromCenter(markerX, markerY, startX, startY, markerScale)
+                    endX, endY = scalePointFromCenter(markerX, markerY, endX, endY, markerScale)
+                    renderer.drawTrackPatternSegment(scene, startX, startY, endX, endY, markerAlpha, outlineWidth, fillWidth)
                 end
 
                 markerDistance = markerDistance + roadTypeConfig.markerSpacing
+                ::continue_marker::
             end
         end
     end
@@ -553,12 +816,22 @@ function renderer.drawStripedTrack(_, points, width, stripeColors, alpha)
     end
 end
 
-function renderer.drawInputTrack(scene, track, isActive)
+function renderer.drawInputTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
-    local stripeColors = buildTrackStripeColors(track.colors, isActive)
-    local renderedPoints = scene:getRenderedTrackPoints(track)
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local trackColor = mixColor(track.darkColor, track.color, activityMix)
+    local trackAlpha = lerp(0.72, 0.96, activityMix)
+    local stripeColors = buildTrackStripeColors(track.colors, activityMix)
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, track, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, track.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -577,20 +850,36 @@ function renderer.drawInputTrack(scene, track, isActive)
         renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
+    end
 end
 
-function renderer.drawStandaloneTrack(scene, track, isActive)
+function renderer.drawStandaloneTrack(scene, track, isActive, drawState)
     local graphics = love.graphics
-    local trackColor = isActive and track.color or track.darkColor
-    local trackAlpha = isActive and 0.96 or 0.72
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local trackColor = mixColor(track.darkColor, track.color, activityMix)
+    local trackAlpha = lerp(0.72, 0.96, activityMix)
     local stripeColors = nil
 
     if not track.adoptInputColor then
-        stripeColors = buildTrackStripeColors(track.colors, isActive)
+        stripeColors = buildTrackStripeColors(track.colors, activityMix)
     end
 
-    local renderedPoints = scene:getRenderedTrackPoints(track)
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, track, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, track.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -609,15 +898,33 @@ function renderer.drawStandaloneTrack(scene, track, isActive)
         renderer.drawTrackLine(scene, points, scene.trackWidth, trackColor, trackAlpha)
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, track, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, track, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
+    end
 end
 
-function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
+function renderer.drawOutputTrack(scene, junction, outputIndex, isActive, drawState)
     local graphics = love.graphics
     local outputTrack = junction.outputs[outputIndex]
-    local color = scene:getOutputDisplayColor(junction, outputIndex, isActive)
-    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, isActive) or nil
-    local renderedPoints = scene:getRenderedTrackPoints(outputTrack)
+    local activityMix = drawState and drawState.activityMix
+    if activityMix == nil then
+        activityMix = isActive and 1 or 0
+    end
+    local activeColor = scene:getOutputDisplayColor(junction, outputIndex, true)
+    local inactiveColor = scene:getOutputDisplayColor(junction, outputIndex, false)
+    local color = mixColor(inactiveColor, activeColor, activityMix)
+    local stripeColors = outputTrack and not outputTrack.adoptInputColor and buildTrackStripeColors(outputTrack.colors, activityMix) or nil
+    local renderStartDistance, renderEndDistance = getTrackRenderWindow(scene, outputTrack, drawState)
+    local renderedPoints = nil
+    if renderStartDistance == nil or renderEndDistance == nil then
+        renderedPoints = {}
+    else
+        renderedPoints = buildPathSlice(scene, outputTrack.path, renderStartDistance, renderEndDistance)
+    end
     if #renderedPoints < 2 then
         return
     end
@@ -631,19 +938,26 @@ function renderer.drawOutputTrack(scene, junction, outputIndex, isActive)
     graphics.line(points)
 
     if stripeColors then
-        renderer.drawStripedTrack(scene, points, scene.sharedWidth, stripeColors, isActive and 0.98 or 0.7)
+        renderer.drawStripedTrack(scene, points, scene.sharedWidth, stripeColors, lerp(0.7, 0.98, activityMix))
     else
-        renderer.drawTrackLine(scene, points, scene.sharedWidth, color, isActive and 0.98 or 0.7)
+        renderer.drawTrackLine(scene, points, scene.sharedWidth, color, lerp(0.7, 0.98, activityMix))
     end
 
-    renderer.drawTrackRoadTypeMarkers(scene, outputTrack, isActive)
+    if not drawState or drawState.showMarkers ~= false then
+        renderer.drawTrackRoadTypeMarkers(scene, outputTrack, activityMix, {
+            renderStartDistance = renderStartDistance,
+            renderEndDistance = renderEndDistance,
+            decoratorPresentation = drawState and drawState.decoratorPresentation or nil,
+        })
+    end
 end
 
-function renderer.drawControlOverlay(scene, junction)
+function renderer.drawControlOverlay(scene, junction, options)
     local graphics = love.graphics
     local control = junction.control
     local inputColor, inputStripeColors = getJunctionInputStyle(junction)
-    local iconScale = getControlIconScale(control)
+    local resolvedOptions = options or {}
+    local iconScale = getControlIconScale(control) * (resolvedOptions.iconScaleMultiplier or 1)
 
     if control.type == "direct" then
         local centerX, centerY, innerRadius = drawJunctionCircle(graphics, junction, inputColor, inputStripeColors)
@@ -811,14 +1125,53 @@ function renderer.drawActiveRouteIndicator(scene, junction, activeInput, activeO
     graphics.line(curvePoints)
 end
 
-function renderer.drawCrossing(scene, junction)
+function renderer.drawCrossing(scene, junction, options)
     local graphics = love.graphics
+    local resolvedOptions = options or {}
+    local presentationState = resolvedOptions.presentation
+    local outroState = resolvedOptions.outro
     local activeInput = junction.inputs[junction.activeInputIndex]
     local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local activeInputColor = activeInput and activeInput.color or activeOutputColor
     local x = junction.mergePoint.x
     local y = junction.mergePoint.y
     local inputStripeColors = activeInput and buildTrackStripeColors(activeInput.colors, true) or nil
+
+    if presentationState then
+        if (presentationState.ringProgress or 0) < 0.999 then
+            drawPresentationJunctionRing(graphics, scene, junction, presentationState)
+            return
+        end
+
+        if (presentationState.iconProgress or 0) <= 0.001 then
+            drawJunctionCircle(graphics, junction, activeInputColor, inputStripeColors)
+            return
+        end
+
+        renderer.drawControlOverlay(scene, junction, {
+            iconScaleMultiplier = presentationState.iconScaleMultiplier or 1,
+        })
+        return
+    end
+
+    if outroState then
+        local progress = clamp(outroState.progress or 0, 0, 1)
+        local iconDurationRatio = 0.64
+
+        if progress < iconDurationRatio then
+            local reverseIconProgress = 1 - (progress / iconDurationRatio)
+            renderer.drawControlOverlay(scene, junction, {
+                iconScaleMultiplier = 0.18 + 0.82 * easeOutBack(reverseIconProgress),
+            })
+            return
+        end
+
+        drawPresentationJunctionRing(graphics, scene, junction, {
+            ringProgress = 1 - ((progress - iconDurationRatio) / (1 - iconDurationRatio)),
+            entryAngle = outroState.entryAngle or (-math.pi * 0.5),
+        })
+        return
+    end
 
     graphics.setColor(0.05, 0.06, 0.08, 1)
     graphics.circle("fill", x, y, junction.crossingRadius)
@@ -833,34 +1186,42 @@ function renderer.drawCrossing(scene, junction)
     renderer.drawControlOverlay(scene, junction)
 end
 
-function renderer.drawOutputSelector(scene, junction)
+function renderer.drawOutputSelector(scene, junction, options)
     local graphics = love.graphics
+    local resolvedOptions = options or {}
     local activeOutputColor = scene:getOutputDisplayColor(junction, junction.activeOutputIndex, true)
     local selectorX, selectorY, selectorRadius = renderer.getOutputSelectorLayout(junction)
     if selectorX then
-        local selectorScale = getSelectorIconScale(junction)
+        local selectorScale = getSelectorIconScale(junction) * (resolvedOptions.scaleMultiplier or 1)
+        local alphaMultiplier = resolvedOptions.alphaMultiplier or 1
         withIconScale(graphics, selectorX, selectorY, selectorScale, function()
-            graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], 1)
+            graphics.setColor(activeOutputColor[1], activeOutputColor[2], activeOutputColor[3], alphaMultiplier)
             graphics.circle("fill", selectorX, selectorY, selectorRadius)
             graphics.setLineWidth(3)
-            graphics.setColor(0.05, 0.06, 0.08, 1)
+            graphics.setColor(0.05, 0.06, 0.08, alphaMultiplier)
             graphics.circle("line", selectorX, selectorY, selectorRadius)
         end)
     end
 end
 
-function renderer.drawTrackSignal(_, junction, inputIndex)
+function renderer.drawTrackSignal(_, junction, inputIndex, options)
     local graphics = love.graphics
+    local resolvedOptions = options or {}
     local track = junction.inputs[inputIndex]
     local signalPoint = track.signalPoint
+    if not signalPoint then
+        return
+    end
     local pulse = 0.5 + 0.5 * math.sin(love.timer.getTime() * 6 + inputIndex)
-    local signalRadius = 12 + pulse * 3
+    local scaleMultiplier = resolvedOptions.scaleMultiplier or 1
+    local alphaMultiplier = resolvedOptions.alphaMultiplier or 1
+    local signalRadius = (12 + pulse * 3) * scaleMultiplier
 
     graphics.setLineWidth(6)
     if inputIndex == junction.activeInputIndex then
-        graphics.setColor(0.42, 0.92, 0.54, 1)
+        graphics.setColor(0.42, 0.92, 0.54, alphaMultiplier)
     else
-        graphics.setColor(0.92, 0.26, 0.2, 1)
+        graphics.setColor(0.92, 0.26, 0.2, alphaMultiplier)
     end
     graphics.circle("fill", signalPoint.x, signalPoint.y, signalRadius)
 end
@@ -913,6 +1274,8 @@ end
 function renderer.drawScene(scene, options)
     local graphics = love.graphics
     local drawOptions = options or {}
+    local presentation = drawOptions.presentation
+    local outro = drawOptions.outro
     local highlightedEdgeIds = drawOptions.highlightedEdgeIds or scene:getHighlightedEdgeIds()
     local drawnEdgeIds = {}
 
@@ -926,7 +1289,27 @@ function renderer.drawScene(scene, options)
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
             if outputTrack and not drawnEdgeIds[outputTrack.id] then
-                renderer.drawOutputTrack(scene, junction, outputIndex, highlightedEdgeIds[outputTrack.id] == true)
+                local actualActive = highlightedEdgeIds[outputTrack.id] == true
+                local drawState = nil
+                if presentation then
+                    drawState = {
+                        revealProgress = getPresentationTrackRevealProgress(presentation, outputTrack.id),
+                        activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                        decoratorPresentation = getPresentationTrackDecoratorState(presentation, outputTrack.id),
+                    }
+                elseif outro then
+                    drawState = {
+                        outroProgress = clamp(outro.progress or 0, 0, 1),
+                        showMarkers = false,
+                    }
+                end
+                renderer.drawOutputTrack(
+                    scene,
+                    junction,
+                    outputIndex,
+                    actualActive,
+                    drawState
+                )
                 drawnEdgeIds[outputTrack.id] = true
             end
         end
@@ -936,7 +1319,26 @@ function renderer.drawScene(scene, options)
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
             if inputTrack and not drawnEdgeIds[inputTrack.id] then
-                renderer.drawInputTrack(scene, inputTrack, highlightedEdgeIds[inputTrack.id] == true)
+                local actualActive = highlightedEdgeIds[inputTrack.id] == true
+                local drawState = nil
+                if presentation then
+                    drawState = {
+                        revealProgress = getPresentationTrackRevealProgress(presentation, inputTrack.id),
+                        activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                        decoratorPresentation = getPresentationTrackDecoratorState(presentation, inputTrack.id),
+                    }
+                elseif outro then
+                    drawState = {
+                        outroProgress = clamp(outro.progress or 0, 0, 1),
+                        showMarkers = false,
+                    }
+                end
+                renderer.drawInputTrack(
+                    scene,
+                    inputTrack,
+                    actualActive,
+                    drawState
+                )
                 drawnEdgeIds[inputTrack.id] = true
             end
         end
@@ -944,17 +1346,90 @@ function renderer.drawScene(scene, options)
 
     for _, track in pairs(scene.edges or {}) do
         if track and not drawnEdgeIds[track.id] then
-            renderer.drawStandaloneTrack(scene, track, highlightedEdgeIds[track.id] == true)
+            local actualActive = highlightedEdgeIds[track.id] == true
+            local drawState = nil
+            if presentation then
+                drawState = {
+                    revealProgress = getPresentationTrackRevealProgress(presentation, track.id),
+                    activityMix = getPresentationTrackActivityMix(presentation, actualActive),
+                    decoratorPresentation = getPresentationTrackDecoratorState(presentation, track.id),
+                }
+            elseif outro then
+                drawState = {
+                    outroProgress = clamp(outro.progress or 0, 0, 1),
+                    showMarkers = false,
+                }
+            end
+            renderer.drawStandaloneTrack(
+                scene,
+                track,
+                actualActive,
+                drawState
+            )
+            drawnEdgeIds[track.id] = true
         end
     end
 
     for _, junction in ipairs(scene.junctionOrder or {}) do
-        renderer.drawCrossing(scene, junction)
+        local presentationState = presentation and getPresentationJunctionState(presentation, junction.id) or nil
+        if presentation then
+            if presentationState then
+                renderer.drawCrossing(scene, junction, { presentation = presentationState })
+            end
+        elseif outro then
+            local entryAngle = outro.presentation
+                and outro.presentation.junctionScheduleById
+                and outro.presentation.junctionScheduleById[junction.id]
+                and outro.presentation.junctionScheduleById[junction.id].entryAngle
+                or (-math.pi * 0.5)
+            renderer.drawCrossing(scene, junction, {
+                outro = {
+                    progress = clamp(outro.progress or 0, 0, 1),
+                    entryAngle = entryAngle,
+                },
+            })
+        else
+            renderer.drawCrossing(scene, junction)
+        end
     end
 
-    for _, junction in ipairs(scene.junctionOrder or {}) do
-        for inputIndex = 1, #junction.inputs do
-            renderer.drawTrackSignal(scene, junction, inputIndex)
+    if presentation then
+        local signalState = getPresentationSignalState(presentation)
+        if signalState then
+            for _, junction in ipairs(scene.junctionOrder or {}) do
+                for inputIndex = 1, #junction.inputs do
+                    renderer.drawTrackSignal(scene, junction, inputIndex, {
+                        scaleMultiplier = signalState.scaleMultiplier,
+                        alphaMultiplier = signalState.alpha,
+                    })
+                end
+            end
+        end
+
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            local presentationState = getPresentationJunctionState(presentation, junction.id)
+            if presentationState and (presentationState.selectorProgress or 0) > 0.001 then
+                renderer.drawOutputSelector(scene, junction, {
+                    scaleMultiplier = presentationState.selectorScaleMultiplier or 1,
+                })
+            end
+        end
+    elseif outro then
+        local reverseProgress = 1 - clamp(outro.progress or 0, 0, 1)
+        local signalScaleMultiplier = 0.18 + 0.82 * easeOutBack(reverseProgress)
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            for inputIndex = 1, #junction.inputs do
+                renderer.drawTrackSignal(scene, junction, inputIndex, {
+                    scaleMultiplier = signalScaleMultiplier,
+                    alphaMultiplier = reverseProgress,
+                })
+            end
+        end
+    else
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            for inputIndex = 1, #junction.inputs do
+                renderer.drawTrackSignal(scene, junction, inputIndex)
+            end
         end
     end
 
@@ -964,8 +1439,19 @@ function renderer.drawScene(scene, options)
         end
     end
 
-    for _, junction in ipairs(scene.junctionOrder or {}) do
-        renderer.drawOutputSelector(scene, junction)
+    if not presentation and not outro then
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            renderer.drawOutputSelector(scene, junction)
+        end
+    elseif outro then
+        local reverseProgress = 1 - clamp(outro.progress or 0, 0, 1)
+        local selectorScaleMultiplier = 0.18 + 0.82 * easeOutBack(reverseProgress)
+        for _, junction in ipairs(scene.junctionOrder or {}) do
+            renderer.drawOutputSelector(scene, junction, {
+                scaleMultiplier = selectorScaleMultiplier,
+                alphaMultiplier = reverseProgress,
+            })
+        end
     end
 
     if drawOptions.drawCollision ~= false then
