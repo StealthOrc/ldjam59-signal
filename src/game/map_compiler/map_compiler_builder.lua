@@ -1,3 +1,5 @@
+local junctionControls = require("src.game.junction_controls")
+
 return function(mapCompiler, shared)
     local moduleEnvironment = setmetatable({ mapCompiler = mapCompiler }, {
         __index = function(_, key)
@@ -12,6 +14,50 @@ return function(mapCompiler, shared)
     })
 
     setfenv(1, moduleEnvironment)
+
+local function buildPointListSignature(points)
+    local parts = {}
+    for _, point in ipairs(points or {}) do
+        parts[#parts + 1] = string.format("%.6f,%.6f", point.x or 0, point.y or 0)
+    end
+    return table.concat(parts, "|")
+end
+
+local function buildStyleSectionSignature(styleSections)
+    local parts = {}
+    for _, section in ipairs(styleSections or {}) do
+        parts[#parts + 1] = string.format(
+            "%s:%.6f:%.6f:%.6f",
+            tostring(section.roadType or ""),
+            tonumber(section.startRatio or 0) or 0,
+            tonumber(section.endRatio or 0) or 0,
+            tonumber(section.speedScale or 0) or 0
+        )
+    end
+    return table.concat(parts, "|")
+end
+
+local function buildColorListSignature(colors)
+    return table.concat(colors or {}, "|")
+end
+
+local function buildOutputEdgeMergeKey(edge)
+    if type(edge) ~= "table" then
+        return nil
+    end
+
+    return table.concat({
+        tostring(edge.sourceId or ""),
+        tostring(edge.targetId or ""),
+        tostring(edge.targetType or ""),
+        tostring(edge.roadType or ""),
+        tostring(edge.adoptInputColor == true),
+        buildPointListSignature(edge.points),
+        buildStyleSectionSignature(edge.styleSections),
+        buildColorListSignature(edge.colors),
+        buildColorListSignature(edge.inputColors),
+    }, "::")
+end
 
 function buildCompiledLevel(mapName, editorData)
     local errors = {}
@@ -334,6 +380,7 @@ function buildCompiledLevel(mapName, editorData)
         local outputEdges = {}
         local uniqueInputLookup = {}
         local uniqueOutputLookup = {}
+        local outputMergeLookup = {}
 
         for _, edgeId in ipairs(junction.inputEdgeIds) do
             if not uniqueInputLookup[edgeId] then
@@ -344,7 +391,12 @@ function buildCompiledLevel(mapName, editorData)
         for _, edgeId in ipairs(junction.outputEdgeIds) do
             if not uniqueOutputLookup[edgeId] then
                 uniqueOutputLookup[edgeId] = true
-                outputEdges[#outputEdges + 1] = edgeById[edgeId]
+                local edge = edgeById[edgeId]
+                local mergeKey = buildOutputEdgeMergeKey(edge)
+                if edge and (not mergeKey or not outputMergeLookup[mergeKey]) then
+                    outputMergeLookup[mergeKey] = edge.id
+                    outputEdges[#outputEdges + 1] = edge
+                end
             end
         end
 
@@ -521,12 +573,21 @@ function buildCompiledLevel(mapName, editorData)
         }, errors, table.concat(errors, " "), diagnostics
     end
     local hasPlayableJunctions = #playableJunctions > 0
+    local hasManualOutputSelector = false
+    for _, junction in ipairs(playableJunctions) do
+        if junctionControls.hasManualOutputSelector(junction) then
+            hasManualOutputSelector = true
+            break
+        end
+    end
 
     return {
         title = mapName,
         description = "Custom map loaded from the editor.",
         hint = hasPlayableJunctions
-            and "Click the junction center to switch inputs. Use the bottom selector to switch outputs."
+            and (hasManualOutputSelector
+                and "Click the junction center to switch inputs. Use the bottom selector to switch outputs."
+                or "Click the junction center to switch routes.")
             or "Shared endpoints are not junctions. Only one train can safely occupy a line end at a time.",
         footer = hasPlayableJunctions
             and "Sequence trains from the editor pane and clear every goal on time."

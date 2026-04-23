@@ -1,4 +1,5 @@
 local roadTypes = require("src.game.data.road_types")
+local junctionControls = require("src.game.junction_controls")
 
 local renderer = {}
 
@@ -43,8 +44,7 @@ local function hasOutputSelector(junction)
     return junction
         and renderer.getDistinctOutputCount(junction) > 1
         and junction.control
-        and junction.control.type ~= "relay"
-        and junction.control.type ~= "crossbar"
+        and not junctionControls.isOutputCoupledToMainControl(junction)
 end
 
 local function serializeTrackPointList(points)

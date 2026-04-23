@@ -55,4 +55,13 @@ local _, crossbarBubbleY = renderer.getControlBubbleLayout(crossbarJunction)
 assertEqual(crossbarBubbleY, 200, "crossbar junctions keep the main control centered")
 assertEqual(renderer.getOutputSelectorLayout(crossbarJunction), nil, "crossbar junctions do not expose the manual selector")
 
+local relayJunction = {
+    mergePoint = { x = 100, y = 200 },
+    crossingRadius = 24,
+    outputs = { {}, {} },
+    control = { type = "relay" },
+}
+
+assertEqual(renderer.getOutputSelectorLayout(relayJunction), nil, "relay junctions do not expose the manual selector")
+
 print("track scene renderer layout tests passed")

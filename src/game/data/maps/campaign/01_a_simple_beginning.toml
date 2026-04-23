@@ -84,7 +84,7 @@ wagonCount = 4
 [level]
 description = "Custom map loaded from the editor."
 footer = "Sequence trains from the editor pane and clear every goal on time."
-hint = "Click the junction center to switch inputs. Use the bottom selector to switch outputs."
+hint = "Click the junction center to switch routes."
 id = "3206710d-793f-474e-957a-fdb721926f52"
 mapUuid = "3206710d-793f-474e-957a-fdb721926f52"
 title = "A Simple Beginning"
@@ -196,4 +196,3 @@ lineColor = "yellow"
 spawnTime = 0.5
 trainColor = "yellow"
 wagonCount = 4
-
