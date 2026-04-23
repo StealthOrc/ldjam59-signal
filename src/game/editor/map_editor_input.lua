@@ -108,8 +108,16 @@ function mapEditor:updateDraggedPoint(x, y)
         return
     end
 
+    if self.drag.isMagnet and self.drag.rebuildFromMagnet and not self.drag.rebuildPrepared then
+        self:pruneSharedPointsFromMagnet(route, self.drag.magnetKind)
+        self.drag.rebuildPrepared = true
+        self.drag.pointIndex = self.drag.magnetKind == "start" and 1 or #route.points
+        self.selectedPointIndex = self.drag.pointIndex
+        point = route.points[self.drag.pointIndex]
+    end
+
     local clampedX, clampedY = self:clampPoint(x, y, self.drag.pointIndex == 1)
-    if self:isModifierSnapActive() then
+    if self:isGridSnapEnabled() then
         clampedX, clampedY = self:snapPointToGrid(clampedX, clampedY)
         clampedX, clampedY = self:clampPoint(clampedX, clampedY, self.drag.pointIndex == 1)
     end
@@ -1175,6 +1183,13 @@ function mapEditor:keypressed(key)
         return true
     end
 
+    if key == "q" then
+        self.gridSnapEnabled = not self.gridSnapEnabled
+        self:notifyPreferencesChanged()
+        self:showStatus(self.gridSnapEnabled and "Grid snap enabled." or "Grid snap disabled.")
+        return true
+    end
+
     if key == "f" then
         self:resetCameraToFit()
         self:showStatus("Camera reset to fit.")
@@ -1383,6 +1398,8 @@ function mapEditor:mousepressed(screenX, screenY, button)
             moved = false,
             isMagnet = magnetKind ~= nil,
             magnetKind = magnetKind,
+            rebuildFromMagnet = magnetKind ~= nil and self:isEndpointRebuildModifierActive(),
+            rebuildPrepared = false,
         }
         return true
     end

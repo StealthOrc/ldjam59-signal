@@ -201,19 +201,37 @@ end
 function mapEditor:getEditorDrawerLayout()
     local panelX = self.sidePanel.x + 18
     local panelWidth = self.sidePanel.w - 36
+    local rowGap = 12
+    local halfWidth = (panelWidth - PANEL_BUTTON_GAP) * 0.5
+    local controlsTop = self.sidePanel.y + 92
     local mapSizeRect = {
         x = panelX,
-        y = self.sidePanel.y + 92,
+        y = controlsTop,
         w = panelWidth,
         h = 34,
     }
-    local gridToggleRect = { x = panelX, y = mapSizeRect.y + mapSizeRect.h + 16, w = 120, h = 28 }
-    local gridStepRect = self:getTextFieldRect(panelX + 130, gridToggleRect.y + 1, panelWidth - 130)
+    local gridToggleRect = {
+        x = panelX,
+        y = mapSizeRect.y + mapSizeRect.h + rowGap,
+        w = halfWidth,
+        h = 32,
+    }
+    local snapToggleRect = {
+        x = gridToggleRect.x + gridToggleRect.w + PANEL_BUTTON_GAP,
+        y = gridToggleRect.y,
+        w = halfWidth,
+        h = gridToggleRect.h,
+    }
+    local gridStepRect = self:getTextFieldRect(panelX, gridToggleRect.y + gridToggleRect.h + rowGap + 6, panelWidth)
+    local controlsBottomY = gridStepRect.y + gridStepRect.h
 
     return {
         mapSizeRect = mapSizeRect,
         gridToggleRect = gridToggleRect,
+        snapToggleRect = snapToggleRect,
         gridStepRect = gridStepRect,
+        controlsTop = controlsTop,
+        controlsBottomY = controlsBottomY,
     }
 end
 
@@ -242,6 +260,13 @@ function mapEditor:handleEditorDrawerClick(x, y)
         self.gridVisible = not self.gridVisible
         self:notifyPreferencesChanged()
         self:showStatus(self.gridVisible and "Grid shown." or "Grid hidden.")
+        return true
+    end
+
+    if pointInRect(x, y, layout.snapToggleRect) then
+        self.gridSnapEnabled = not self.gridSnapEnabled
+        self:notifyPreferencesChanged()
+        self:showStatus(self.gridSnapEnabled and "Grid snap enabled." or "Grid snap disabled.")
         return true
     end
 

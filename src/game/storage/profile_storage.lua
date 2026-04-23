@@ -3,7 +3,7 @@ local toml = require("src.game.util.toml")
 local uuid = require("src.game.util.uuid")
 
 local PROFILE_FILE = "profile.toml"
-local PROFILE_VERSION = 3
+local PROFILE_VERSION = 4
 local PLAYER_ID_PREFIX = "player-"
 local UUID_PATTERN = "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$"
 local DEFAULT_EDITOR_GRID_STEP = 64
@@ -80,6 +80,7 @@ local function sanitizeProfile(profile)
         debugMode = source.debugMode == true,
         editor = {
             gridVisible = editor.gridVisible ~= false,
+            gridSnapEnabled = editor.gridSnapEnabled == true,
             gridStep = math.max(
                 MIN_EDITOR_GRID_STEP,
                 math.min(
@@ -139,6 +140,7 @@ function profileStorage.load()
         or loadedProfile.debugMode ~= sanitized.debugMode
         or loadedEditor == nil
         or loadedEditor.gridVisible ~= sanitized.editor.gridVisible
+        or loadedEditor.gridSnapEnabled ~= sanitized.editor.gridSnapEnabled
         or loadedEditor.gridStep ~= sanitized.editor.gridStep
         or loadedTutorials == nil
         or not sameBooleanKeySet(
