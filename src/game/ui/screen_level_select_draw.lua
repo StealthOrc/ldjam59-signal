@@ -494,6 +494,8 @@ end
 function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
     local graphics = love.graphics
     local hasReplay = tostring(entry and entry.replayUuid or "") ~= ""
+        or tostring(entry and entry.replayFilePath or "") ~= ""
+    local rankText = tostring(entry.rank or "-")
     local fillColor = isHighlighted and { 0.16, 0.28, 0.38, 0.98 } or { 0.08, 0.11, 0.15, 0.96 }
     local lineColor = isHighlighted and { 0.48, 0.72, 0.92, 1 } or { 0.24, 0.32, 0.4, 1 }
     local nameColor = hasReplay and { 0.84, 0.95, 1, 1 } or PANEL_COLORS.bodyText
@@ -510,7 +512,7 @@ function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
     love.graphics.setFont(game.fonts.small)
     graphics.setColor(PANEL_COLORS.bodyText[1], PANEL_COLORS.bodyText[2], PANEL_COLORS.bodyText[3], PANEL_COLORS.bodyText[4])
     graphics.printf(
-        tostring(entry.rank or "-"),
+        rankText,
         rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX,
         rowRect.y + 4,
         LEVEL_SELECT_LEADERBOARD_CARD.rankWidth,
@@ -519,6 +521,38 @@ function drawLevelSelectLeaderboardRow(game, rowRect, entry, isHighlighted)
 
     local nameX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX + LEVEL_SELECT_LEADERBOARD_CARD.rankWidth
     local nameWidth = rowRect.w - LEVEL_SELECT_LEADERBOARD_CARD.rankWidth - LEVEL_SELECT_LEADERBOARD_CARD.scoreWidth - (LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX * 2)
+    if hasReplay then
+        local indicatorDiameter = LEVEL_SELECT_LEADERBOARD_CARD.replayIndicatorDiameter
+        local indicatorRadius = LEVEL_SELECT_LEADERBOARD_CARD.replayIndicatorRadius
+        local rankX = rowRect.x + LEVEL_SELECT_LEADERBOARD_CARD.rowPaddingX
+        local rankTextWidth = game.fonts.small:getWidth(rankText)
+        local indicatorX = rankX + rankTextWidth + LEVEL_SELECT_LEADERBOARD_CARD.replayIndicatorRankGap
+        local indicatorY = rowRect.y + math.floor((rowRect.h - indicatorDiameter) * 0.5 + 0.5)
+        local indicatorCenterX = indicatorX + indicatorRadius
+        local indicatorCenterY = indicatorY + indicatorRadius
+        local nameStartX = indicatorX
+            + indicatorDiameter
+            + LEVEL_SELECT_LEADERBOARD_CARD.replayIndicatorNameGap
+
+        graphics.setColor(0.52, 0.08, 0.08, 0.98)
+        graphics.circle(
+            "fill",
+            indicatorCenterX,
+            indicatorCenterY,
+            indicatorRadius
+        )
+        graphics.setColor(0.98, 0.24, 0.24, 1)
+        graphics.circle("fill", indicatorCenterX, indicatorCenterY, indicatorRadius - 2)
+        graphics.setColor(1, 0.88, 0.88, 0.9)
+        graphics.circle("line", indicatorCenterX, indicatorCenterY, indicatorRadius)
+
+        if nameStartX > nameX then
+            local nameShift = nameStartX - nameX
+            nameX = nameStartX
+            nameWidth = nameWidth - nameShift
+        end
+    end
+
     graphics.setColor(nameColor[1], nameColor[2], nameColor[3], nameColor[4])
     graphics.printf(
         formatLevelSelectLeaderboardPlayerName(entry.playerDisplayName or "Unknown"),
@@ -583,6 +617,20 @@ function getLevelSelectLeaderboardVisibleEntries(topEntries, pinnedPlayerEntry, 
     local visibleTopEntries = {}
     local visiblePinnedPlayerEntry = pinnedPlayerEntry
     local visibleTopEntryLimit = resolvedMaxRows
+    local pinnedPlayerUuid = tostring(
+        visiblePinnedPlayerEntry
+            and (visiblePinnedPlayerEntry.playerUuid or visiblePinnedPlayerEntry.player_uuid)
+            or ""
+    )
+
+    if pinnedPlayerUuid ~= "" then
+        for _, entry in ipairs(topEntries or {}) do
+            if tostring(entry and (entry.playerUuid or entry.player_uuid) or "") == pinnedPlayerUuid then
+                visiblePinnedPlayerEntry = nil
+                break
+            end
+        end
+    end
 
     if visiblePinnedPlayerEntry and visibleTopEntryLimit > 0 then
         visibleTopEntryLimit = visibleTopEntryLimit - 1
@@ -960,6 +1008,24 @@ function ui.getLeaderboardMapHitAt(game, x, y)
             return {
                 mapUuid = rowRect.entry.mapUuid,
                 mapName = rowRect.entry.mapName,
+            }
+        end
+    end
+
+    return nil
+end
+
+function ui.getLeaderboardReplayHitAt(game, x, y)
+    local state = game.leaderboardState or { entries = {} }
+    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
+
+    for _, rowRect in ipairs(rowRects) do
+        local entry = rowRect.entry or {}
+        local hasReplay = tostring(entry.replayUuid or "") ~= ""
+            or tostring(entry.replayFilePath or "") ~= ""
+        if hasReplay and pointInRect(x, y, rowRect.row) then
+            return {
+                entry = entry,
             }
         end
     end

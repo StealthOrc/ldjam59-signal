@@ -109,6 +109,7 @@ function mapEditor:getExportData()
                 y = point.y / self.mapSize.h,
                 sharedPointId = point.sharedPointId,
                 authored = point.authored ~= false,
+                linkedPointGroupId = point.linkedPointGroupId,
             }
         end
 
@@ -163,9 +164,13 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
     self.mapSize = sanitizeMapSize(editorData and editorData.mapSize)
     self.endpoints = {}
     self.routes = {}
+    self.sharedLanes = {}
+    self.sharedLanesById = {}
+    self.sharedLaneByRouteSegment = {}
     self.nextEndpointId = 1
     self.nextRouteId = 1
     self.nextSharedPointId = 1
+    self.nextLinkedPointGroupId = 1
     self.nextTrainId = 1
     self.importedJunctionState = {}
     self.drag = nil
@@ -205,9 +210,13 @@ function mapEditor:loadEditorData(editorData, mapName, sourceInfo, levelData)
                 y = point.y * self.mapSize.h,
                 sharedPointId = point.sharedPointId,
                 authored = point.authored ~= false,
+                linkedPointGroupId = point.linkedPointGroupId,
             }
             if point.sharedPointId and point.sharedPointId >= self.nextSharedPointId then
                 self.nextSharedPointId = point.sharedPointId + 1
+            end
+            if point.linkedPointGroupId and point.linkedPointGroupId >= self.nextLinkedPointGroupId then
+                self.nextLinkedPointGroupId = point.linkedPointGroupId + 1
             end
         end
 
@@ -312,6 +321,9 @@ function mapEditor:serialize()
             local pointSuffixParts = {}
             if point.sharedPointId then
                 pointSuffixParts[#pointSuffixParts + 1] = string.format("sharedPointId = %d", point.sharedPointId)
+            end
+            if point.linkedPointGroupId then
+                pointSuffixParts[#pointSuffixParts + 1] = string.format("linkedPointGroupId = %d", point.linkedPointGroupId)
             end
             if point.authored == false then
                 pointSuffixParts[#pointSuffixParts + 1] = "authored = false"

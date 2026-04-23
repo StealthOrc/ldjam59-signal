@@ -137,6 +137,8 @@ function mapEditor:updateDraggedPoint(x, y)
         point.y = clampedY
         if point.sharedPointId then
             self:updateSharedPointGroup(point.sharedPointId, clampedX, clampedY)
+        elseif point.linkedPointGroupId then
+            self:updateLinkedPointGroup(point.linkedPointGroupId, clampedX, clampedY)
         end
     end
     self:closeColorPicker()
@@ -179,6 +181,103 @@ function mapEditor:ensureRoutePointAtIntersection(route, intersectionPoint)
     end
 
     return nil, nil, false
+end
+
+function mapEditor:pointsCoincide(firstPoint, secondPoint, toleranceSquared)
+    if not firstPoint or not secondPoint then
+        return false
+    end
+
+    return distanceSquared(firstPoint.x, firstPoint.y, secondPoint.x, secondPoint.y)
+        <= (toleranceSquared or INTERNAL_POINT_MATCH_DISTANCE_SQUARED)
+end
+
+function mapEditor:segmentsCoincide(firstStart, firstEnd, secondStart, secondEnd, toleranceSquared)
+    local tolerance = toleranceSquared or INTERNAL_POINT_MATCH_DISTANCE_SQUARED
+    return (
+        self:pointsCoincide(firstStart, secondStart, tolerance)
+        and self:pointsCoincide(firstEnd, secondEnd, tolerance)
+    ) or (
+        self:pointsCoincide(firstStart, secondEnd, tolerance)
+        and self:pointsCoincide(firstEnd, secondStart, tolerance)
+    )
+end
+
+function mapEditor:getCoincidentSegmentMembers(route, segmentIndex)
+    local indexedMembers = self:getSharedLaneMembers(route, segmentIndex)
+    if #indexedMembers > 0 then
+        return indexedMembers
+    end
+
+    local members = {}
+    local pointA = route and route.points and route.points[segmentIndex] or nil
+    local pointB = route and route.points and route.points[segmentIndex + 1] or nil
+    if not pointA or not pointB then
+        return members
+    end
+
+    for _, candidateRoute in ipairs(self.routes) do
+        for candidateSegmentIndex = 1, #candidateRoute.points - 1 do
+            local candidateA = candidateRoute.points[candidateSegmentIndex]
+            local candidateB = candidateRoute.points[candidateSegmentIndex + 1]
+            if self:segmentsCoincide(pointA, pointB, candidateA, candidateB) then
+                members[#members + 1] = {
+                    route = candidateRoute,
+                    segmentIndex = candidateSegmentIndex,
+                }
+                break
+            end
+        end
+    end
+
+    return members
+end
+
+function mapEditor:insertBendPointAtSegmentHit(segmentHit)
+    if not (segmentHit and segmentHit.route and segmentHit.segmentIndex and segmentHit.point) then
+        return nil
+    end
+
+    local members = self:getCoincidentSegmentMembers(segmentHit.route, segmentHit.segmentIndex)
+    local insertedMembers = {}
+    local primaryInsertedMember = nil
+
+    for _, member in ipairs(members) do
+        local point = {
+            x = segmentHit.point.x,
+            y = segmentHit.point.y,
+        }
+        local insertIndex = member.segmentIndex + 1
+        table.insert(member.route.points, insertIndex, point)
+        self:splitRouteSegmentStyle(member.route, member.segmentIndex)
+
+        local insertedMember = {
+            route = member.route,
+            pointIndex = insertIndex,
+            point = point,
+        }
+        insertedMembers[#insertedMembers + 1] = insertedMember
+
+        if member.route.id == segmentHit.route.id and not primaryInsertedMember then
+            primaryInsertedMember = insertedMember
+        end
+    end
+
+    if #insertedMembers == 0 then
+        return nil
+    end
+
+    if #insertedMembers > 1 then
+        local linkedPointGroupId = self.nextLinkedPointGroupId
+        self.nextLinkedPointGroupId = self.nextLinkedPointGroupId + 1
+        for _, insertedMember in ipairs(insertedMembers) do
+            insertedMember.point.linkedPointGroupId = linkedPointGroupId
+        end
+        self:updateLinkedPointGroup(linkedPointGroupId, segmentHit.point.x, segmentHit.point.y)
+    end
+
+    self:rebuildIntersections()
+    return primaryInsertedMember or insertedMembers[1]
 end
 
 function mapEditor:prepareIntersectionForDrag(intersection)
@@ -290,7 +389,7 @@ function mapEditor:materializeIntersectionSharedPoints(intersection)
 end
 
 function mapEditor:isIntersectionOutputSelectorHit(intersection, x, y)
-    if not intersection or #intersection.outputEndpointIds <= 1 then
+    if not intersection or self:getIntersectionOutputCount(intersection) <= 1 then
         return false
     end
     return distanceSquared(x, y, intersection.x, intersection.y + INTERSECTION_SELECTOR_OFFSET_Y)
@@ -353,19 +452,158 @@ function mapEditor:syncIntersectionOutputToControl(intersection)
         return
     end
 
-    local outputCount = #(intersection.outputEndpointIds or {})
+    local outputCount = self:getIntersectionOutputCount(intersection)
     if outputCount <= 0 then
         intersection.activeOutputIndex = 1
         return
     end
 
-    if intersection.controlType == "relay" then
-        intersection.activeOutputIndex = math.min(intersection.activeInputIndex or 1, outputCount)
-    elseif intersection.controlType == "crossbar" then
-        intersection.activeOutputIndex = math.max(1, outputCount - (intersection.activeInputIndex or 1) + 1)
+    if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
+        intersection.activeOutputIndex = self:getDirectionalIntersectionOutputIndex(intersection, intersection.controlType)
     else
         intersection.activeOutputIndex = clamp(intersection.activeOutputIndex or 1, 1, outputCount)
     end
+end
+
+function mapEditor:getIntersectionRouteOuterPoint(route, magnetKind)
+    if not route or not route.points or #route.points <= 0 then
+        return nil
+    end
+
+    if magnetKind == "end" then
+        return route.points[#route.points]
+    end
+
+    return route.points[1]
+end
+
+function mapEditor:getIntersectionAngle(point, intersection)
+    if not point or not intersection then
+        return 0
+    end
+
+    local dx = (point.x or 0) - (intersection.x or 0)
+    local dy = (point.y or 0) - (intersection.y or 0)
+    if math.atan2 then
+        return math.atan2(dy, dx)
+    end
+
+    if math.abs(dx) <= 0.0001 then
+        return dy >= 0 and (math.pi * 0.5) or (-math.pi * 0.5)
+    end
+
+    local angle = math.atan(dy / dx)
+    if dx < 0 then
+        angle = angle + math.pi
+    end
+    if angle > math.pi then
+        angle = angle - math.pi * 2
+    end
+    return angle
+end
+
+function mapEditor:buildIntersectionRouteEntries(intersection, routeIds, magnetKind)
+    local entries = {}
+
+    for index, routeId in ipairs(routeIds or {}) do
+        local route = self:getRouteById(routeId)
+        local outerPoint = self:getIntersectionRouteOuterPoint(route, magnetKind)
+        entries[#entries + 1] = {
+            index = index,
+            routeId = routeId,
+            outerPoint = outerPoint,
+            angle = self:getIntersectionAngle(outerPoint, intersection),
+        }
+    end
+
+    return entries
+end
+
+function mapEditor:sortIntersectionEntriesByPosition(entries)
+    table.sort(entries, function(first, second)
+        local firstPoint = first and first.outerPoint or nil
+        local secondPoint = second and second.outerPoint or nil
+        if not firstPoint or not secondPoint then
+            return (first and first.index or 0) < (second and second.index or 0)
+        end
+
+        local xDiff = math.abs((firstPoint.x or 0) - (secondPoint.x or 0))
+        if xDiff > 0.0001 then
+            return (firstPoint.x or 0) < (secondPoint.x or 0)
+        end
+
+        local yDiff = math.abs((firstPoint.y or 0) - (secondPoint.y or 0))
+        if yDiff > 0.0001 then
+            return (firstPoint.y or 0) < (secondPoint.y or 0)
+        end
+
+        return (first.index or 0) < (second.index or 0)
+    end)
+end
+
+function mapEditor:sortIntersectionEntriesByCycle(entries)
+    table.sort(entries, function(first, second)
+        local angleDiff = math.abs((first.angle or 0) - (second.angle or 0))
+        if angleDiff > 0.0001 then
+            return (first.angle or 0) < (second.angle or 0)
+        end
+
+        local firstPoint = first and first.outerPoint or nil
+        local secondPoint = second and second.outerPoint or nil
+        if not firstPoint or not secondPoint then
+            return (first and first.index or 0) < (second and second.index or 0)
+        end
+
+        local xDiff = math.abs((firstPoint.x or 0) - (secondPoint.x or 0))
+        if xDiff > 0.0001 then
+            return (firstPoint.x or 0) < (secondPoint.x or 0)
+        end
+
+        return (first.index or 0) < (second.index or 0)
+    end)
+end
+
+function mapEditor:getNextIntersectionInputIndex(intersection)
+    local entries = self:buildIntersectionRouteEntries(intersection, intersection and intersection.inputRouteIds or {}, "start")
+    self:sortIntersectionEntriesByCycle(entries)
+    if #entries <= 1 then
+        return 1
+    end
+
+    for orderIndex, entry in ipairs(entries) do
+        if entry.index == (intersection.activeInputIndex or 1) then
+            local nextEntry = entries[orderIndex + 1] or entries[1]
+            return nextEntry.index
+        end
+    end
+
+    return entries[1].index
+end
+
+function mapEditor:getDirectionalIntersectionOutputIndex(intersection, controlType)
+    local inputEntries = self:buildIntersectionRouteEntries(intersection, intersection and intersection.inputRouteIds or {}, "start")
+    local outputEntries = self:buildIntersectionRouteEntries(intersection, intersection and intersection.outputRouteIds or {}, "end")
+    self:sortIntersectionEntriesByPosition(inputEntries)
+    self:sortIntersectionEntriesByPosition(outputEntries)
+
+    local inputRank = nil
+    for rank, entry in ipairs(inputEntries) do
+        if entry.index == (intersection.activeInputIndex or 1) then
+            inputRank = rank
+            break
+        end
+    end
+
+    if not inputRank or #outputEntries <= 0 then
+        return clamp(intersection.activeOutputIndex or 1, 1, math.max(1, #(intersection.outputEndpointIds or {})))
+    end
+
+    local targetRank = inputRank
+    if controlType == "crossbar" then
+        targetRank = #outputEntries - inputRank + 1
+    end
+    targetRank = clamp(targetRank, 1, #outputEntries)
+    return outputEntries[targetRank].index
 end
 
 function mapEditor:cycleIntersectionInput(intersection)
@@ -384,9 +622,13 @@ function mapEditor:cycleIntersectionInput(intersection)
         return false
     end
 
-    intersection.activeInputIndex = (intersection.activeInputIndex or 1) + 1
-    if intersection.activeInputIndex > inputCount then
-        intersection.activeInputIndex = 1
+    if intersection.controlType == "relay" or intersection.controlType == "crossbar" then
+        intersection.activeInputIndex = self:getNextIntersectionInputIndex(intersection)
+    else
+        intersection.activeInputIndex = (intersection.activeInputIndex or 1) + 1
+        if intersection.activeInputIndex > inputCount then
+            intersection.activeInputIndex = 1
+        end
     end
 
     self:syncIntersectionOutputToControl(intersection)
@@ -401,11 +643,11 @@ function mapEditor:cycleIntersectionOutput(intersection, direction)
         return
     end
 
-    if (intersection.outputEndpointIds and #intersection.outputEndpointIds or 0) <= 1 then
+    local outputCount = self:getIntersectionOutputCount(intersection)
+    if outputCount <= 1 then
         return
     end
 
-    local outputCount = #intersection.outputEndpointIds
     intersection.activeOutputIndex = intersection.activeOutputIndex + direction
     if intersection.activeOutputIndex < 1 then
         intersection.activeOutputIndex = outputCount
@@ -511,6 +753,8 @@ function mapEditor:splitEndpointColor(route, magnetKind, colorId, startMouseX, s
         moved = true,
         isMagnet = true,
         magnetKind = magnetKind,
+        pickupMode = true,
+        awaitingPickupRelease = true,
     }
     self:closeColorPicker()
     self:rebuildIntersections()
@@ -986,12 +1230,25 @@ function mapEditor:setRouteSegmentRoadType(route, segmentIndex, roadType)
     end
 
     local normalizedRoadType = roadTypes.normalizeRoadType(roadType)
-    local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
-    if not segmentRoadTypes[segmentIndex] then
+    local coincidentMembers = self:getCoincidentSegmentMembers(route, segmentIndex)
+    if #coincidentMembers == 0 then
+        coincidentMembers[1] = {
+            route = route,
+            segmentIndex = segmentIndex,
+        }
+    end
+
+    local primarySegmentRoadTypes = self:ensureRouteSegmentRoadTypes(route)
+    if not primarySegmentRoadTypes[segmentIndex] then
         return
     end
 
-    segmentRoadTypes[segmentIndex] = normalizedRoadType
+    for _, member in ipairs(coincidentMembers) do
+        local segmentRoadTypes = self:ensureRouteSegmentRoadTypes(member.route)
+        if segmentRoadTypes[member.segmentIndex] then
+            segmentRoadTypes[member.segmentIndex] = normalizedRoadType
+        end
+    end
     self:refreshValidation()
     self:showStatus("Segment road type set to " .. roadTypes.getConfig(normalizedRoadType).label .. ".")
 end
@@ -1450,23 +1707,24 @@ function mapEditor:mousepressed(screenX, screenY, button)
 
     local segmentHit = self:findSegmentHit(x, y)
     if segmentHit then
-        table.insert(segmentHit.route.points, segmentHit.insertIndex, segmentHit.point)
-        self:splitRouteSegmentStyle(segmentHit.route, segmentHit.segmentIndex)
-        self.selectedRouteId = segmentHit.route.id
-        self.selectedPointIndex = segmentHit.insertIndex
+        local insertedMember = self:insertBendPointAtSegmentHit(segmentHit)
+        if not insertedMember then
+            return false
+        end
+        self.selectedRouteId = insertedMember.route.id
+        self.selectedPointIndex = insertedMember.pointIndex
         self.drag = {
             kind = "point",
-            routeId = segmentHit.route.id,
-            pointIndex = segmentHit.insertIndex,
+            routeId = insertedMember.route.id,
+            pointIndex = insertedMember.pointIndex,
             startMouseX = x,
             startMouseY = y,
-            moved = true,
+            moved = false,
             isMagnet = false,
             magnetKind = nil,
         }
         self:closeColorPicker()
         self:closeRouteTypePicker()
-        self:rebuildIntersections()
         self:showStatus("Bend point added.")
         return true
     end
@@ -1635,12 +1893,7 @@ function mapEditor:mousereleased(screenX, screenY, button)
         local startPoint = route.points[1]
         local endPoint = route.points[#route.points]
         if distanceSquared(startPoint.x, startPoint.y, endPoint.x, endPoint.y) < 40 * 40 then
-            for routeIndex, candidate in ipairs(self.routes) do
-                if candidate.id == route.id then
-                    table.remove(self.routes, routeIndex)
-                    break
-                end
-            end
+            self:removeRoute(route.id)
             self:clearSelection()
             self:showStatus("Route discarded because it was too short.")
         else
@@ -1653,8 +1906,9 @@ function mapEditor:mousereleased(screenX, screenY, button)
             self:mergeEndpointInto(route, self.drag.magnetKind, target)
         end
     elseif route and self.drag.kind == "point" and self.drag.moved then
+        local draggedPoint = route.points[self.drag.pointIndex]
         local targetRoute, targetPointIndex, targetPoint = self:findBendPointAt(x, y, route.id, self.drag.pointIndex)
-        if targetRoute and targetPointIndex then
+        if draggedPoint and not draggedPoint.linkedPointGroupId and targetRoute and targetPointIndex then
             local blockedByOriginalGroup = self.drag.splitOriginSharedPointId
                 and targetPoint
                 and targetPoint.sharedPointId == self.drag.splitOriginSharedPointId

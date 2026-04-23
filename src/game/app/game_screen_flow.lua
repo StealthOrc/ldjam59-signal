@@ -115,6 +115,28 @@ function Game:getMapNameByUuid(mapUuid)
     return self.mapNameByUuid[mapUuid] or LEADERBOARD_MAP_NAME_UNKNOWN
 end
 
+function Game:getMapDescriptorByUuid(mapUuid, mapHash)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    if resolvedMapUuid == "" then
+        return nil
+    end
+
+    local uuidMatch = nil
+    for _, descriptor in ipairs(self.availableMaps or {}) do
+        if tostring(descriptor.mapUuid or "") == resolvedMapUuid then
+            if resolvedMapHash ~= "" and tostring(descriptor.mapHash or "") == resolvedMapHash then
+                return descriptor
+            end
+            if not uuidMatch then
+                uuidMatch = descriptor
+            end
+        end
+    end
+
+    return uuidMatch
+end
+
 function Game:getLevelSelectMaps()
     return ui.getLevelSelectMapDescriptors(self)
 end
@@ -303,7 +325,44 @@ function Game:openSelectedLevelSelectReplay()
         return false
     end
 
-    local replayRecord, replayError = replayStorage.load(replayEntry.replayFilePath)
+    return self:openLevelSelectReplayEntry(selectedMap, replayEntry)
+end
+
+function Game:openLevelSelectReplayEntry(mapDescriptor, replayEntry)
+    local selectedMap = type(mapDescriptor) == "table" and mapDescriptor or self:getSelectedLevelMap()
+    if not selectedMap then
+        self:setLevelSelectActionState(LEVEL_SELECT_ACTION_STATUS_ERROR, "Select a map before opening a replay.")
+        return false
+    end
+
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedReplayEntry then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_INFO,
+            "No local replay is available for this entry yet."
+        )
+        return false
+    end
+
+    local replayFilePath = tostring(resolvedReplayEntry.replayFilePath or "")
+    if replayFilePath == "" then
+        local replayUuid = tostring(resolvedReplayEntry.replayUuid or "")
+        local indexedReplayEntry = mapReplayIndexStorage.getReplayByUuid(self.localReplayIndex, replayUuid)
+        if indexedReplayEntry then
+            resolvedReplayEntry = indexedReplayEntry
+            replayFilePath = tostring(indexedReplayEntry.replayFilePath or "")
+        end
+    end
+
+    if replayFilePath == "" then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The selected replay file could not be found locally."
+        )
+        return false
+    end
+
+    local replayRecord, replayError = replayStorage.load(replayFilePath)
     if not replayRecord then
         self:setLevelSelectActionState(
             LEVEL_SELECT_ACTION_STATUS_ERROR,
@@ -342,17 +401,59 @@ function Game:openSelectedLevelSelectReplay()
     return self:openReplay()
 end
 
+function Game:openLeaderboardReplayEntry(replayEntry)
+    local resolvedReplayEntry = type(replayEntry) == "table" and replayEntry or nil
+    if not resolvedReplayEntry then
+        return false
+    end
+
+    local replayUuid = tostring(resolvedReplayEntry.replayUuid or "")
+    local replayIndexEntry = replayUuid ~= ""
+        and mapReplayIndexStorage.getReplayByUuid(self.localReplayIndex, replayUuid)
+        or nil
+    local mapUuid = tostring(
+        resolvedReplayEntry.mapUuid
+            or resolvedReplayEntry.map_uuid
+            or replayIndexEntry and replayIndexEntry.mapUuid
+            or ""
+    )
+    local mapHash = tostring(
+        resolvedReplayEntry.mapHash
+            or resolvedReplayEntry.map_hash
+            or replayIndexEntry and replayIndexEntry.mapHash
+            or ""
+    )
+    local mapDescriptor = self:getMapDescriptorByUuid(mapUuid, mapHash)
+    if not mapDescriptor then
+        self:setLevelSelectActionState(
+            LEVEL_SELECT_ACTION_STATUS_ERROR,
+            "The replay map is not available locally."
+        )
+        return false
+    end
+
+    if self:isOnlineMode() then
+        local onlineConfig = self:getActiveOnlineConfig()
+        if not onlineConfig.isConfigured then
+            self:setLevelSelectActionState(
+                LEVEL_SELECT_ACTION_STATUS_ERROR,
+                "Online replay playback is not configured."
+            )
+            return false
+        end
+
+        return self:beginReplayDownloadRequest(onlineConfig, mapDescriptor, resolvedReplayEntry)
+    end
+
+    return self:openLevelSelectReplayEntry(mapDescriptor, replayIndexEntry or resolvedReplayEntry)
+end
+
 function Game:isLevelSelectMarketplaceMode()
     return self.levelSelectMode == LEVEL_SELECT_MODE_MARKETPLACE
 end
 
 function Game:isOnlineMapsAvailable()
-    if not self:isOnlineMode() then
-        return false
-    end
-
-    local onlineConfig = self:getActiveOnlineConfig()
-    return onlineConfig and onlineConfig.isConfigured == true
+    return self:isOnlineMode() and self:isOnlineConfigAvailable()
 end
 
 function Game:isLevelSelectMarketplaceSearchActive()
@@ -405,7 +506,7 @@ function Game:setLevelSelectMode(mode)
     local resolvedMode = mode == LEVEL_SELECT_MODE_MARKETPLACE
         and LEVEL_SELECT_MODE_MARKETPLACE
         or LEVEL_SELECT_MODE_LIBRARY
-    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMode() then
+    if resolvedMode == LEVEL_SELECT_MODE_MARKETPLACE and not self:isOnlineMapsAvailable() then
         self.levelSelectMode = LEVEL_SELECT_MODE_LIBRARY
         self:clearLevelSelectLeaderboardFlip()
         return
@@ -427,7 +528,7 @@ function Game:setLevelSelectMode(mode)
 end
 
 function Game:toggleLevelSelectMode()
-    if not self:isOnlineMode() then
+    if not self:isOnlineMapsAvailable() then
         self:setLevelSelectMode(LEVEL_SELECT_MODE_LIBRARY)
         return
     end

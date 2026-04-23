@@ -49,10 +49,17 @@ local PANEL_BUTTON_GAP = 12
 local PANEL_BUTTON_BOTTOM_MARGIN = 22
 local STATUS_TOAST_MARGIN = 18
 local STATUS_TOAST_FADE_TIME = 0.35
-local POINT_HIT_RADIUS = 12
+local START_MAGNET_DRAW_WIDTH = 58
+local END_MAGNET_DRAW_WIDTH = 46
+local MAGNET_DRAW_HEIGHT = 24
+local MAGNET_DRAW_OUTLINE_PADDING = 3
+local MAGNET_SELECTION_PADDING = 8
+local BEND_POINT_OUTER_RADIUS = 11
+local BEND_POINT_INNER_RADIUS = 8
+local BEND_POINT_SELECTION_RADIUS = 16
+local POINT_HIT_RADIUS = BEND_POINT_SELECTION_RADIUS
 local INTERSECTION_HIT_RADIUS = 22
 local INTERSECTION_UNSUPPORTED_HIT_RADIUS = 18
-local MAGNET_HIT_RADIUS = 18
 local SEGMENT_HIT_RADIUS = 16
 local SEGMENT_HIT_MIN_HALF_WIDTH = 8
 local SEGMENT_HIT_HALF_WIDTH_RATIO = 0.3
@@ -248,6 +255,7 @@ local function copyPoint(point)
         y = point.y,
         sharedPointId = point.sharedPointId,
         authored = point.authored ~= false,
+        linkedPointGroupId = point.linkedPointGroupId,
     }
 end
 
@@ -864,10 +872,17 @@ local shared = {
     PANEL_BUTTON_BOTTOM_MARGIN = PANEL_BUTTON_BOTTOM_MARGIN,
     STATUS_TOAST_MARGIN = STATUS_TOAST_MARGIN,
     STATUS_TOAST_FADE_TIME = STATUS_TOAST_FADE_TIME,
+    START_MAGNET_DRAW_WIDTH = START_MAGNET_DRAW_WIDTH,
+    END_MAGNET_DRAW_WIDTH = END_MAGNET_DRAW_WIDTH,
+    MAGNET_DRAW_HEIGHT = MAGNET_DRAW_HEIGHT,
+    MAGNET_DRAW_OUTLINE_PADDING = MAGNET_DRAW_OUTLINE_PADDING,
+    MAGNET_SELECTION_PADDING = MAGNET_SELECTION_PADDING,
+    BEND_POINT_OUTER_RADIUS = BEND_POINT_OUTER_RADIUS,
+    BEND_POINT_INNER_RADIUS = BEND_POINT_INNER_RADIUS,
+    BEND_POINT_SELECTION_RADIUS = BEND_POINT_SELECTION_RADIUS,
     POINT_HIT_RADIUS = POINT_HIT_RADIUS,
     INTERSECTION_HIT_RADIUS = INTERSECTION_HIT_RADIUS,
     INTERSECTION_UNSUPPORTED_HIT_RADIUS = INTERSECTION_UNSUPPORTED_HIT_RADIUS,
-    MAGNET_HIT_RADIUS = MAGNET_HIT_RADIUS,
     SEGMENT_HIT_RADIUS = SEGMENT_HIT_RADIUS,
     SEGMENT_HIT_MIN_HALF_WIDTH = SEGMENT_HIT_MIN_HALF_WIDTH,
     SEGMENT_HIT_HALF_WIDTH_RATIO = SEGMENT_HIT_HALF_WIDTH_RATIO,
@@ -971,6 +986,7 @@ local shared = {
 require("src.game.editor.map_editor_state")(mapEditor, shared)
 require("src.game.editor.map_editor_panels")(mapEditor, shared)
 require("src.game.editor.map_editor_document")(mapEditor, shared)
+require("src.game.editor.map_editor_shared_lanes")(mapEditor, shared)
 require("src.game.editor.map_editor_intersections")(mapEditor, shared)
 require("src.game.editor.map_editor_input")(mapEditor, shared)
 require("src.game.editor.map_editor_rendering")(mapEditor, shared)

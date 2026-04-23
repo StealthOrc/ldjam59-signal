@@ -5,9 +5,19 @@ local marketplaceFavoriteLogic = require("src.game.network.marketplace_favorite_
 local leaderboardClient = {}
 
 local MAP_CATEGORY_ONLINE = "online"
+local DEFAULT_LEADERBOARD_LIMIT = 50
+local DEFAULT_MARKETPLACE_LIMIT = 10
+local DEFAULT_REPLAY_METADATA_LIMIT = 5
 
 local function normalizeBaseUrl(baseUrl)
     return tostring(baseUrl or ""):gsub("/+$", "")
+end
+
+local function urlEncode(value)
+    local text = tostring(value or "")
+    return (text:gsub("([^%w%-_%.~])", function(character)
+        return string.format("%%%02X", character:byte())
+    end))
 end
 
 local function normalizeConfig(config)
@@ -18,12 +28,22 @@ local function normalizeConfig(config)
     return resolvedConfig
 end
 
+local function getTimeoutSeconds(config)
+    local timeoutSeconds = tonumber(config and config.timeoutSeconds)
+    if timeoutSeconds ~= nil and timeoutSeconds > 0 then
+        return timeoutSeconds
+    end
+
+    return nil
+end
+
 local function postJson(config, endpointPath, payload)
     return httpTransport.postJson({
         url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
         apiKey = config.apiKey,
         hmacSecret = config.hmacSecret,
         payload = payload,
+        timeoutSeconds = getTimeoutSeconds(config),
     })
 end
 
@@ -31,11 +51,83 @@ local function getJson(config, endpointPath)
     return httpTransport.getJson({
         url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
         apiKey = config.apiKey,
+        timeoutSeconds = getTimeoutSeconds(config),
+    })
+end
+
+local function deleteJson(config, endpointPath, payload)
+    return httpTransport.deleteJson({
+        url = normalizeBaseUrl(config.apiBaseUrl) .. tostring(endpointPath or ""),
+        apiKey = config.apiKey,
+        hmacSecret = config.hmacSecret,
+        payload = payload,
+        timeoutSeconds = getTimeoutSeconds(config),
     })
 end
 
 function leaderboardClient.getConfig()
     return envLoader.load()
+end
+
+function leaderboardClient.fetchLeaderboard(requestOptions, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local size = math.max(1, tonumber(requestOptions.size or requestOptions.limit or DEFAULT_LEADERBOARD_LIMIT) or DEFAULT_LEADERBOARD_LIMIT)
+    local mapUuid = tostring(requestOptions.mapUuid or "")
+    local endpointPath
+
+    if mapUuid ~= "" then
+        endpointPath = string.format("/api/maps/%s/leaderboard?size=%d", mapUuid, size)
+        local playerUuid = tostring(requestOptions.player_uuid or "")
+        if playerUuid ~= "" then
+            endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+        end
+
+        local mapHash = tostring(requestOptions.mapHash or requestOptions.map_hash or "")
+        if mapHash ~= "" then
+            endpointPath = endpointPath .. "&map_hash=" .. urlEncode(mapHash)
+        end
+
+        if requestOptions.includeReplay == true or requestOptions.include_replay == true then
+            endpointPath = endpointPath .. "&include_replay=true"
+        end
+    else
+        endpointPath = string.format("/api/leaderboard?size=%d", size)
+        local playerUuid = tostring(requestOptions.player_uuid or "")
+        if playerUuid ~= "" then
+            endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+        end
+    end
+
+    return getJson(resolvedConfig, endpointPath)
+end
+
+function leaderboardClient.fetchMarketplace(requestOptions, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mode = tostring(requestOptions.mode or "favorites")
+    local limit = math.max(1, tonumber(requestOptions.limit or DEFAULT_MARKETPLACE_LIMIT) or DEFAULT_MARKETPLACE_LIMIT)
+    local playerUuid = tostring(requestOptions.player_uuid or "")
+    local endpointPath
+
+    if mode == "search" then
+        local query = tostring(requestOptions.query or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        endpointPath = string.format("/api/maps/search?q=%s&limit=%d", urlEncode(query), limit)
+    else
+        endpointPath = string.format("/api/maps/favorites?limit=%d", limit)
+    end
+
+    if playerUuid ~= "" then
+        endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+    end
+
+    return getJson(resolvedConfig, endpointPath)
 end
 
 function leaderboardClient.submitScore(submission, config)
@@ -55,6 +147,10 @@ function leaderboardClient.submitScore(submission, config)
         display_name = tostring(submission.playerDisplayName or ""),
         score = tonumber(submission.score or 0) or 0,
     }
+    local mapHash = tostring(submission.mapHash or submission.map_hash or "")
+    if mapHash ~= "" then
+        payload.map_hash = mapHash
+    end
 
     return postJson(resolvedConfig, endpointPath, payload)
 end
@@ -117,8 +213,12 @@ function leaderboardClient.fetchReplayMetadata(requestOptions, config)
         return nil, "Replay metadata could not be loaded because the map hash is missing."
     end
 
-    local limit = math.max(1, tonumber(requestOptions.limit or 5) or 5)
-    local endpointPath = string.format("/api/maps/%s/replays?map_hash=%s&limit=%d", mapUuid, mapHash, limit)
+    local limit = math.max(1, tonumber(requestOptions.limit or DEFAULT_REPLAY_METADATA_LIMIT) or DEFAULT_REPLAY_METADATA_LIMIT)
+    local endpointPath = string.format("/api/maps/%s/replays?map_hash=%s&limit=%d", mapUuid, urlEncode(mapHash), limit)
+    local playerUuid = tostring(requestOptions.player_uuid or "")
+    if playerUuid ~= "" then
+        endpointPath = endpointPath .. "&player_uuid=" .. urlEncode(playerUuid)
+    end
     return getJson(resolvedConfig, endpointPath)
 end
 
@@ -210,12 +310,7 @@ function leaderboardClient.favoriteMap(submission, config)
         return postJson(resolvedConfig, endpointPath, payload)
     end
 
-    return httpTransport.deleteJson({
-        url = normalizeBaseUrl(resolvedConfig.apiBaseUrl) .. endpointPath,
-        apiKey = resolvedConfig.apiKey,
-        hmacSecret = resolvedConfig.hmacSecret,
-        payload = payload,
-    })
+    return deleteJson(resolvedConfig, endpointPath, payload)
 end
 
 return leaderboardClient
