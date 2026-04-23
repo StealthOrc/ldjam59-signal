@@ -194,10 +194,10 @@ local mergeWaitWorld = {
             targetType = "junction",
             targetId = "second_junction",
             path = {
-                length = 220,
+                length = 70,
                 points = {
                     { x = 0, y = 80 },
-                    { x = 220, y = 80 },
+                    { x = 70, y = 80 },
                 },
             },
         },
@@ -245,6 +245,18 @@ assertNear(
     ),
     0.0001,
     "a junction waits for all incoming edges to finish before its reveal begins"
+)
+assertNear(
+    mergeWaitState.edgeScheduleById.merge_to_second.endTime,
+    secondJunctionSchedule.arrivalTime,
+    0.0001,
+    "the longer path into the junction preserves the target arrival time"
+)
+assertNear(
+    mergeWaitState.edgeScheduleById.b_to_second.endTime,
+    secondJunctionSchedule.arrivalTime,
+    0.0001,
+    "the shorter direct path is stretched so it finishes with the longer incoming path"
 )
 assertNear(
     mergeWaitState.edgeScheduleById.second_to_exit.startTime,
