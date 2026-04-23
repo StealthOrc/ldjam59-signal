@@ -475,6 +475,10 @@ function Game.new()
     self.activeUploadMapOrigin = nil
     self.activeScoreSubmitRequestId = nil
     self.activeScoreSubmitRequestStartedAt = nil
+    self.activeScoreSubmitRequestKind = nil
+    self.activeScoreSubmitRequestSummary = nil
+    self.activeScoreSubmitRequestOnlineConfig = nil
+    self.activeScoreSubmitFallbackAttempted = false
     self.activeReplayDownloadRequestId = nil
     self.activeReplayDownloadRequestStartedAt = nil
     self.activeReplayDownloadMapDescriptor = nil

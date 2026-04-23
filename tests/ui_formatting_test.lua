@@ -114,6 +114,30 @@ local visibleTopEntriesWithPinned, visiblePinnedEntryWithPinned = ui.getLevelSel
 assertEqual(#visibleTopEntriesWithPinned, 4, "level select leaderboard reserves one slot for the pinned player")
 assertEqual(visiblePinnedEntryWithPinned, pinnedPlayerEntry, "level select leaderboard keeps the pinned player visible")
 
+local duplicatePinnedPlayerEntry = { rank = 3, playerUuid = "player-3" }
+local visibleTopEntriesWithoutDuplicatePinned, visiblePinnedEntryWithoutDuplicatePinned = ui.getLevelSelectLeaderboardVisibleEntries(
+    {
+        { rank = 1, playerUuid = "player-1" },
+        { rank = 2, playerUuid = "player-2" },
+        { rank = 3, playerUuid = "player-3" },
+        { rank = 4, playerUuid = "player-4" },
+        { rank = 5, playerUuid = "player-5" },
+        { rank = 6, playerUuid = "player-6" },
+    },
+    duplicatePinnedPlayerEntry,
+    5
+)
+assertEqual(
+    #visibleTopEntriesWithoutDuplicatePinned,
+    5,
+    "level select leaderboard keeps all five top rows when the pinned player is already visible"
+)
+assertEqual(
+    visiblePinnedEntryWithoutDuplicatePinned,
+    nil,
+    "level select leaderboard drops the pinned player when that player is already in the visible top rows"
+)
+
 assert(type(ui.getLevelSelectLeaderboardPinnedRowY) == "function", "ui.getLevelSelectLeaderboardPinnedRowY should exist")
 assertEqual(
     ui.getLevelSelectLeaderboardPinnedRowY({ y = 100 }, 0),

@@ -10,6 +10,7 @@ local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
 local REQUEST_KIND_FAVORITE_MAP = "favorite_map"
 local REQUEST_KIND_REPLAY_SUBMIT = "replay_submit"
+local REQUEST_KIND_SCORE_SUBMIT = "score_submit"
 local REQUEST_KIND_REPLAY_FETCH = "replay_fetch"
 local REQUEST_KIND_UPLOAD_MAP = "upload_map"
 local DEFAULT_LEADERBOARD_LIMIT = 50
@@ -52,35 +53,33 @@ local function urlEncode(value)
     end))
 end
 
-local function buildLeaderboardUri(baseUrl, mapUuid, limit)
+local function buildLeaderboardUri(baseUrl, mapUuid, size, playerUuid, mapHash, includeReplay)
     local resolvedBaseUrl = normalizeBaseUrl(baseUrl)
-    local resolvedLimit = tonumber(limit) or DEFAULT_LEADERBOARD_LIMIT
+    local resolvedSize = tonumber(size) or DEFAULT_LEADERBOARD_LIMIT
     local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedPlayerUuid = tostring(playerUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    local uri
 
     if resolvedMapUuid ~= "" then
-        return string.format("%s/api/maps/%s/leaderboard?limit=%d", resolvedBaseUrl, resolvedMapUuid, resolvedLimit)
+        uri = string.format("%s/api/maps/%s/leaderboard?size=%d", resolvedBaseUrl, resolvedMapUuid, resolvedSize)
+        if resolvedPlayerUuid ~= "" then
+            uri = uri .. "&player_uuid=" .. urlEncode(resolvedPlayerUuid)
+        end
+        if resolvedMapHash ~= "" then
+            uri = uri .. "&map_hash=" .. urlEncode(resolvedMapHash)
+        end
+        if includeReplay == true then
+            uri = uri .. "&include_replay=true"
+        end
+        return uri
     end
 
-    return string.format("%s/api/leaderboard?limit=%d", resolvedBaseUrl, resolvedLimit)
-end
-
-local function buildMapAroundUri(baseUrl, mapUuid, playerUuid)
-    return string.format(
-        "%s/api/maps/%s/leaderboard/around/%s",
-        normalizeBaseUrl(baseUrl),
-        tostring(mapUuid or ""),
-        tostring(playerUuid or "")
-    )
-end
-
-local function buildReplayMetadataUri(baseUrl, mapUuid, mapHash, limit)
-    return string.format(
-        "%s/api/maps/%s/replays?map_hash=%s&limit=%d",
-        normalizeBaseUrl(baseUrl),
-        tostring(mapUuid or ""),
-        urlEncode(tostring(mapHash or "")),
-        tonumber(limit) or DEFAULT_PREVIEW_LIMIT
-    )
+    uri = string.format("%s/api/leaderboard?size=%d", resolvedBaseUrl, resolvedSize)
+    if resolvedPlayerUuid ~= "" then
+        uri = uri .. "&player_uuid=" .. urlEncode(resolvedPlayerUuid)
+    end
+    return uri
 end
 
 local function buildReplayUri(baseUrl, mapUuid, replayUuid)
@@ -169,24 +168,15 @@ local function fetchLeaderboardEntries(config)
         return nil, validationError
     end
 
-    local uri = buildLeaderboardUri(config.apiBaseUrl, config.mapUuid, config.limit)
+    local uri = buildLeaderboardUri(
+        config.apiBaseUrl,
+        config.mapUuid,
+        config.size or config.limit,
+        config.player_uuid,
+        config.mapHash or config.map_hash,
+        config.include_replay == true or config.includeReplay == true
+    )
     return fetchJson(uri, config.apiKey, REQUEST_KIND_FETCH, config.requestId)
-end
-
-local function extractPlayerPreviewEntry(aroundPayload, playerUuid)
-    local entries = type(aroundPayload) == "table" and aroundPayload.entries or nil
-    if type(entries) ~= "table" then
-        return nil
-    end
-
-    local resolvedPlayerUuid = tostring(playerUuid or "")
-    for _, entry in ipairs(entries) do
-        if tostring(entry.player_uuid or "") == resolvedPlayerUuid then
-            return entry
-        end
-    end
-
-    return entries[1]
 end
 
 local function fetchLeaderboardPreview(config)
@@ -206,7 +196,14 @@ local function fetchLeaderboardPreview(config)
     end
 
     local topPayload, topError = fetchJson(
-        buildReplayMetadataUri(config.apiBaseUrl, mapUuid, mapHash, tonumber(config.limit) or DEFAULT_PREVIEW_LIMIT),
+        buildLeaderboardUri(
+            config.apiBaseUrl,
+            mapUuid,
+            config.size or config.limit or DEFAULT_PREVIEW_LIMIT,
+            config.player_uuid,
+            mapHash,
+            true
+        ),
         config.apiKey,
         REQUEST_KIND_PREVIEW,
         config.requestId
@@ -215,14 +212,13 @@ local function fetchLeaderboardPreview(config)
         return nil, topError
     end
 
-    local previewPayload = {
+    return {
         map_uuid = mapUuid,
         map_hash = mapHash,
         top_entries = type(topPayload.entries) == "table" and topPayload.entries or {},
-        player_entry = nil,
-        target_rank = nil,
+        player_entry = type(topPayload.player_entry) == "table" and topPayload.player_entry or nil,
+        target_rank = tonumber(topPayload.target_rank) or nil,
     }
-    return previewPayload
 end
 
 local function fetchMarketplaceEntries(config)
@@ -276,6 +272,25 @@ local function submitReplay(config, requestId)
         map_hash = tostring(config.mapHash or config.map_hash or ""),
         replay = config.replay,
     }, REQUEST_KIND_REPLAY_SUBMIT, requestId)
+end
+
+local function submitScore(config, requestId)
+    local mapUuid = tostring(config.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The score could not be uploaded because the map UUID is missing."
+    end
+
+    local payload = {
+        player_uuid = tostring(config.player_uuid or ""),
+        display_name = tostring(config.playerDisplayName or ""),
+        score = tonumber(config.score or 0) or 0,
+    }
+    local mapHash = tostring(config.mapHash or config.map_hash or "")
+    if mapHash ~= "" then
+        payload.map_hash = mapHash
+    end
+
+    return runJsonPost(config, string.format("/api/maps/%s/score", mapUuid), payload, REQUEST_KIND_SCORE_SUBMIT, requestId)
 end
 
 local function fetchReplayRecord(config)
@@ -364,6 +379,16 @@ while true do
         local payload, requestError, statusCode = submitReplay(request.config or {}, request.requestId)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_REPLAY_SUBMIT,
+            requestId = request.requestId,
+            ok = payload ~= nil,
+            payload = payload,
+            error = requestError,
+            status = statusCode,
+        }))
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_SCORE_SUBMIT then
+        local payload, requestError, statusCode = submitScore(request.config or {}, request.requestId)
+        responseChannel:push(json.encode({
+            kind = REQUEST_KIND_SCORE_SUBMIT,
             requestId = request.requestId,
             ok = payload ~= nil,
             payload = payload,

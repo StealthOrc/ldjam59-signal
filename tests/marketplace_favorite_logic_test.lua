@@ -79,6 +79,12 @@ assertEqual(
 )
 
 assertEqual(
+    marketplaceFavoriteLogic.wasMutationAccepted({ accepted = false, already_removed = true, liked_by_player = false }, false),
+    false,
+    "favorite logic preserves explicit non-accepted duplicate-remove responses"
+)
+
+assertEqual(
     marketplaceFavoriteLogic.wasAlreadyFavorited({ accepted = false, already_favorited = true, liked_by_player = true }, true),
     true,
     "favorite logic recognizes duplicate like responses"
@@ -88,6 +94,12 @@ assertEqual(
     marketplaceFavoriteLogic.wasAlreadyRemoved({ removed = false, liked_by_player = false }, false),
     true,
     "favorite logic recognizes no-op remove responses"
+)
+
+assertEqual(
+    marketplaceFavoriteLogic.wasAlreadyRemoved({ accepted = false, already_removed = true, liked_by_player = false }, false),
+    true,
+    "favorite logic recognizes already-removed responses from the current backend"
 )
 
 print("marketplace favorite logic tests passed")
