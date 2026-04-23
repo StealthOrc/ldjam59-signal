@@ -13,6 +13,58 @@ return function(Game, shared)
 
 local REPLAY_SEEK_STEP_SECONDS = 1
 
+local function clampValue(value, minValue, maxValue)
+    if value < minValue then
+        return minValue
+    end
+
+    if value > maxValue then
+        return maxValue
+    end
+
+    return value
+end
+
+local function getSelectedNetworkRequestEntryIndex(game)
+    local selectedRequestDebugId = game.networkRequestSelectedLogEntryId
+    for index, entry in ipairs(game.networkRequestLogEntries or {}) do
+        if entry.requestDebugId == selectedRequestDebugId then
+            return index
+        end
+    end
+
+    return nil
+end
+
+local function clampNetworkRequestListScroll(game)
+    local metrics = ui.getNetworkRequestOverlayListScrollMetrics and ui.getNetworkRequestOverlayListScrollMetrics(game) or {}
+    local maxScroll = math.max(0, tonumber(metrics.maxScroll or 0) or 0)
+    game.networkRequestOverlayListScroll = clampValue(tonumber(game.networkRequestOverlayListScroll or 0) or 0, 0, maxScroll)
+end
+
+local function ensureSelectedNetworkRequestVisible(game)
+    clampNetworkRequestListScroll(game)
+
+    local selectedIndex = getSelectedNetworkRequestEntryIndex(game)
+    if not selectedIndex then
+        return
+    end
+
+    local visibleRows = tonumber((ui.getNetworkRequestOverlayListScrollMetrics and ui.getNetworkRequestOverlayListScrollMetrics(game) or {}).visibleRows or 0) or 0
+    if visibleRows <= 0 then
+        return
+    end
+
+    local listScroll = tonumber(game.networkRequestOverlayListScroll or 0) or 0
+    if selectedIndex <= listScroll then
+        game.networkRequestOverlayListScroll = selectedIndex - 1
+    elseif selectedIndex > (listScroll + visibleRows) then
+        game.networkRequestOverlayListScroll = selectedIndex - visibleRows
+    end
+
+    clampNetworkRequestListScroll(game)
+end
+
 function Game:update(dt)
     self:updateLeaderboardFetchState()
     self:updatePlayGuideTransition(dt)
@@ -93,6 +145,8 @@ function Game:draw()
         ui.drawPlay(self)
     end
 
+    ui.drawNetworkRequestOverlay(self)
+
     love.graphics.pop()
 
     if self.pixelPerfectText then
@@ -107,7 +161,55 @@ function Game:resize(w, h)
 end
 
 function Game:keypressed(key)
+    if key == "f9" then
+        self.networkRequestOverlayVisible = not self.networkRequestOverlayVisible
+        if self.networkRequestOverlayVisible and self.networkRequestSelectedLogEntryId == nil then
+            self.networkRequestSelectedLogEntryId = self.networkRequestLogEntries[1]
+                and self.networkRequestLogEntries[1].requestDebugId
+                or nil
+        end
+        if self.networkRequestOverlayVisible then
+            self.networkRequestOverlayCopyStatus = nil
+            ensureSelectedNetworkRequestVisible(self)
+        end
+        return
+    end
+
+    if self.networkRequestOverlayVisible then
+        if key == "up" or key == "down" then
+            local selectedIndex = getSelectedNetworkRequestEntryIndex(self) or 1
+            local direction = key == "up" and -1 or 1
+            local targetIndex = clampValue(selectedIndex + direction, 1, #(self.networkRequestLogEntries or {}))
+            local targetEntry = self.networkRequestLogEntries[targetIndex]
+            if targetEntry then
+                self.networkRequestSelectedLogEntryId = targetEntry.requestDebugId
+                self.networkRequestOverlayDetailScroll = 0
+                self.networkRequestOverlayCopyStatus = nil
+                ensureSelectedNetworkRequestVisible(self)
+            end
+            return
+        end
+
+        if key == "pageup" or key == "pagedown" then
+            local detailMetrics = ui.getNetworkRequestOverlayDetailScrollMetrics and ui.getNetworkRequestOverlayDetailScrollMetrics(self) or {}
+            local direction = key == "pageup" and -1 or 1
+            local viewHeight = tonumber(detailMetrics.viewHeight or 0) or 0
+            local maxScroll = tonumber(detailMetrics.maxScroll or 0) or 0
+            self.networkRequestOverlayDetailScroll = clampValue(
+                (tonumber(self.networkRequestOverlayDetailScroll or 0) or 0) + (direction * math.max(1, viewHeight - 40)),
+                0,
+                maxScroll
+            )
+            return
+        end
+    end
+
     if key == "escape" then
+        if self.networkRequestOverlayVisible then
+            self.networkRequestOverlayVisible = false
+            return
+        end
+
         if self.screen == "profile_setup" or self.screen == "profile_mode_setup" or self.screen == "menu" then
             love.event.quit()
         elseif self.screen == "leaderboard" then
@@ -432,6 +534,28 @@ function Game:mousepressed(x, y, button)
     local viewportX, viewportY = self:toViewportPosition(x, y)
     self.mouseViewportX = viewportX
     self.mouseViewportY = viewportY
+
+    if self.networkRequestOverlayVisible then
+        local networkOverlayHit = ui.getNetworkRequestOverlayHit(self, viewportX, viewportY)
+        if networkOverlayHit and networkOverlayHit.kind == "network_request_overlay_close" then
+            self.networkRequestOverlayVisible = false
+            return
+        end
+        if networkOverlayHit and networkOverlayHit.kind == "network_request_overlay_select" then
+            self.networkRequestSelectedLogEntryId = networkOverlayHit.requestDebugId
+            self.networkRequestOverlayDetailScroll = 0
+            self.networkRequestOverlayCopyStatus = nil
+            ensureSelectedNetworkRequestVisible(self)
+            return
+        end
+        if networkOverlayHit and networkOverlayHit.kind == "network_request_overlay_copy_field" then
+            self:copyNetworkRequestOverlayValue(networkOverlayHit.copyText, networkOverlayHit.copyLabel)
+            return
+        end
+        if networkOverlayHit and networkOverlayHit.kind == "network_request_overlay_blocked" then
+            return
+        end
+    end
 
     if self.screen == "profile_setup" then
         local action = ui.getProfileSetupActionAt(self, viewportX, viewportY)
@@ -759,6 +883,35 @@ function Game:keyreleased(_)
 end
 
 function Game:wheelmoved(screenX, screenY)
+    if self.networkRequestOverlayVisible and screenY ~= 0 then
+        local mouseX, mouseY = love.mouse.getPosition()
+        local viewportX, viewportY = self:toViewportPosition(mouseX, mouseY)
+        local scrollTarget = ui.getNetworkRequestOverlayScrollTarget and ui.getNetworkRequestOverlayScrollTarget(self, viewportX, viewportY) or "detail"
+        if scrollTarget == "list" then
+            local metrics = ui.getNetworkRequestOverlayListScrollMetrics and ui.getNetworkRequestOverlayListScrollMetrics(self) or {}
+            local maxScroll = tonumber(metrics.maxScroll or 0) or 0
+            local scrollStep = tonumber(metrics.scrollStep or 1) or 1
+            self.networkRequestOverlayListScroll = clampValue(
+                (tonumber(self.networkRequestOverlayListScroll or 0) or 0)
+                    + ((screenY > 0 and -1 or 1) * scrollStep),
+                0,
+                maxScroll
+            )
+            return true
+        end
+
+        local detailMetrics = ui.getNetworkRequestOverlayDetailScrollMetrics and ui.getNetworkRequestOverlayDetailScrollMetrics(self) or {}
+        local maxScroll = tonumber(detailMetrics.maxScroll or 0) or 0
+        local scrollStep = tonumber(detailMetrics.scrollStep or 44) or 44
+        self.networkRequestOverlayDetailScroll = clampValue(
+            (tonumber(self.networkRequestOverlayDetailScroll or 0) or 0)
+                + ((screenY > 0 and -1 or 1) * scrollStep),
+            0,
+            maxScroll
+        )
+        return true
+    end
+
     if self.screen == "editor" then
         local mouseX, mouseY = love.mouse.getPosition()
         local viewportX, viewportY = self:toViewportPosition(mouseX, mouseY)

@@ -4,6 +4,7 @@ local marketplaceFavoriteLogic = require("src.game.network.marketplace_favorite_
 
 local REQUEST_CHANNEL_NAME = "signal_leaderboard_request"
 local RESPONSE_CHANNEL_NAME = "signal_leaderboard_response"
+local DEBUG_CHANNEL_NAME = "signal_network_request_debug"
 local REQUEST_KIND_FETCH = "fetch"
 local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
@@ -22,6 +23,11 @@ local MAP_CATEGORY_ONLINE = "online"
 
 local requestChannel = love.thread.getChannel(REQUEST_CHANNEL_NAME)
 local responseChannel = love.thread.getChannel(RESPONSE_CHANNEL_NAME)
+local debugChannel = love.thread.getChannel(DEBUG_CHANNEL_NAME)
+
+httpTransport.setDebugRecorder(function(event)
+    debugChannel:push(json.encode(event))
+end)
 
 local function normalizeBaseUrl(baseUrl)
     return tostring(baseUrl or ""):gsub("/+$", "")
@@ -107,15 +113,19 @@ local function buildMarketplaceSearchUri(baseUrl, query, limit, playerUuid)
     return uri
 end
 
-local function fetchJson(uri, apiKey)
+local function fetchJson(uri, apiKey, requestKind, flowRequestId)
     return httpTransport.getJson({
         url = uri,
         apiKey = apiKey,
         timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        debugContext = {
+            requestKind = requestKind,
+            flowRequestId = flowRequestId,
+        },
     })
 end
 
-local function runJsonPost(config, endpointPath, payload, requestId)
+local function runJsonPost(config, endpointPath, payload, requestKind, requestId)
     local _, validationError = validateConfig(config)
     if validationError then
         return nil, validationError
@@ -127,10 +137,14 @@ local function runJsonPost(config, endpointPath, payload, requestId)
         hmacSecret = config.hmacSecret,
         payload = payload,
         timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        debugContext = {
+            requestKind = requestKind,
+            flowRequestId = requestId,
+        },
     })
 end
 
-local function runJsonDelete(config, endpointPath, payload, requestId)
+local function runJsonDelete(config, endpointPath, payload, requestKind, requestId)
     local _, validationError = validateConfig(config)
     if validationError then
         return nil, validationError
@@ -142,6 +156,10 @@ local function runJsonDelete(config, endpointPath, payload, requestId)
         hmacSecret = config.hmacSecret,
         payload = payload,
         timeoutSeconds = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        debugContext = {
+            requestKind = requestKind,
+            flowRequestId = requestId,
+        },
     })
 end
 
@@ -152,7 +170,7 @@ local function fetchLeaderboardEntries(config)
     end
 
     local uri = buildLeaderboardUri(config.apiBaseUrl, config.mapUuid, config.limit)
-    return fetchJson(uri, config.apiKey)
+    return fetchJson(uri, config.apiKey, REQUEST_KIND_FETCH, config.requestId)
 end
 
 local function extractPlayerPreviewEntry(aroundPayload, playerUuid)
@@ -189,7 +207,9 @@ local function fetchLeaderboardPreview(config)
 
     local topPayload, topError = fetchJson(
         buildReplayMetadataUri(config.apiBaseUrl, mapUuid, mapHash, tonumber(config.limit) or DEFAULT_PREVIEW_LIMIT),
-        config.apiKey
+        config.apiKey,
+        REQUEST_KIND_PREVIEW,
+        config.requestId
     )
     if not topPayload then
         return nil, topError
@@ -220,7 +240,7 @@ local function fetchMarketplaceEntries(config)
         uri = buildMarketplaceFavoritesUri(config.apiBaseUrl, config.limit, config.player_uuid)
     end
 
-    return fetchJson(uri, config.apiKey)
+    return fetchJson(uri, config.apiKey, REQUEST_KIND_MARKETPLACE, config.requestId)
 end
 
 local function favoriteMarketplaceMap(config, requestId)
@@ -237,10 +257,10 @@ local function favoriteMarketplaceMap(config, requestId)
     local endpointPath = string.format("/api/maps/%s/favorites", mapUuid)
     local payload = marketplaceFavoriteLogic.buildRequestPayload(playerUuid)
     if config.liked == true then
-        return runJsonPost(config, endpointPath, payload, requestId)
+        return runJsonPost(config, endpointPath, payload, REQUEST_KIND_FAVORITE_MAP, requestId)
     end
 
-    return runJsonDelete(config, endpointPath, payload, requestId)
+    return runJsonDelete(config, endpointPath, payload, REQUEST_KIND_FAVORITE_MAP, requestId)
 end
 
 local function submitReplay(config, requestId)
@@ -255,7 +275,7 @@ local function submitReplay(config, requestId)
         score = tonumber(config.score or 0) or 0,
         map_hash = tostring(config.mapHash or config.map_hash or ""),
         replay = config.replay,
-    }, requestId)
+    }, REQUEST_KIND_REPLAY_SUBMIT, requestId)
 end
 
 local function fetchReplayRecord(config)
@@ -273,7 +293,7 @@ local function fetchReplayRecord(config)
         return nil, "Replay download could not start because the replay UUID is missing."
     end
 
-    return fetchJson(buildReplayUri(config.apiBaseUrl, mapUuid, replayUuid), config.apiKey)
+    return fetchJson(buildReplayUri(config.apiBaseUrl, mapUuid, replayUuid), config.apiKey, REQUEST_KIND_REPLAY_FETCH, config.requestId)
 end
 
 local function uploadMap(config, requestId)
@@ -290,7 +310,7 @@ local function uploadMap(config, requestId)
         display_name = tostring(config.playerDisplayName or ""),
         map_hash = tostring(config.mapHash or config.map_hash or ""),
         map = config.map,
-    }, requestId)
+    }, REQUEST_KIND_UPLOAD_MAP, requestId)
 end
 
 while true do
@@ -298,7 +318,9 @@ while true do
     local request = json.decode(encodedRequest)
 
     if type(request) == "table" and request.kind == REQUEST_KIND_FETCH then
-        local payload, fetchError = fetchLeaderboardEntries(request.config or {})
+        local requestConfig = request.config or {}
+        requestConfig.requestId = request.requestId
+        local payload, fetchError = fetchLeaderboardEntries(requestConfig)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_FETCH,
             requestId = request.requestId,
@@ -307,7 +329,9 @@ while true do
             error = fetchError,
         }))
     elseif type(request) == "table" and request.kind == REQUEST_KIND_PREVIEW then
-        local payload, fetchError = fetchLeaderboardPreview(request.config or {})
+        local requestConfig = request.config or {}
+        requestConfig.requestId = request.requestId
+        local payload, fetchError = fetchLeaderboardPreview(requestConfig)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_PREVIEW,
             requestId = request.requestId,
@@ -316,7 +340,9 @@ while true do
             error = fetchError,
         }))
     elseif type(request) == "table" and request.kind == REQUEST_KIND_MARKETPLACE then
-        local payload, fetchError = fetchMarketplaceEntries(request.config or {})
+        local requestConfig = request.config or {}
+        requestConfig.requestId = request.requestId
+        local payload, fetchError = fetchMarketplaceEntries(requestConfig)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_MARKETPLACE,
             requestId = request.requestId,
@@ -345,7 +371,9 @@ while true do
             status = statusCode,
         }))
     elseif type(request) == "table" and request.kind == REQUEST_KIND_REPLAY_FETCH then
-        local payload, fetchError, statusCode = fetchReplayRecord(request.config or {})
+        local requestConfig = request.config or {}
+        requestConfig.requestId = request.requestId
+        local payload, fetchError, statusCode = fetchReplayRecord(requestConfig)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_REPLAY_FETCH,
             requestId = request.requestId,
