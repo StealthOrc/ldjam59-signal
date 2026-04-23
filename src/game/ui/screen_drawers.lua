@@ -16,6 +16,79 @@ return function(ui, shared)
 function ui.drawMenu(game)
     local graphics = love.graphics
     local buttons = getMenuButtons(game)
+    local modeToggleRect = nil
+    local modeToggleProgress = 0
+    local menuTitle = "Out of Signal"
+    local menuElapsed = game.getMenuIntroElapsed and game:getMenuIntroElapsed() or 0
+    local titleEnterDuration = 0.55
+    local buttonRevealDuration = 0.52
+    local buttonStagger = 0.07
+
+    local function clamp01(value)
+        return clamp(value or 0, 0, 1)
+    end
+
+    local function easeOutCubic(t)
+        local clamped = clamp01(t)
+        local inverse = 1 - clamped
+        return 1 - inverse * inverse * inverse
+    end
+
+    local function easeOutBack(t)
+        local clamped = clamp01(t)
+        local s = 1.70158
+        local value = clamped - 1
+        return 1 + value * value * ((s + 1) * value + s)
+    end
+
+    local function withTranslatedDraw(offsetX, offsetY, drawFn)
+        graphics.push()
+        graphics.translate(offsetX or 0, offsetY or 0)
+        drawFn()
+        graphics.pop()
+    end
+
+    local function getBorderSlideOffset(rect, progress)
+        local eased = easeOutBack(progress)
+        local viewport = game.viewport or { w = 1280, h = 720 }
+        local leftDistance = rect.x
+        local rightDistance = viewport.w - (rect.x + rect.w)
+        local topDistance = rect.y
+        local bottomDistance = viewport.h - (rect.y + rect.h)
+        local bestDistance = leftDistance
+        local border = "left"
+
+        if rightDistance < bestDistance then
+            bestDistance = rightDistance
+            border = "right"
+        end
+        if topDistance < bestDistance then
+            bestDistance = topDistance
+            border = "top"
+        end
+        if bottomDistance < bestDistance then
+            border = "bottom"
+        end
+
+        local startOffsetX = 0
+        local startOffsetY = 0
+        if border == "left" then
+            startOffsetX = -rect.x - rect.w - 28
+        elseif border == "right" then
+            startOffsetX = viewport.w - rect.x + 28
+        elseif border == "top" then
+            startOffsetY = -rect.y - rect.h - 28
+        else
+            startOffsetY = viewport.h - rect.y + 28
+        end
+
+        return startOffsetX * (1 - eased), startOffsetY * (1 - eased)
+    end
+
+    local function getButtonProgress(index)
+        local revealStart = titleEnterDuration + ((index - 1) * buttonStagger)
+        return clamp01((menuElapsed - revealStart) / buttonRevealDuration)
+    end
 
     graphics.setColor(0.05, 0.07, 0.1, 1)
     graphics.rectangle("fill", 0, 0, game.viewport.w, game.viewport.h)
@@ -24,24 +97,129 @@ function ui.drawMenu(game)
     graphics.circle("fill", 200, 140, 180)
     graphics.circle("fill", 1080, 560, 220)
 
-    love.graphics.setFont(game.fonts.title)
-    graphics.setColor(0.97, 0.98, 1, 1)
-    graphics.printf("Out of Signal", 0, 128, game.viewport.w, "center")
+    do
+        local enterDuration = 0.55
+        local travelDistance = 420
+        local titleScale = 2
+        local progress = clamp01(menuElapsed / enterDuration)
+        local eased = easeOutCubic(progress)
+        local alpha = eased
+        local centerOffsetX = (1 - eased) * travelDistance
+        local centerX = (game.viewport and game.viewport.w or 1280) * 0.5
+        local centerY = (game.viewport and game.viewport.h or 720) * 0.5
+        local font = game.fonts.title
+        local scaledWidth = font:getWidth(menuTitle) * titleScale
+        local scaledHeight = font:getHeight() * titleScale
+        local drawX = math.floor(centerX - scaledWidth * 0.5 + centerOffsetX + 0.5)
+        local drawY = math.floor(centerY - scaledHeight * 0.5 + 0.5)
 
-    love.graphics.setFont(game.fonts.body)
-    graphics.setColor(0.84, 0.88, 0.92, 1)
-    graphics.printf(
-        game:isOfflineMode()
-            and "Route trains through lever-controlled merges and keep your personal scores on this device."
-            or "Route trains through lever-controlled merges, upload cleared scores, and compare runs online.",
-        game.viewport.w * 0.5 - 280,
-        188,
-        560,
-        "center"
-    )
+        love.graphics.setFont(font)
+        graphics.push()
+        graphics.translate(drawX, drawY)
+        graphics.scale(titleScale, titleScale)
+        graphics.setColor(0.02, 0.03, 0.05, alpha * 0.55)
+        graphics.print(menuTitle, 2, 2)
+        graphics.setColor(0.97, 0.98, 1, alpha)
+        graphics.print(menuTitle, 0, 0)
+        graphics.pop()
+    end
 
-    for _, rect in ipairs(buttons) do
-        drawButton(rect, rect.label, { 0.09, 0.11, 0.15, 0.98 }, { 0.48, 0.92, 0.62, 1 }, game.fonts.body)
+    for index, rect in ipairs(buttons) do
+        local progress = getButtonProgress(index)
+        if progress > 0 then
+            local offsetX, offsetY = getBorderSlideOffset(rect, progress)
+            withTranslatedDraw(offsetX, offsetY, function()
+                if rect.id == "toggle_play_mode" and rect.segments then
+                    modeToggleRect = rect
+                    modeToggleProgress = progress
+                    if not game.onlineConfig or not game.onlineConfig.isConfigured then
+                        local unavailableProgress = clamp01(
+                            (menuElapsed - (titleEnterDuration + ((index - 1) * buttonStagger) + buttonRevealDuration)) / 0.18
+                        )
+                        if unavailableProgress > 0 then
+                            local unavailableLabel = "Online unavailable"
+                            local easedUnavailable = easeOutCubic(unavailableProgress)
+                            love.graphics.setFont(game.fonts.small)
+                            local labelWidth = game.fonts.small:getWidth(unavailableLabel)
+                            local finalLabelX = rect.x + rect.w + 14
+                            local startLabelX = rect.x + rect.w - labelWidth - 18
+                            local labelX = startLabelX + ((finalLabelX - startLabelX) * easedUnavailable)
+                            local labelY = rect.y + math.floor((rect.h - game.fonts.small:getHeight()) * 0.5 + 0.5)
+                            graphics.setColor(0.7, 0.76, 0.82, 0.94 * easedUnavailable)
+                            graphics.print(unavailableLabel, labelX, labelY)
+                        end
+                    end
+
+                    uiControls.drawSegmentedToggle(
+                        rect,
+                        rect.segments,
+                        game:isOnlineMode() and "online" or "offline",
+                        nil,
+                        game.fonts.small,
+                        {
+                            cornerRadius = 14,
+                            backgroundColor = { 0.08, 0.1, 0.14, 0.98 },
+                            activeFillColor = { 0.78, 0.88, 0.98, 0.94 },
+                            hoverColor = { 0.3, 0.4, 0.5, 0.22 },
+                            outlineColor = { 0.26, 0.38, 0.5, 1 },
+                            innerOutlineColor = { 0.44, 0.62, 0.78, 0.34 },
+                            selectedTextColor = { 0.08, 0.11, 0.15, 1 },
+                            textColor = { 0.9, 0.93, 0.97, 1 },
+                        }
+                    )
+
+                    if not game.onlineConfig or not game.onlineConfig.isConfigured then
+                        local onlineSegment = uiControls.segmentRect(rect, 2, #rect.segments)
+                        graphics.setColor(0.08, 0.1, 0.14, 0.42 * progress)
+                        graphics.rectangle(
+                            "fill",
+                            onlineSegment.x + 2,
+                            onlineSegment.y + 2,
+                            onlineSegment.w - 4,
+                            onlineSegment.h - 4,
+                            12,
+                            12
+                        )
+                    end
+                elseif rect.id == "quit" then
+                    drawButton(
+                        rect,
+                        rect.label,
+                        { 0.2, 0.07, 0.08, 0.98 * progress },
+                        { 0.99, 0.4, 0.44, progress },
+                        game.fonts.small,
+                        nil,
+                        progress
+                    )
+                else
+                    local font = rect.h <= 42 and game.fonts.small or game.fonts.body
+                    local strokeColor = rect.id == "editor"
+                        and { 0.99, 0.78, 0.32, progress }
+                        or { 0.48, 0.92, 0.62, progress }
+                    drawButton(
+                        rect,
+                        rect.label,
+                        { 0.09, 0.11, 0.15, 0.98 * progress },
+                        strokeColor,
+                        font,
+                        nil,
+                        progress
+                    )
+                end
+            end)
+        end
+    end
+
+    if modeToggleRect and game.menuStatusMessage and game.menuStatusMessage ~= "" then
+        love.graphics.setFont(game.fonts.small)
+        graphics.setColor(0.99, 0.78, 0.32, modeToggleProgress)
+        graphics.printf(
+            game.menuStatusMessage,
+            modeToggleRect.x,
+            modeToggleRect.y - game.fonts.small:getHeight() - 28,
+            math.max(modeToggleRect.w, 220),
+            "left"
+        )
     end
 end
 

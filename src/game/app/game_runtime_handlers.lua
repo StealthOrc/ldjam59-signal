@@ -262,6 +262,13 @@ function Game:keypressed(key)
     end
 
     if self.screen == "menu" then
+        if self:isMenuIntroActive() then
+            if key == "space" then
+                self:skipMenuIntro()
+            end
+            return
+        end
+
         if key == "return" or key == "space" then
             self:openLevelSelect()
         elseif key == "e" then
@@ -594,16 +601,32 @@ function Game:mousepressed(x, y, button)
     end
 
     if self.screen == "menu" then
+        if self:isMenuIntroActive() then
+            self:skipMenuIntro()
+            return
+        end
+
         local action = ui.getMenuActionAt(self, viewportX, viewportY)
         if action == "play" then
+            self.menuStatusMessage = nil
             self:openLevelSelect()
         elseif action == "leaderboard" then
+            self.menuStatusMessage = nil
             self:openLeaderboard({ returnScreen = "menu" })
+        elseif action == "set_play_mode_online" then
+            local ok, message = self:setPlayMode(PLAY_MODE_ONLINE)
+            self.menuStatusMessage = ok and nil or message
+        elseif action == "set_play_mode_offline" then
+            local ok, message = self:setPlayMode(PLAY_MODE_OFFLINE)
+            self.menuStatusMessage = ok and nil or message
         elseif action == "toggle_play_mode" then
-            self:togglePlayMode()
+            local ok, message = self:togglePlayMode()
+            self.menuStatusMessage = ok and nil or message
         elseif action == "editor" then
+            self.menuStatusMessage = nil
             self:openEditorBlank()
         elseif action == "quit" then
+            self.menuStatusMessage = nil
             love.event.quit()
         end
         return

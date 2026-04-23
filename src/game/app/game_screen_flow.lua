@@ -743,6 +743,7 @@ function Game:openMenu()
     end
 
     self.screen = "menu"
+    self.menuTitleAnimationStartedAt = love.timer.getTime()
     self.levelSelectIssue = nil
     self:closeLevelSelectReplayOverlay()
     self.levelSelectHoverId = nil
@@ -758,6 +759,31 @@ function Game:openMenu()
     self.replayDragActive = false
     self.replayDragTime = nil
     self:refreshMaps()
+end
+
+local MENU_TITLE_ENTER_DURATION = 0.55
+local MENU_BUTTON_REVEAL_DURATION = 0.52
+local MENU_BUTTON_STAGGER = 0.07
+local MENU_BUTTON_COUNT = 5
+
+function Game:getMenuIntroTotalDuration()
+    return MENU_TITLE_ENTER_DURATION
+        + MENU_BUTTON_REVEAL_DURATION
+        + (MENU_BUTTON_STAGGER * math.max(0, MENU_BUTTON_COUNT - 1))
+end
+
+function Game:getMenuIntroElapsed()
+    local startedAt = tonumber(self.menuTitleAnimationStartedAt or 0) or 0
+    local now = love.timer.getTime()
+    return math.max(0, now - startedAt)
+end
+
+function Game:isMenuIntroActive()
+    return self.screen == "menu" and self:getMenuIntroElapsed() < self:getMenuIntroTotalDuration()
+end
+
+function Game:skipMenuIntro()
+    self.menuTitleAnimationStartedAt = love.timer.getTime() - self:getMenuIntroTotalDuration()
 end
 
 function Game:openLevelSelect()

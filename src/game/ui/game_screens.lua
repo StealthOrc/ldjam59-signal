@@ -268,10 +268,15 @@ local NETWORK_REQUEST_OVERLAY = {
 }
 
 local MENU_LAYOUT = {
-    buttonWidth = 320,
-    buttonHeight = 56,
-    buttonGap = 16,
-    firstButtonY = 248,
+    cornerInset = 24,
+    verticalGap = 14,
+    leaderboardW = 170,
+    leaderboardH = 42,
+    editorW = 148,
+    editorH = 42,
+    playModeW = 132,
+    playModeH = 38,
+    quitSize = 38,
 }
 
 local PROFILE_MODE_SETUP_LAYOUT = {

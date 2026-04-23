@@ -811,48 +811,64 @@ function drawMarketplaceSearchField(game)
 end
 
 function getMenuButtons(game)
-    local centerX = math.floor((game.viewport.w - MENU_LAYOUT.buttonWidth) * 0.5 + 0.5)
-    local buttonY = MENU_LAYOUT.firstButtonY
+    local bottomBarRect = getLevelSelectBottomBarRect(game)
+    local buttonY = bottomBarRect.y + math.floor((bottomBarRect.h - LEVEL_SELECT_ACTION_LAYOUT.buttonH) * 0.5 + 0.5)
+    local cornerInset = MENU_LAYOUT.cornerInset
+    local playButton = {
+        id = "play",
+        x = math.floor(game.viewport.w * 0.5 - LEVEL_SELECT_ACTION_LAYOUT.startW * 0.5 + 0.5),
+        y = buttonY,
+        w = LEVEL_SELECT_ACTION_LAYOUT.startW,
+        h = LEVEL_SELECT_ACTION_LAYOUT.buttonH,
+        label = "Level Select",
+    }
+    local playModeRect = {
+        x = cornerInset,
+        y = game.viewport.h - cornerInset - MENU_LAYOUT.playModeH,
+        w = MENU_LAYOUT.playModeW,
+        h = MENU_LAYOUT.playModeH,
+    }
+    local leaderboardRect = {
+        id = "leaderboard",
+        x = cornerInset,
+        y = playModeRect.y - MENU_LAYOUT.verticalGap - MENU_LAYOUT.leaderboardH,
+        w = MENU_LAYOUT.leaderboardW,
+        h = MENU_LAYOUT.leaderboardH,
+        label = "Leaderboard",
+    }
+    local editorRect = {
+        id = "editor",
+        x = game.viewport.w - cornerInset - MENU_LAYOUT.editorW,
+        y = buttonY,
+        w = MENU_LAYOUT.editorW,
+        h = MENU_LAYOUT.editorH,
+        label = "Editor",
+    }
+    local quitRect = {
+        id = "quit",
+        x = game.viewport.w - cornerInset - MENU_LAYOUT.quitSize,
+        y = cornerInset,
+        w = MENU_LAYOUT.quitSize,
+        h = MENU_LAYOUT.quitSize,
+        label = "X",
+    }
+
     return {
-        {
-            id = "play",
-            x = centerX,
-            y = buttonY,
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Level Select",
-        },
-        {
-            id = "leaderboard",
-            x = centerX,
-            y = buttonY + MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap,
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = game:getLeaderboardButtonLabel(),
-        },
-        {
-            id = "editor",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 2),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Map Editor",
-        },
+        playButton,
+        leaderboardRect,
+        editorRect,
+        quitRect,
         {
             id = "toggle_play_mode",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 3),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
+            x = playModeRect.x,
+            y = playModeRect.y,
+            w = playModeRect.w,
+            h = playModeRect.h,
             label = game:getPlayModeButtonLabel(),
-        },
-        {
-            id = "quit",
-            x = centerX,
-            y = buttonY + ((MENU_LAYOUT.buttonHeight + MENU_LAYOUT.buttonGap) * 4),
-            w = MENU_LAYOUT.buttonWidth,
-            h = MENU_LAYOUT.buttonHeight,
-            label = "Quit",
+            segments = {
+                { id = "offline", label = "Off" },
+                { id = "online", label = "On" },
+            },
         },
     }
 end
@@ -922,7 +938,13 @@ function ui.getMenuActionAt(game, x, y)
     local buttons = getMenuButtons(game)
 
     for _, rect in ipairs(buttons) do
-        if pointInRect(x, y, rect) then
+        if rect.id == "toggle_play_mode" and rect.segments then
+            for index, segment in ipairs(rect.segments) do
+                if pointInRect(x, y, uiControls.segmentRect(rect, index, #rect.segments)) then
+                    return segment.id == "online" and "set_play_mode_online" or "set_play_mode_offline"
+                end
+            end
+        elseif pointInRect(x, y, rect) then
             return rect.id
         end
     end
