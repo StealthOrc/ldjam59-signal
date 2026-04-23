@@ -17,6 +17,7 @@ local UI_REVEAL_DURATION = 0.52
 local UI_CARD_STAGGER = 0.07
 local UI_TEXT_FADE_DELAY = 0.1
 local UI_TEXT_FADE_DURATION = 0.32
+local CLUSTER_MEMBER_STAGGER = 0.08
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -37,6 +38,23 @@ local function maxValue(a, b)
         return a
     end
     return b
+end
+
+local function compareStrings(a, b)
+    return tostring(a or "") < tostring(b or "")
+end
+
+local function shallowCopyArray(values)
+    local copy = {}
+    for index, value in ipairs(values or {}) do
+        copy[index] = value
+    end
+    return copy
+end
+
+local function sortStrings(values)
+    table.sort(values, compareStrings)
+    return values
 end
 
 local function getDescriptorMapKind(descriptor)
@@ -157,144 +175,414 @@ local function getJunctionEntryAngle(edge)
     return angleBetweenPoints(points[#points], points[#points - 1])
 end
 
-local function buildPresentationSchedule(world)
-    local edges = {}
-    local edgeById = {}
-    local incomingByTargetId = {}
-    local baseDurationByEdgeId = {}
+local function buildJunctionSchedule(arrivalTime, entryEdge)
+    local resolvedArrival = math.max(0, arrivalTime or 0)
+    local ringStartTime = resolvedArrival
+    local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
+    local iconStartTime = ringEndTime
+    local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
+
+    return {
+        arrivalTime = resolvedArrival,
+        ringStartTime = ringStartTime,
+        ringEndTime = ringEndTime,
+        iconStartTime = iconStartTime,
+        iconEndTime = iconEndTime,
+        entryAngle = entryEdge and getJunctionEntryAngle(entryEdge) or (-math.pi * 0.5),
+    }
+end
+
+local function buildGraphContext(world)
+    local context = {
+        edges = {},
+        edgeById = {},
+        incomingByTargetId = {},
+        outgoingBySourceId = {},
+        baseDurationByEdgeId = {},
+        junctionIds = {},
+    }
 
     for edgeId, edge in pairs(type(world) == "table" and world.edges or {}) do
         if type(edge) == "table" then
             local resolvedId = edge.id or edgeId
             edge.id = resolvedId
-            edges[#edges + 1] = edge
-            edgeById[resolvedId] = edge
-            if edge.targetType == "junction" and edge.targetId then
-                incomingByTargetId[edge.targetId] = incomingByTargetId[edge.targetId] or {}
-                incomingByTargetId[edge.targetId][#incomingByTargetId[edge.targetId] + 1] = edge
+            context.edges[#context.edges + 1] = edge
+            context.edgeById[resolvedId] = edge
+            context.baseDurationByEdgeId[resolvedId] = getTrackRevealDuration(world, edge)
+
+            if edge.sourceType == "junction" and edge.sourceId then
+                context.outgoingBySourceId[edge.sourceId] = context.outgoingBySourceId[edge.sourceId] or {}
+                context.outgoingBySourceId[edge.sourceId][#context.outgoingBySourceId[edge.sourceId] + 1] = edge
+                context.junctionIds[edge.sourceId] = true
             end
-            baseDurationByEdgeId[resolvedId] = getTrackRevealDuration(world, edge)
+            if edge.targetType == "junction" and edge.targetId then
+                context.incomingByTargetId[edge.targetId] = context.incomingByTargetId[edge.targetId] or {}
+                context.incomingByTargetId[edge.targetId][#context.incomingByTargetId[edge.targetId] + 1] = edge
+                context.junctionIds[edge.targetId] = true
+            end
         end
     end
 
+    table.sort(context.edges, function(a, b)
+        return compareStrings(a.id, b.id)
+    end)
+
+    for junctionId, edges in pairs(context.incomingByTargetId) do
+        table.sort(edges, function(a, b)
+            return compareStrings(a.id, b.id)
+        end)
+        context.incomingByTargetId[junctionId] = edges
+    end
+
+    for junctionId, edges in pairs(context.outgoingBySourceId) do
+        table.sort(edges, function(a, b)
+            return compareStrings(a.id, b.id)
+        end)
+        context.outgoingBySourceId[junctionId] = edges
+    end
+
+    return context
+end
+
+local function scaleSchedules(edgeSchedulesById, junctionSchedulesById, graphCompleteTime)
+    if graphCompleteTime <= 0.0001 then
+        return edgeSchedulesById, junctionSchedulesById, GRAPH_REVEAL_DURATION
+    end
+
+    local timeScale = GRAPH_REVEAL_DURATION / graphCompleteTime
+
+    for _, schedule in pairs(edgeSchedulesById or {}) do
+        schedule.startTime = schedule.startTime * timeScale
+        schedule.endTime = schedule.endTime * timeScale
+        schedule.duration = schedule.duration * timeScale
+    end
+
+    for _, schedule in pairs(junctionSchedulesById or {}) do
+        schedule.arrivalTime = schedule.arrivalTime * timeScale
+        schedule.ringStartTime = schedule.ringStartTime * timeScale
+        schedule.ringEndTime = schedule.ringEndTime * timeScale
+        schedule.iconStartTime = schedule.iconStartTime * timeScale
+        schedule.iconEndTime = schedule.iconEndTime * timeScale
+    end
+
+    return edgeSchedulesById, junctionSchedulesById, GRAPH_REVEAL_DURATION
+end
+
+local function buildSccInfo(context)
+    local sortedJunctionIds = {}
+    for junctionId in pairs(context.junctionIds or {}) do
+        sortedJunctionIds[#sortedJunctionIds + 1] = junctionId
+    end
+    sortStrings(sortedJunctionIds)
+
+    local adjacencyByJunctionId = {}
+    for _, junctionId in ipairs(sortedJunctionIds) do
+        adjacencyByJunctionId[junctionId] = {}
+    end
+
+    for _, edge in ipairs(context.edges) do
+        if edge.sourceType == "junction" and edge.targetType == "junction" and edge.sourceId and edge.targetId then
+            adjacencyByJunctionId[edge.sourceId] = adjacencyByJunctionId[edge.sourceId] or {}
+            adjacencyByJunctionId[edge.sourceId][#adjacencyByJunctionId[edge.sourceId] + 1] = edge.targetId
+        end
+    end
+
+    for junctionId, targets in pairs(adjacencyByJunctionId) do
+        table.sort(targets, compareStrings)
+        adjacencyByJunctionId[junctionId] = targets
+    end
+
+    local indexByJunctionId = {}
+    local lowlinkByJunctionId = {}
+    local onStackByJunctionId = {}
+    local stack = {}
+    local nextIndex = 1
+    local componentByJunctionId = {}
+    local componentsById = {}
+    local componentId = 0
+
+    local function visit(junctionId)
+        indexByJunctionId[junctionId] = nextIndex
+        lowlinkByJunctionId[junctionId] = nextIndex
+        nextIndex = nextIndex + 1
+        stack[#stack + 1] = junctionId
+        onStackByJunctionId[junctionId] = true
+
+        for _, targetId in ipairs(adjacencyByJunctionId[junctionId] or {}) do
+            if not indexByJunctionId[targetId] then
+                visit(targetId)
+                lowlinkByJunctionId[junctionId] = math.min(lowlinkByJunctionId[junctionId], lowlinkByJunctionId[targetId])
+            elseif onStackByJunctionId[targetId] then
+                lowlinkByJunctionId[junctionId] = math.min(lowlinkByJunctionId[junctionId], indexByJunctionId[targetId])
+            end
+        end
+
+        if lowlinkByJunctionId[junctionId] == indexByJunctionId[junctionId] then
+            componentId = componentId + 1
+            local members = {}
+            while true do
+                local memberId = stack[#stack]
+                stack[#stack] = nil
+                onStackByJunctionId[memberId] = nil
+                componentByJunctionId[memberId] = componentId
+                members[#members + 1] = memberId
+                if memberId == junctionId then
+                    break
+                end
+            end
+            sortStrings(members)
+            componentsById[componentId] = {
+                id = componentId,
+                junctionIds = members,
+            }
+        end
+    end
+
+    for _, junctionId in ipairs(sortedJunctionIds) do
+        if not indexByJunctionId[junctionId] then
+            visit(junctionId)
+        end
+    end
+
+    local componentSizeById = {}
+    for id, component in pairs(componentsById) do
+        componentSizeById[id] = #(component.junctionIds or {})
+    end
+
+    return {
+        componentByJunctionId = componentByJunctionId,
+        componentsById = componentsById,
+        componentSizeById = componentSizeById,
+    }
+end
+
+local function buildClusteredCycleSchedule(context)
     local edgeSchedulesById = {}
     local junctionSchedulesById = {}
     local graphCompleteTime = 0
-    local visitingJunctions = {}
+    local sccInfo = buildSccInfo(context)
+    local componentInfoById = {}
 
-    local function buildFallbackJunctionSchedule()
-        local ringStartTime = 0
-        local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
-        local iconStartTime = ringEndTime
-        local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
-        return {
-            arrivalTime = 0,
-            ringStartTime = ringStartTime,
-            ringEndTime = ringEndTime,
-            iconStartTime = iconStartTime,
-            iconEndTime = iconEndTime,
-            entryAngle = -math.pi * 0.5,
+    for componentId, component in pairs(sccInfo.componentsById or {}) do
+        componentInfoById[componentId] = {
+            id = componentId,
+            junctionIds = shallowCopyArray(component.junctionIds or {}),
+            internalEdges = {},
+            externalIncomingEdges = {},
+            externalOutgoingEdges = {},
         }
     end
 
-    local computeJunctionSchedule
+    for _, edge in ipairs(context.edges) do
+        local sourceComponentId = edge.sourceType == "junction" and sccInfo.componentByJunctionId[edge.sourceId] or nil
+        local targetComponentId = edge.targetType == "junction" and sccInfo.componentByJunctionId[edge.targetId] or nil
 
-    local function computeEdgeStartTime(edge)
-        if edge.sourceType == "junction" and edge.sourceId then
-            local sourceSchedule = computeJunctionSchedule(edge.sourceId)
-            return sourceSchedule and sourceSchedule.ringEndTime or 0
+        if sourceComponentId and targetComponentId and sourceComponentId == targetComponentId then
+            componentInfoById[sourceComponentId].internalEdges[#componentInfoById[sourceComponentId].internalEdges + 1] = edge
+        elseif targetComponentId then
+            componentInfoById[targetComponentId].externalIncomingEdges[#componentInfoById[targetComponentId].externalIncomingEdges + 1] = edge
         end
 
+        if sourceComponentId and (not targetComponentId or targetComponentId ~= sourceComponentId) then
+            componentInfoById[sourceComponentId].externalOutgoingEdges[#componentInfoById[sourceComponentId].externalOutgoingEdges + 1] = edge
+        end
+    end
+
+    for _, componentInfo in pairs(componentInfoById) do
+        table.sort(componentInfo.internalEdges, function(a, b)
+            return compareStrings(a.id, b.id)
+        end)
+        table.sort(componentInfo.externalIncomingEdges, function(a, b)
+            return compareStrings(a.id, b.id)
+        end)
+        table.sort(componentInfo.externalOutgoingEdges, function(a, b)
+            return compareStrings(a.id, b.id)
+        end)
+        table.sort(componentInfo.junctionIds, compareStrings)
+    end
+
+    local componentScheduleById = {}
+    local visitingComponents = {}
+
+    local computeComponentSchedule
+
+    local function getExternalEdgeStartTime(edge)
+        if edge.sourceType == "junction" and edge.sourceId then
+            local sourceComponentId = sccInfo.componentByJunctionId[edge.sourceId]
+            local sourceComponentSchedule = sourceComponentId and computeComponentSchedule(sourceComponentId) or nil
+            return sourceComponentSchedule and sourceComponentSchedule.completeTime or 0
+        end
         return 0
     end
 
-    local function computeNaturalEdgeEndTime(edge)
-        return computeEdgeStartTime(edge) + (baseDurationByEdgeId[edge.id] or 0)
-    end
-
-    computeJunctionSchedule = function(junctionId)
-        if not junctionId then
-            return nil
+    computeComponentSchedule = function(componentId)
+        if componentScheduleById[componentId] then
+            return componentScheduleById[componentId]
         end
-        if junctionSchedulesById[junctionId] then
-            return junctionSchedulesById[junctionId]
-        end
-        if visitingJunctions[junctionId] then
-            return buildFallbackJunctionSchedule()
+        if visitingComponents[componentId] then
+            return {
+                arrivalTime = 0,
+                completeTime = JUNCTION_ICON_DURATION,
+                junctionSchedulesById = {},
+            }
         end
 
-        visitingJunctions[junctionId] = true
-
-        local incomingEdges = incomingByTargetId[junctionId] or {}
+        visitingComponents[componentId] = true
+        local componentInfo = componentInfoById[componentId]
         local arrivalTime = 0
-        local entryEdge = nil
+        local entryEdgesByJunctionId = {}
 
-        for _, edge in ipairs(incomingEdges) do
-            local naturalEndTime = computeNaturalEdgeEndTime(edge)
-            if (not entryEdge) or naturalEndTime > arrivalTime + 0.0001 then
-                arrivalTime = naturalEndTime
-                entryEdge = edge
+        for _, edge in ipairs(componentInfo.externalIncomingEdges or {}) do
+            local endTime = getExternalEdgeStartTime(edge) + (context.baseDurationByEdgeId[edge.id] or 0)
+            arrivalTime = maxValue(arrivalTime, endTime)
+            if edge.targetId then
+                entryEdgesByJunctionId[edge.targetId] = entryEdgesByJunctionId[edge.targetId] or {}
+                entryEdgesByJunctionId[edge.targetId][#entryEdgesByJunctionId[edge.targetId] + 1] = edge
             end
         end
 
-        local ringStartTime = arrivalTime
-        local ringEndTime = ringStartTime + JUNCTION_RING_DURATION
-        local iconStartTime = ringEndTime
-        local iconEndTime = iconStartTime + JUNCTION_ICON_DURATION
+        local localSchedulesByJunctionId = {}
+        local internalArrivalByJunctionId = {}
+        local queue = {}
+
+        local function scheduleLocalJunction(junctionId, junctionArrivalTime, entryEdge)
+            local existing = localSchedulesByJunctionId[junctionId]
+            if existing and existing.arrivalTime <= junctionArrivalTime + 0.0001 then
+                return false
+            end
+
+            local schedule = buildJunctionSchedule(junctionArrivalTime, entryEdge)
+            localSchedulesByJunctionId[junctionId] = schedule
+            queue[#queue + 1] = {
+                junctionId = junctionId,
+                ringEndTime = schedule.ringEndTime,
+            }
+            return true
+        end
+
+        local seeded = false
+        for _, junctionId in ipairs(componentInfo.junctionIds or {}) do
+            local entryEdges = entryEdgesByJunctionId[junctionId]
+            if entryEdges and #entryEdges > 0 then
+                scheduleLocalJunction(junctionId, arrivalTime, entryEdges[1])
+                seeded = true
+            end
+        end
+
+        if not seeded and componentInfo.junctionIds[1] then
+            scheduleLocalJunction(componentInfo.junctionIds[1], arrivalTime, nil)
+        end
+
+        while #queue > 0 do
+            local bestIndex = 1
+            local bestRingEnd = queue[1].ringEndTime
+            for index = 2, #queue do
+                if queue[index].ringEndTime < bestRingEnd - 0.0001 then
+                    bestIndex = index
+                    bestRingEnd = queue[index].ringEndTime
+                end
+            end
+            local queued = queue[bestIndex]
+            table.remove(queue, bestIndex)
+
+            local sourceJunctionId = queued.junctionId
+            for _, edge in ipairs(context.outgoingBySourceId[sourceJunctionId] or {}) do
+                local targetComponentId = edge.targetType == "junction" and sccInfo.componentByJunctionId[edge.targetId] or nil
+                if targetComponentId == componentId then
+                    local edgeEndTime = queued.ringEndTime + (context.baseDurationByEdgeId[edge.id] or 0)
+                    local currentArrivalTime = internalArrivalByJunctionId[edge.targetId]
+                    if currentArrivalTime == nil or edgeEndTime < currentArrivalTime - 0.0001 then
+                        internalArrivalByJunctionId[edge.targetId] = edgeEndTime
+                        scheduleLocalJunction(edge.targetId, edgeEndTime, edge)
+                    end
+                end
+            end
+        end
+
+        local completeTime = arrivalTime
+        for _, junctionId in ipairs(componentInfo.junctionIds or {}) do
+            local schedule = localSchedulesByJunctionId[junctionId]
+            if not schedule then
+                schedule = buildJunctionSchedule(arrivalTime, nil)
+                localSchedulesByJunctionId[junctionId] = schedule
+            end
+
+            if (sccInfo.componentSizeById[componentId] or 0) > 1 then
+                local memberIndex = 0
+                for index, memberId in ipairs(componentInfo.junctionIds or {}) do
+                    if memberId == junctionId then
+                        memberIndex = index - 1
+                        break
+                    end
+                end
+                schedule.arrivalTime = schedule.arrivalTime + (memberIndex * CLUSTER_MEMBER_STAGGER)
+                schedule.ringStartTime = schedule.arrivalTime
+                schedule.ringEndTime = schedule.ringStartTime + JUNCTION_RING_DURATION
+                schedule.iconStartTime = schedule.ringEndTime
+                schedule.iconEndTime = schedule.iconStartTime + JUNCTION_ICON_DURATION
+            end
+
+            completeTime = maxValue(completeTime, schedule.iconEndTime)
+        end
+
         local schedule = {
             arrivalTime = arrivalTime,
-            ringStartTime = ringStartTime,
-            ringEndTime = ringEndTime,
-            iconStartTime = iconStartTime,
-            iconEndTime = iconEndTime,
-            entryAngle = entryEdge and getJunctionEntryAngle(entryEdge) or (-math.pi * 0.5),
+            completeTime = completeTime,
+            junctionSchedulesById = localSchedulesByJunctionId,
         }
-
-        junctionSchedulesById[junctionId] = schedule
-        visitingJunctions[junctionId] = nil
+        componentScheduleById[componentId] = schedule
+        visitingComponents[componentId] = nil
         return schedule
     end
 
-    for _, edge in ipairs(edges) do
-        local startTime = computeEdgeStartTime(edge)
-        local endTime = startTime + (baseDurationByEdgeId[edge.id] or 0)
-        if edge.targetType == "junction" and edge.targetId then
-            local targetSchedule = computeJunctionSchedule(edge.targetId)
-            endTime = targetSchedule and targetSchedule.arrivalTime or endTime
+    for componentId in pairs(componentInfoById) do
+        local componentSchedule = computeComponentSchedule(componentId)
+        for junctionId, schedule in pairs(componentSchedule.junctionSchedulesById or {}) do
+            junctionSchedulesById[junctionId] = schedule
+            graphCompleteTime = maxValue(graphCompleteTime, schedule.iconEndTime)
+        end
+        graphCompleteTime = maxValue(graphCompleteTime, componentSchedule.completeTime or 0)
+    end
+
+    for _, edge in ipairs(context.edges) do
+        local sourceComponentId = edge.sourceType == "junction" and sccInfo.componentByJunctionId[edge.sourceId] or nil
+        local targetComponentId = edge.targetType == "junction" and sccInfo.componentByJunctionId[edge.targetId] or nil
+        local startTime = 0
+        local endTime = 0
+
+        if sourceComponentId and targetComponentId and sourceComponentId == targetComponentId then
+            local sourceSchedule = junctionSchedulesById[edge.sourceId]
+            local targetSchedule = junctionSchedulesById[edge.targetId]
+            startTime = sourceSchedule and sourceSchedule.ringEndTime or 0
+            endTime = targetSchedule and targetSchedule.arrivalTime or (startTime + (context.baseDurationByEdgeId[edge.id] or 0))
+        elseif targetComponentId then
+            startTime = getExternalEdgeStartTime(edge)
+            local targetComponentSchedule = computeComponentSchedule(targetComponentId)
+            endTime = targetComponentSchedule and targetComponentSchedule.arrivalTime or (startTime + (context.baseDurationByEdgeId[edge.id] or 0))
+        elseif sourceComponentId then
+            local sourceComponentSchedule = computeComponentSchedule(sourceComponentId)
+            startTime = sourceComponentSchedule and sourceComponentSchedule.completeTime or 0
+            endTime = startTime + (context.baseDurationByEdgeId[edge.id] or 0)
+        else
+            startTime = 0
+            endTime = startTime + (context.baseDurationByEdgeId[edge.id] or 0)
         end
 
-        local duration = math.max(0, endTime - startTime)
         edgeSchedulesById[edge.id] = {
             startTime = startTime,
             endTime = endTime,
-            duration = duration,
+            duration = math.max(0, endTime - startTime),
         }
         graphCompleteTime = maxValue(graphCompleteTime, endTime)
     end
 
-    for _, schedule in pairs(junctionSchedulesById) do
-        graphCompleteTime = maxValue(graphCompleteTime, schedule.iconEndTime)
-    end
+    return edgeSchedulesById, junctionSchedulesById, graphCompleteTime
+end
 
-    if graphCompleteTime > 0.0001 then
-        local timeScale = GRAPH_REVEAL_DURATION / graphCompleteTime
-
-        for _, schedule in pairs(edgeSchedulesById) do
-            schedule.startTime = schedule.startTime * timeScale
-            schedule.endTime = schedule.endTime * timeScale
-            schedule.duration = schedule.duration * timeScale
-        end
-
-        for _, schedule in pairs(junctionSchedulesById) do
-            schedule.arrivalTime = schedule.arrivalTime * timeScale
-            schedule.ringStartTime = schedule.ringStartTime * timeScale
-            schedule.ringEndTime = schedule.ringEndTime * timeScale
-            schedule.iconStartTime = schedule.iconStartTime * timeScale
-            schedule.iconEndTime = schedule.iconEndTime * timeScale
-        end
-    end
-
-    return edgeSchedulesById, junctionSchedulesById, GRAPH_REVEAL_DURATION
+local function buildPresentationSchedule(world)
+    local context = buildGraphContext(world)
+    local edgeSchedulesById, junctionSchedulesById, graphCompleteTime = buildClusteredCycleSchedule(context)
+    return scaleSchedules(edgeSchedulesById, junctionSchedulesById, graphCompleteTime)
 end
 
 function mapPresentation.buildState(world, descriptor, profile)
