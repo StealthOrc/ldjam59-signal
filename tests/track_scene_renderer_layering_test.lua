@@ -179,4 +179,93 @@ assertTrue(crossingIndex ~= nil, "crossing should be rendered")
 assertTrue(crossingIndex > standaloneIndex, "crossing should render after standalone lanes so the junction stays on top")
 assertEqual(drawOrder[#drawOrder], "selector:junction_alpha", "output selector should stay on the final overlay pass")
 
+drawOrder = {}
+
+renderer.drawOutputTrack = function(_, junction, outputIndex, _)
+    local track = junction.outputs[outputIndex]
+    drawOrder[#drawOrder + 1] = "output:" .. tostring(track and track.id)
+end
+renderer.drawInputTrack = function(_, track, _)
+    drawOrder[#drawOrder + 1] = "input:" .. tostring(track and track.id)
+end
+renderer.drawStandaloneTrack = function(_, track, _)
+    drawOrder[#drawOrder + 1] = "standalone:" .. tostring(track.id)
+end
+renderer.drawCrossing = function()
+end
+renderer.drawTrackSignal = function()
+end
+renderer.drawTrain = function()
+end
+renderer.drawOutputSelector = function()
+end
+
+renderer.drawScene({
+    viewport = { w = 320, h = 200 },
+    junctionOrder = {
+        {
+            id = "junction_upper",
+            outputs = {},
+            inputs = {
+                { id = "shared_edge", signalPoint = { x = 0, y = 0 } },
+                { id = "upper_input", signalPoint = { x = 0, y = 0 } },
+            },
+            control = { type = "direct" },
+            mergePoint = { x = 20, y = 20 },
+            crossingRadius = 24,
+            activeInputIndex = 1,
+            activeOutputIndex = 1,
+        },
+        {
+            id = "junction_lower",
+            outputs = {
+                { id = "shared_edge" },
+            },
+            inputs = {
+                { id = "lower_input", signalPoint = { x = 0, y = 0 } },
+            },
+            control = { type = "direct" },
+            mergePoint = { x = 20, y = 60 },
+            crossingRadius = 24,
+            activeInputIndex = 1,
+            activeOutputIndex = 1,
+        },
+    },
+    edges = {},
+    trains = {},
+    getHighlightedEdgeIds = function()
+        return {}
+    end,
+}, {})
+
+renderer.drawOutputTrack = originalDrawOutputTrack
+renderer.drawInputTrack = originalDrawInputTrack
+renderer.drawStandaloneTrack = originalDrawStandaloneTrack
+renderer.drawCrossing = originalDrawCrossing
+renderer.drawTrackSignal = originalDrawTrackSignal
+renderer.drawTrain = originalDrawTrain
+renderer.drawOutputSelector = originalDrawOutputSelector
+
+local sharedEdgeOutputCount = 0
+local sharedEdgeInputCount = 0
+local upperInputCount = 0
+local lowerInputCount = 0
+
+for _, call in ipairs(drawOrder) do
+    if call == "output:shared_edge" then
+        sharedEdgeOutputCount = sharedEdgeOutputCount + 1
+    elseif call == "input:shared_edge" then
+        sharedEdgeInputCount = sharedEdgeInputCount + 1
+    elseif call == "input:upper_input" then
+        upperInputCount = upperInputCount + 1
+    elseif call == "input:lower_input" then
+        lowerInputCount = lowerInputCount + 1
+    end
+end
+
+assertEqual(sharedEdgeOutputCount, 1, "shared junction-to-junction edge should render once on the output pass")
+assertEqual(sharedEdgeInputCount, 0, "shared junction-to-junction edge should not be redrawn on the input pass")
+assertEqual(upperInputCount, 1, "non-shared upper input should still render once")
+assertEqual(lowerInputCount, 1, "non-shared lower input should still render once")
+
 print("track scene renderer layering tests passed")

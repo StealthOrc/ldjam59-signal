@@ -925,20 +925,21 @@ function renderer.drawScene(scene, options)
     for _, junction in ipairs(scene.junctionOrder or {}) do
         for outputIndex = 1, #junction.outputs do
             local outputTrack = junction.outputs[outputIndex]
-            renderer.drawOutputTrack(scene, junction, outputIndex, outputTrack and highlightedEdgeIds[outputTrack.id] == true)
-            if outputTrack then
+            if outputTrack and not drawnEdgeIds[outputTrack.id] then
+                renderer.drawOutputTrack(scene, junction, outputIndex, highlightedEdgeIds[outputTrack.id] == true)
                 drawnEdgeIds[outputTrack.id] = true
             end
         end
+    end
 
+    for _, junction in ipairs(scene.junctionOrder or {}) do
         for inputIndex = 1, #junction.inputs do
             local inputTrack = junction.inputs[inputIndex]
-            renderer.drawInputTrack(scene, inputTrack, inputTrack and highlightedEdgeIds[inputTrack.id] == true)
-            if inputTrack then
+            if inputTrack and not drawnEdgeIds[inputTrack.id] then
+                renderer.drawInputTrack(scene, inputTrack, highlightedEdgeIds[inputTrack.id] == true)
                 drawnEdgeIds[inputTrack.id] = true
             end
         end
-
     end
 
     for _, track in pairs(scene.edges or {}) do
