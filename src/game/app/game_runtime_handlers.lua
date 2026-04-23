@@ -603,6 +603,12 @@ function Game:mousepressed(x, y, button)
             return
         end
 
+        local replayHit = ui.getLeaderboardReplayHitAt(self, viewportX, viewportY)
+        if replayHit then
+            self:openLeaderboardReplayEntry(replayHit.entry)
+            return
+        end
+
         local mapHit = ui.getLeaderboardMapHitAt(self, viewportX, viewportY)
         if mapHit then
             self:openLeaderboardForMap(mapHit.mapUuid, mapHit.mapName)

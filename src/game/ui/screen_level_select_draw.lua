@@ -1015,6 +1015,24 @@ function ui.getLeaderboardMapHitAt(game, x, y)
     return nil
 end
 
+function ui.getLeaderboardReplayHitAt(game, x, y)
+    local state = game.leaderboardState or { entries = {} }
+    local rowRects = buildLeaderboardRowRects(game, state.entries or {})
+
+    for _, rowRect in ipairs(rowRects) do
+        local entry = rowRect.entry or {}
+        local hasReplay = tostring(entry.replayUuid or "") ~= ""
+            or tostring(entry.replayFilePath or "") ~= ""
+        if hasReplay and pointInRect(x, y, rowRect.row) then
+            return {
+                entry = entry,
+            }
+        end
+    end
+
+    return nil
+end
+
 function ui.getLevelSelectHit(game, x, y, button)
     if game.levelSelectUploadDialog then
         local overlay = ui.getLevelSelectUploadDialogRects(game)

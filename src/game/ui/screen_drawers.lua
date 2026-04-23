@@ -251,9 +251,17 @@ function ui.drawLeaderboard(game)
     for _, rowRect in ipairs(rowRects) do
         local entry = rowRect.entry
         local rowY = rowRect.player.y
+        local hasReplay = entry and entry.hasReplay == true
+        local timestampText = game:isOfflineMode()
+            and formatLeaderboardRecordedAt(entry.recordedAt or entry.updatedAt)
+            or formatLeaderboardEntryTimestamp(entry.updatedAt or entry.recordedAt)
         graphics.setColor(0.1, 0.13, 0.17, 0.94)
         graphics.rectangle("fill", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
-        graphics.setColor(0.26, 0.34, 0.42, 1)
+        if hasReplay then
+            graphics.setColor(0.34, 0.56, 0.74, 1)
+        else
+            graphics.setColor(0.26, 0.34, 0.42, 1)
+        end
         graphics.rectangle("line", rowRect.row.x, rowRect.row.y, rowRect.row.w, rowRect.row.h, LEADERBOARD_LAYOUT.rowRadius, LEADERBOARD_LAYOUT.rowRadius)
 
         graphics.setColor(0.97, 0.98, 1, 1)
@@ -285,14 +293,27 @@ function ui.drawLeaderboard(game)
 
         graphics.setColor(0.68, 0.74, 0.8, 1)
         graphics.printf(
-            game:isOfflineMode()
-                and formatLeaderboardRecordedAt(entry.recordedAt or entry.updatedAt)
-                or formatLeaderboardEntryTimestamp(entry.updatedAt or entry.recordedAt),
+            timestampText,
             rowRect.record.x,
-            rowY + 2,
+            rowY + (hasReplay and LEADERBOARD_LAYOUT.replayTimestampOffsetY or LEADERBOARD_LAYOUT.defaultTimestampOffsetY),
             rowRect.record.w,
             "left"
         )
+        if hasReplay then
+            graphics.setColor(0.98, 0.3, 0.3, 1)
+            graphics.circle(
+                "fill",
+                rowRect.record.x + LEADERBOARD_LAYOUT.replayDotOffsetX,
+                rowY + LEADERBOARD_LAYOUT.replayDotOffsetY,
+                LEADERBOARD_LAYOUT.replayDotRadius
+            )
+            graphics.setColor(0.92, 0.96, 1, 1)
+            graphics.print(
+                "Replay",
+                rowRect.record.x + LEADERBOARD_LAYOUT.replayLabelOffsetX,
+                rowY + LEADERBOARD_LAYOUT.replayLabelOffsetY
+            )
+        end
     end
 
     if #(state.entries or {}) > #rowRects then
