@@ -38,10 +38,8 @@ function Game:isBackendTrackedMap(mapDescriptor)
         return false
     end
 
-    return resolvedMapDescriptor.isRemoteImport == true
-        or type(resolvedMapDescriptor.remoteSource) == "table"
-        or type(resolvedMapDescriptor.remoteSourceEntry) == "table"
-        or resolvedMapDescriptor.hasRemotePlayStats == true
+    return tostring(resolvedMapDescriptor.mapUuid or "") ~= ""
+        and tostring(resolvedMapDescriptor.mapHash or "") ~= ""
 end
 
 function Game:updateStoredMapPlayCounts(

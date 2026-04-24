@@ -467,6 +467,14 @@ function getLevelSelectTitleText(game, selectedMap)
         )
     end
 
+    if tostring(selectedMap.mapUuid or "") ~= "" and tostring(selectedMap.mapHash or "") ~= "" then
+        return getMapDisplayName(selectedMap), string.format(
+            "%s  |  %s",
+            getMapKindLabel(selectedMap),
+            tostring(selectedMap.revisionLabel or "v0.0.1")
+        )
+    end
+
     return getMapDisplayName(selectedMap), getMapKindLabel(selectedMap)
 end
 
