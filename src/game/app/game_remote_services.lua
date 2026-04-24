@@ -11,8 +11,11 @@ return function(Game, shared)
         end,
     }))
 
+local mapRevision = require("src.game.util.map_revision")
+
 local SCORE_SUBMIT_REQUEST_KIND_REPLAY = "replay_submit"
 local SCORE_SUBMIT_REQUEST_KIND_SCORE = "score_submit"
+local MAP_PLAY_REQUEST_KIND = "map_play"
 local RESULTS_MESSAGE_REPLAY_UPLOAD_PENDING = "Uploading replay..."
 local RESULTS_MESSAGE_REPLAY_UPLOAD_TIMEOUT = "The replay upload timed out."
 local RESULTS_MESSAGE_REPLAY_UPLOAD_FAILED = "The replay upload failed."
@@ -27,6 +30,135 @@ function Game:reloadOnlineConfig()
         self.onlineConfig = loadedConfig
     end
     return self.onlineConfig
+end
+
+function Game:isBackendTrackedMap(mapDescriptor)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    if not resolvedMapDescriptor then
+        return false
+    end
+
+    return resolvedMapDescriptor.isRemoteImport == true
+        or type(resolvedMapDescriptor.remoteSource) == "table"
+        or type(resolvedMapDescriptor.remoteSourceEntry) == "table"
+        or resolvedMapDescriptor.hasRemotePlayStats == true
+end
+
+function Game:updateStoredMapPlayCounts(
+    mapUuid,
+    mapHash,
+    revisionNumber,
+    totalPlayCount,
+    revisionPlayCount,
+    playerTotalPlayCount,
+    playerRevisionPlayCount
+)
+    local resolvedMapUuid = tostring(mapUuid or "")
+    local resolvedMapHash = tostring(mapHash or "")
+    if resolvedMapUuid == "" then
+        return
+    end
+
+    local function applyToDescriptor(descriptor)
+        if type(descriptor) ~= "table" then
+            return
+        end
+        if tostring(descriptor.mapUuid or "") ~= resolvedMapUuid then
+            return
+        end
+        if resolvedMapHash ~= "" and tostring(descriptor.mapHash or "") ~= resolvedMapHash then
+            return
+        end
+
+        descriptor.hasRemotePlayStats = true
+        descriptor.revisionNumber = tonumber(revisionNumber or descriptor.revisionNumber or 1) or 1
+        descriptor.revisionLabel = mapRevision.formatRevisionLabel(descriptor.revisionNumber)
+        descriptor.totalPlayCount = tonumber(totalPlayCount or descriptor.totalPlayCount or 0) or 0
+        descriptor.revisionPlayCount = tonumber(revisionPlayCount or descriptor.revisionPlayCount or 0) or 0
+        descriptor.playerTotalPlayCount = tonumber(playerTotalPlayCount or descriptor.playerTotalPlayCount or 0) or 0
+        descriptor.playerRevisionPlayCount = tonumber(playerRevisionPlayCount or descriptor.playerRevisionPlayCount or 0) or 0
+        descriptor.remoteSource = descriptor.remoteSource or {}
+        descriptor.remoteSource.revisionNumber = descriptor.revisionNumber
+        descriptor.remoteSource.totalPlayCount = descriptor.totalPlayCount
+        descriptor.remoteSource.revisionPlayCount = descriptor.revisionPlayCount
+        descriptor.remoteSource.playerTotalPlayCount = descriptor.playerTotalPlayCount
+        descriptor.remoteSource.playerRevisionPlayCount = descriptor.playerRevisionPlayCount
+    end
+
+    applyToDescriptor(self.currentMapDescriptor)
+
+    for _, descriptor in ipairs(self.availableMaps or {}) do
+        applyToDescriptor(descriptor)
+    end
+
+    for _, cacheEntry in pairs(self.marketplaceCacheByScope or {}) do
+        local payload = type(cacheEntry) == "table" and cacheEntry.payload or nil
+        local entries = type(payload) == "table" and payload.entries or nil
+        if type(entries) == "table" then
+            for _, entry in ipairs(entries) do
+                if type(entry) == "table"
+                    and tostring(entry.map_uuid or "") == resolvedMapUuid
+                    and (resolvedMapHash == "" or tostring(entry.map_hash or "") == resolvedMapHash)
+                then
+                    entry.revision_number = tonumber(revisionNumber or entry.revision_number or 1) or 1
+                    entry.total_play_count = tonumber(totalPlayCount or entry.total_play_count or 0) or 0
+                    entry.revision_play_count = tonumber(revisionPlayCount or entry.revision_play_count or 0) or 0
+                    entry.player_total_play_count = tonumber(playerTotalPlayCount or entry.player_total_play_count or 0) or 0
+                    entry.player_revision_play_count = tonumber(playerRevisionPlayCount or entry.player_revision_play_count or 0) or 0
+                end
+            end
+        end
+    end
+end
+
+function Game:beginMapPlayRecordRequest(onlineConfig, mapDescriptor)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    if not resolvedMapDescriptor then
+        return false
+    end
+
+    local mapUuid = tostring(resolvedMapDescriptor.mapUuid or "")
+    local mapHash = tostring(resolvedMapDescriptor.mapHash or "")
+    if mapUuid == "" or mapHash == "" then
+        return false
+    end
+
+    self:ensureLeaderboardWorker()
+    self.remoteWriteRequestSequence = self.remoteWriteRequestSequence + 1
+    self.leaderboardRequestChannel:push(json.encode({
+        kind = MAP_PLAY_REQUEST_KIND,
+        requestId = self.remoteWriteRequestSequence,
+        config = {
+            apiKey = onlineConfig.apiKey,
+            apiBaseUrl = onlineConfig.apiBaseUrl,
+            hmacSecret = onlineConfig.hmacSecret,
+            mapUuid = mapUuid,
+            mapHash = mapHash,
+            mode = MAP_PLAY_REQUEST_KIND,
+            playerDisplayName = self.profile and self.profile.playerDisplayName or "",
+            player_uuid = getProfilePlayerUuid(self.profile),
+        },
+    }))
+    return true
+end
+
+function Game:recordMapAttemptForDescriptor(mapDescriptor)
+    local resolvedMapDescriptor = type(mapDescriptor) == "table" and mapDescriptor or nil
+    if not resolvedMapDescriptor then
+        return false
+    end
+
+    if not self:isOnlineMode() or not self:isBackendTrackedMap(resolvedMapDescriptor) or self:isDebugModeEnabled() then
+        return true
+    end
+
+    local onlineConfig = self:reloadOnlineConfig()
+    if not onlineConfig.isConfigured then
+        return true
+    end
+
+    self:beginMapPlayRecordRequest(onlineConfig, resolvedMapDescriptor)
+    return true
 end
 
 function Game:getLeaderboardCacheEntry(scopeKey)
@@ -1913,6 +2045,18 @@ function Game:updateLeaderboardFetchState()
                     failureMessage = string.format("Map upload failed (HTTP %d): %s", statusCode, tostring(failureMessage))
                 end
                 self:showUploadFailureMessage(uploadOrigin, failureMessage)
+            end
+        elseif type(decodedResponse) == "table" and decodedResponse.kind == MAP_PLAY_REQUEST_KIND then
+            if decodedResponse.ok and type(decodedResponse.payload) == "table" then
+                self:updateStoredMapPlayCounts(
+                    decodedResponse.payload.map_uuid,
+                    decodedResponse.payload.map_hash,
+                    decodedResponse.payload.revision_number,
+                    decodedResponse.payload.total_play_count,
+                    decodedResponse.payload.revision_play_count,
+                    decodedResponse.payload.player_total_play_count,
+                    decodedResponse.payload.player_revision_play_count
+                )
             end
         elseif type(decodedResponse) == "table"
             and decodedResponse.requestId == self.activeScoreSubmitRequestId

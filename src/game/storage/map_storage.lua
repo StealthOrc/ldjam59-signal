@@ -1,6 +1,7 @@
 local mapStorage = {}
 local mapCompiler = require("src.game.map_compiler.map_compiler")
 local mapHash = require("src.game.util.map_hash")
+local mapRevision = require("src.game.util.map_revision")
 local toml = require("src.game.util.toml")
 local uuid = require("src.game.util.uuid")
 
@@ -172,6 +173,37 @@ local function buildDescriptor(source, fileName, data, options)
     local descriptorOptions = options or {}
     local mapKind = descriptorOptions.mapKind or inferMapKind(source, data, descriptorOptions.directory)
     local isRemoteImport = type(data.remoteSource) == "table" or descriptorOptions.isFromDownloadedDir
+    local revisionNumber = mapRevision.sanitizeRevisionNumber(
+        data.revisionNumber
+            or data.revision_number
+            or data.remoteSource and (data.remoteSource.revisionNumber or data.remoteSource.revision_number)
+            or nil
+    )
+    local totalPlayCount = tonumber(
+        data.totalPlayCount
+            or data.total_play_count
+            or data.remoteSource and (data.remoteSource.totalPlayCount or data.remoteSource.total_play_count)
+            or 0
+    ) or 0
+    local playerTotalPlayCount = tonumber(
+        data.playerTotalPlayCount
+            or data.player_total_play_count
+            or data.remoteSource and (data.remoteSource.playerTotalPlayCount or data.remoteSource.player_total_play_count)
+            or 0
+    ) or 0
+    local revisionPlayCount = tonumber(
+        data.revisionPlayCount
+            or data.revision_play_count
+            or data.remoteSource and (data.remoteSource.revisionPlayCount or data.remoteSource.revision_play_count)
+            or 0
+    ) or 0
+    local playerRevisionPlayCount = tonumber(
+        data.playerRevisionPlayCount
+            or data.player_revision_play_count
+            or data.remoteSource and (data.remoteSource.playerRevisionPlayCount or data.remoteSource.player_revision_play_count)
+            or 0
+    ) or 0
+    local hasRemotePlayStats = type(data.remoteSource) == "table"
     local descriptorSourceId = source == "builtin"
         and source
         or (isRemoteImport and "downloaded" or "user")
@@ -188,6 +220,13 @@ local function buildDescriptor(source, fileName, data, options)
         builtinDirectory = descriptorOptions.directory,
         savedAt = data.savedAt,
         mapHash = data.mapHash,
+        revisionNumber = revisionNumber,
+        revisionLabel = mapRevision.formatRevisionLabel(revisionNumber),
+        totalPlayCount = totalPlayCount,
+        playerTotalPlayCount = playerTotalPlayCount,
+        revisionPlayCount = revisionPlayCount,
+        playerRevisionPlayCount = playerRevisionPlayCount,
+        hasRemotePlayStats = hasRemotePlayStats,
         hasEditor = data.editor ~= nil,
         hasLevel = data.level ~= nil,
         hasErrors = #((data.validationErrors) or {}) > 0,
@@ -295,6 +334,10 @@ function mapStorage.saveMap(name, payload)
     local path = USER_MAP_DIR .. "/" .. fileName
     local resolvedPayload = ensureMapPayload(payload)
     attachComputedMapHash(resolvedPayload)
+    resolvedPayload.revisionNumber = mapRevision.sanitizeRevisionNumber(
+        resolvedPayload.revisionNumber
+            or resolvedPayload.revision_number
+    )
 
     local ok, writeError = writeMapFile(path, createPersistedPayload(resolvedPayload))
     if not ok then

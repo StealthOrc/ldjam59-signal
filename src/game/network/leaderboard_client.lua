@@ -197,6 +197,29 @@ function leaderboardClient.submitReplay(submission, config)
     return postJson(resolvedConfig, endpointPath, payload)
 end
 
+function leaderboardClient.recordMapPlay(submission, config)
+    local resolvedConfig, configError = normalizeConfig(config)
+    if not resolvedConfig then
+        return nil, configError
+    end
+
+    local mapUuid = tostring(submission.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The play count could not be recorded because the map UUID is missing."
+    end
+
+    local mapHash = tostring(submission.mapHash or submission.map_hash or "")
+    if mapHash == "" then
+        return nil, "The play count could not be recorded because the map hash is missing."
+    end
+
+    return postJson(resolvedConfig, string.format("/api/maps/%s/plays", mapUuid), {
+        display_name = tostring(submission.playerDisplayName or ""),
+        map_hash = mapHash,
+        player_uuid = tostring(submission.player_uuid or ""),
+    })
+end
+
 function leaderboardClient.fetchReplayMetadata(requestOptions, config)
     local resolvedConfig, configError = normalizeConfig(config)
     if not resolvedConfig then

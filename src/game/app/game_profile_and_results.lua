@@ -11,6 +11,8 @@ return function(Game, shared)
         end,
     }))
 
+local mapRevision = require("src.game.util.map_revision")
+
 function Game:isProfileComplete()
     return trim(self.profile and self.profile.playerDisplayName or "") ~= ""
 end
@@ -419,8 +421,29 @@ function Game:showUploadStartedMessage(origin)
 end
 
 function Game:showUploadSuccessMessage(origin, payload, mapDescriptor)
+    local resolvedPayload = type(payload) == "table" and payload or {}
+    if type(mapDescriptor) == "table" then
+        mapDescriptor.hasRemotePlayStats = true
+        mapDescriptor.revisionNumber = tonumber(resolvedPayload.revision_number or mapDescriptor.revisionNumber or 1) or 1
+        mapDescriptor.revisionLabel = mapRevision.formatRevisionLabel(mapDescriptor.revisionNumber)
+        mapDescriptor.totalPlayCount = tonumber(resolvedPayload.total_play_count or mapDescriptor.totalPlayCount or 0) or 0
+        mapDescriptor.playerTotalPlayCount = tonumber(
+            resolvedPayload.player_total_play_count or mapDescriptor.playerTotalPlayCount or 0
+        ) or 0
+        mapDescriptor.revisionPlayCount = tonumber(resolvedPayload.revision_play_count or mapDescriptor.revisionPlayCount or 0) or 0
+        mapDescriptor.playerRevisionPlayCount = tonumber(
+            resolvedPayload.player_revision_play_count or mapDescriptor.playerRevisionPlayCount or 0
+        ) or 0
+        mapDescriptor.remoteSource = mapDescriptor.remoteSource or {}
+        mapDescriptor.remoteSource.mapHash = tostring(resolvedPayload.map_hash or mapDescriptor.mapHash or "")
+        mapDescriptor.remoteSource.revisionNumber = mapDescriptor.revisionNumber
+        mapDescriptor.remoteSource.totalPlayCount = mapDescriptor.totalPlayCount
+        mapDescriptor.remoteSource.playerTotalPlayCount = mapDescriptor.playerTotalPlayCount
+        mapDescriptor.remoteSource.revisionPlayCount = mapDescriptor.revisionPlayCount
+        mapDescriptor.remoteSource.playerRevisionPlayCount = mapDescriptor.playerRevisionPlayCount
+    end
+
     if origin == "editor" then
-        local resolvedPayload = type(payload) == "table" and payload or {}
         local uploadedMapId = tostring(
             resolvedPayload.internal_identifier
                 or resolvedPayload.internalIdentifier
@@ -574,6 +597,11 @@ function Game:downloadMarketplaceMap(mapDescriptor)
             likedByPlayer = sourceEntry.liked_by_player == true,
             mapCategory = tostring(sourceEntry.map_category or ""),
             mapHash = tostring(sourceEntry.map_hash or ""),
+            playerTotalPlayCount = tonumber(sourceEntry.player_total_play_count or 0) or 0,
+            playerRevisionPlayCount = tonumber(sourceEntry.player_revision_play_count or 0) or 0,
+            revisionNumber = tonumber(sourceEntry.revision_number or 1) or 1,
+            revisionPlayCount = tonumber(sourceEntry.revision_play_count or 0) or 0,
+            totalPlayCount = tonumber(sourceEntry.total_play_count or 0) or 0,
             updatedAt = tostring(sourceEntry.updated_at or ""),
         },
     }

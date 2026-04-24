@@ -1117,6 +1117,7 @@ function Game:openResults()
     end
 
     self:finalizeReplayRecord()
+    self:recordMapAttemptForDescriptor(self.currentMapDescriptor)
     self.resultsSummary = self.world:getRunSummary()
     self.resultsHoverInfo = nil
     self.failureReason = self.resultsSummary.endReason == "level_clear" and nil or self.resultsSummary.endReason

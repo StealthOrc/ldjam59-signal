@@ -9,6 +9,7 @@ local REQUEST_KIND_FETCH = "fetch"
 local REQUEST_KIND_PREVIEW = "preview"
 local REQUEST_KIND_MARKETPLACE = "marketplace"
 local REQUEST_KIND_FAVORITE_MAP = "favorite_map"
+local REQUEST_KIND_MAP_PLAY = "map_play"
 local REQUEST_KIND_REPLAY_SUBMIT = "replay_submit"
 local REQUEST_KIND_SCORE_SUBMIT = "score_submit"
 local REQUEST_KIND_REPLAY_FETCH = "replay_fetch"
@@ -259,6 +260,24 @@ local function favoriteMarketplaceMap(config, requestId)
     return runJsonDelete(config, endpointPath, payload, REQUEST_KIND_FAVORITE_MAP, requestId)
 end
 
+local function recordMapPlay(config, requestId)
+    local mapUuid = tostring(config.mapUuid or "")
+    if mapUuid == "" then
+        return nil, "The play count could not be recorded because the map UUID is missing."
+    end
+
+    local mapHash = tostring(config.mapHash or config.map_hash or "")
+    if mapHash == "" then
+        return nil, "The play count could not be recorded because the map hash is missing."
+    end
+
+    return runJsonPost(config, string.format("/api/maps/%s/plays", mapUuid), {
+        display_name = tostring(config.playerDisplayName or ""),
+        map_hash = mapHash,
+        player_uuid = tostring(config.player_uuid or ""),
+    }, REQUEST_KIND_MAP_PLAY, requestId)
+end
+
 local function submitReplay(config, requestId)
     local mapUuid = tostring(config.mapUuid or "")
     if mapUuid == "" then
@@ -369,6 +388,16 @@ while true do
         local payload, requestError, statusCode = favoriteMarketplaceMap(request.config or {}, request.requestId)
         responseChannel:push(json.encode({
             kind = REQUEST_KIND_FAVORITE_MAP,
+            requestId = request.requestId,
+            ok = payload ~= nil,
+            payload = payload,
+            error = requestError,
+            status = statusCode,
+        }))
+    elseif type(request) == "table" and request.kind == REQUEST_KIND_MAP_PLAY then
+        local payload, requestError, statusCode = recordMapPlay(request.config or {}, request.requestId)
+        responseChannel:push(json.encode({
+            kind = REQUEST_KIND_MAP_PLAY,
             requestId = request.requestId,
             ok = payload ~= nil,
             payload = payload,

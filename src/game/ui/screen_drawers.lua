@@ -1217,6 +1217,7 @@ function ui.drawResults(game)
     local graphics = love.graphics
     local summary = game.resultsSummary or {}
     local level = game.world and game.world:getLevel() or {}
+    local currentMapDescriptor = game.currentMapDescriptor or {}
     local finalScore = summary.finalScore or 0
     local onTimePointCap = summary.onTimePointCap or 0
     local panel = ui.getResultsPanelRect(game)
@@ -1297,6 +1298,7 @@ function ui.drawResults(game)
         string.format("Wrong destinations: %d", summary.wrongDestinationCount or 0),
         string.format("Elapsed time: %.1fs", summary.elapsedSeconds or 0),
         string.format("Interactions: %d", summary.interactionCount or 0),
+        string.format("Revision: %s", tostring(currentMapDescriptor.revisionLabel or "v0.0.1")),
         string.format("Map UUID: %s", summary.mapUuid or "n/a"),
     }
 

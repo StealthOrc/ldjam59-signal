@@ -1,4 +1,5 @@
 local junctionControls = require("src.game.junction_controls")
+local mapRevision = require("src.game.util.map_revision")
 
 return function(ui, shared)
     local moduleEnvironment = setmetatable({ ui = ui }, {
@@ -196,6 +197,7 @@ function buildMarketplaceDescriptor(entry)
     end
 
     local displayName = tostring(entry.map_name or "Untitled Map")
+    local revisionNumber = mapRevision.sanitizeRevisionNumber(entry.revision_number)
     return {
         id = string.format(
             "%s:%s:%s:%s",
@@ -212,6 +214,13 @@ function buildMarketplaceDescriptor(entry)
         likedByPlayer = entry.liked_by_player == true,
         mapKind = normalizeMarketplaceMapKind(entry.map_category),
         mapHash = tostring(entry.map_hash or ""),
+        playerTotalPlayCount = tonumber(entry.player_total_play_count or 0) or 0,
+        playerRevisionPlayCount = tonumber(entry.player_revision_play_count or 0) or 0,
+        revisionNumber = revisionNumber,
+        revisionLabel = mapRevision.formatRevisionLabel(revisionNumber),
+        totalPlayCount = tonumber(entry.total_play_count or 0) or 0,
+        revisionPlayCount = tonumber(entry.revision_play_count or 0) or 0,
+        hasRemotePlayStats = true,
         savedAt = entry.updated_at,
         hasEditor = false,
         hasLevel = type(entry.map) == "table",

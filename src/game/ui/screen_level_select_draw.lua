@@ -439,9 +439,11 @@ function getLevelSelectTitleText(game, selectedMap)
 
         if selectedEntry then
             return selectedEntry.title, string.format(
-                "Online Maps  |  %s  |  %s votes  |  by %s",
+                "Online Maps  |  %s  |  %s  |  %s plays  |  You %s  |  by %s",
                 selectedEntry.positionLabel or sectionLabel,
-                tostring(selectedEntry.favoriteCount or 0),
+                tostring(selectedEntry.descriptor and selectedEntry.descriptor.revisionLabel or "v0.0.1"),
+                tostring(selectedEntry.descriptor and selectedEntry.descriptor.totalPlayCount or 0),
+                tostring(selectedEntry.descriptor and selectedEntry.descriptor.playerTotalPlayCount or 0),
                 selectedEntry.creatorDisplayName or "Unknown"
             )
         end
@@ -453,6 +455,16 @@ function getLevelSelectTitleText(game, selectedMap)
 
     if not selectedMap then
         return "Level Select", "Pick a map to start or edit."
+    end
+
+    if selectedMap.hasRemotePlayStats == true then
+        return getMapDisplayName(selectedMap), string.format(
+            "%s  |  %s  |  %d plays  |  You %d",
+            getMapKindLabel(selectedMap),
+            tostring(selectedMap.revisionLabel or "v0.0.1"),
+            tonumber(selectedMap.totalPlayCount or 0) or 0,
+            tonumber(selectedMap.playerTotalPlayCount or 0) or 0
+        )
     end
 
     return getMapDisplayName(selectedMap), getMapKindLabel(selectedMap)
